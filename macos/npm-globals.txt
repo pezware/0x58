@@ -1,0 +1,16 @@
+agent-browser
+amp
+azure-functions-core-tools
+bookmark-tool
+ccusage
+cdktf-cli
+claude-code
+cli
+cli
+codex
+copilot
+firebase-tools
+gemini-cli
+npm
+sandbox-runtime
+wrangler
