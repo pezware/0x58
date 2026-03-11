@@ -66,6 +66,7 @@ place_dotfiles() {
     # allowed_signers is machine-specific (Secretive key) — copy as reference,
     # but it needs regeneration on new machines (see setup-guide.md)
     [[ -f "$DOTFILES/config-git/allowed_signers" ]] && cp -v "$DOTFILES/config-git/allowed_signers" ~/.config/git/
+    [[ -f "$DOTFILES/config-git/personal" ]] && cp -v "$DOTFILES/config-git/personal" ~/.config/git/
 
     # w3m
     mkdir -p ~/.w3m

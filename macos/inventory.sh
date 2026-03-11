@@ -132,6 +132,7 @@ if [[ -d ~/.config/git ]]; then
     mkdir -p "$DOTFILES_DIR/config-git"
     [[ -f ~/.config/git/ignore ]] && cp -p ~/.config/git/ignore "$DOTFILES_DIR/config-git/ignore"
     [[ -f ~/.config/git/allowed_signers ]] && cp -p ~/.config/git/allowed_signers "$DOTFILES_DIR/config-git/allowed_signers"
+    [[ -f ~/.config/git/personal ]] && cp -p ~/.config/git/personal "$DOTFILES_DIR/config-git/personal"
 fi
 
 # w3m (config + keymap only, skip cache/history)
