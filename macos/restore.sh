@@ -63,6 +63,9 @@ place_dotfiles() {
     # git
     mkdir -p ~/.config/git
     cp -v "$DOTFILES/config-git/ignore" ~/.config/git/
+    # allowed_signers is machine-specific (Secretive key) — copy as reference,
+    # but it needs regeneration on new machines (see setup-guide.md)
+    [[ -f "$DOTFILES/config-git/allowed_signers" ]] && cp -v "$DOTFILES/config-git/allowed_signers" ~/.config/git/
 
     # w3m
     mkdir -p ~/.w3m
@@ -115,15 +118,17 @@ print_manual_steps() {
     if [[ "$PLATFORM" == "macos" ]]; then
         cat <<'MANUAL'
   1. Secretive: Open app → creates Secure Enclave key
-     - Add public key to GitHub (Settings → SSH keys)
+     - Add public key to GitHub as AUTH key (Settings → SSH keys)
+     - Add public key to GitHub as SIGNING key (same page, different type)
      - Add to remote servers (pezware-uno, pezware-dos)
      - Verify: ssh -T git@github.com
 
-  2. GPG: Import key or generate new one
-     gpg --import ~/src/secrets/gpg-private.asc
-     gpg --import-ownertrust ~/src/secrets/gpg-ownertrust.txt
-     git config --global user.signingkey <KEY_ID>
+  2. Commit signing (SSH via Secretive):
+     git config --global gpg.format ssh
+     git config --global user.signingkey "key::$(ssh-add -L)"
      git config --global commit.gpgsign true
+     echo "$(git config user.email) $(ssh-add -L)" > ~/.config/git/allowed_signers
+     git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
   3. Auth:
      gh auth login

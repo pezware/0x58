@@ -34,13 +34,27 @@ Secretive creates a new Secure Enclave key pair per machine. **Keys are non-tran
 3. Add to remote servers: `pezware-uno`, `pezware-dos`
 4. Verify: `ssh -T git@github.com`
 
-### GPG (commit signing)
+### Commit Signing (SSH via Secretive)
+Commit signing uses the same Secretive SSH key — no GPG needed for git.
+After Secretive creates your key:
 ```bash
-# Restore from backup (see "GPG Key Backup" below)
+# Get your Secretive public key
+ssh-add -L
+# Configure git to sign with it
+git config --global gpg.format ssh
+git config --global user.signingkey "key::$(ssh-add -L)"
+git config --global commit.gpgsign true
+# Set up local signature verification
+echo "$(git config user.email) $(ssh-add -L)" > ~/.config/git/allowed_signers
+git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+```
+Then add the same public key to GitHub → Settings → SSH and GPG keys → **New SSH key** → Key type: **Signing Key**.
+
+### GPG (encryption, not needed for commit signing)
+```bash
+# Restore from backup if needed for encryption/other GPG uses
 gpg --import ~/src/secrets/gpg-private.asc
 gpg --import-ownertrust ~/src/secrets/gpg-ownertrust.txt
-git config --global user.signingkey <KEY_ID>
-git config --global commit.gpgsign true
 ```
 
 ### Auth
@@ -105,7 +119,8 @@ git config --global commit.gpgsign true
 - [ ] `kitty` launches with correct theme
 - [ ] `nvim` opens with plugins loaded (`:Lazy`)
 - [ ] `ssh -T git@github.com` succeeds
-- [ ] `git commit --allow-empty -m "test"` produces signed commit
+- [ ] `git commit --allow-empty -m "test"` produces signed commit (Touch ID prompt)
+- [ ] `git log --show-signature -1` shows `Good "git" signature`
 - [ ] `gcloud auth list` shows active account
 - [ ] `claude` and `codex` work
 - [ ] `w3m https://example.com` renders
