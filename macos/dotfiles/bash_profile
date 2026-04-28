@@ -11,8 +11,10 @@ export CLICOLOR=1
 export PAGER="less -r"
 
 # Core PATH setup - only add directories that exist
+# Note: ~/go/bin intentionally excluded — use mise (github:/aqua: backends) for Go tools
+# instead of `go install`. If you re-enable, mise activate must run AFTER this block.
 NEW_PATH=""
-for dir in "/usr/local/bin" "$HOME/go/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/local/bin" "$HOME/local/sbin"; do
+for dir in "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/local/bin" "$HOME/local/sbin"; do
     [ -d "$dir" ] && NEW_PATH="$dir:$NEW_PATH"
 done
 export PATH="${NEW_PATH}$PATH"

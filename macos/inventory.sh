@@ -7,23 +7,18 @@ DOTFILES_DIR="$SCRIPT_DIR/dotfiles"
 mkdir -p "$DOTFILES_DIR"
 
 # --- Brewfile ---
-# Brewfile is curated manually. To regenerate from scratch:
-#   HOMEBREW_NO_AUTO_UPDATE=1 brew bundle dump --force --file=macos/Brewfile
-# Then review and remove unwanted entries.
-if [[ ! -f "$SCRIPT_DIR/Brewfile" ]]; then
-    echo "==> Generating Brewfile (first run)"
-    HOMEBREW_NO_AUTO_UPDATE=1 brew bundle dump --force --file="$SCRIPT_DIR/Brewfile"
-    {
-        grep '^tap ' "$SCRIPT_DIR/Brewfile" | sort || true
-        grep '^brew ' "$SCRIPT_DIR/Brewfile" | sort || true
-        grep '^cask ' "$SCRIPT_DIR/Brewfile" | sort || true
-        grep '^mas ' "$SCRIPT_DIR/Brewfile" | sort || true
-        grep '^vscode ' "$SCRIPT_DIR/Brewfile" | sort || true
-    } > "$SCRIPT_DIR/Brewfile.sorted"
-    mv "$SCRIPT_DIR/Brewfile.sorted" "$SCRIPT_DIR/Brewfile"
-else
-    echo "==> Brewfile exists (skipping — edit manually)"
-fi
+# Always regenerate from current brew state; mise.toml owns dev-tool versions
+# and brew is reserved for system libs, GUI casks, and tools without a mise backend.
+echo "==> Regenerating Brewfile from brew state"
+HOMEBREW_NO_AUTO_UPDATE=1 brew bundle dump --force --file="$SCRIPT_DIR/Brewfile"
+{
+    grep '^tap ' "$SCRIPT_DIR/Brewfile" | sort || true
+    grep '^brew ' "$SCRIPT_DIR/Brewfile" | sort || true
+    grep '^cask ' "$SCRIPT_DIR/Brewfile" | sort || true
+    grep '^mas ' "$SCRIPT_DIR/Brewfile" | sort || true
+    grep '^vscode ' "$SCRIPT_DIR/Brewfile" | sort || true
+} > "$SCRIPT_DIR/Brewfile.sorted"
+mv "$SCRIPT_DIR/Brewfile.sorted" "$SCRIPT_DIR/Brewfile"
 
 # --- apps.md ---
 echo "==> Generating apps.md"
@@ -53,41 +48,56 @@ echo "==> Generating apps.md"
 
 # --- dev-tools.md ---
 echo "==> Generating dev-tools.md"
+# mise activates only in interactive shells; eval here so this script picks it up
+eval "$(mise activate bash)" 2>/dev/null || true
 {
     echo "# Development Tools"
     echo ""
     echo "Generated: $(date -u +%Y-%m-%d)"
     echo ""
+    echo "Source of truth: [\`../dotfiles/mise/config.toml\`](../dotfiles/mise/config.toml)"
+    echo "(symlinked to \`~/.config/mise/config.toml\`)"
+    echo ""
 
     echo "## mise-managed tools"
     echo ""
     echo '```'
-    mise ls 2>/dev/null || echo "mise not available"
+    mise ls --installed 2>/dev/null || echo "mise not available"
     echo '```'
     echo ""
 
     echo "## npm globals"
     echo ""
     echo '```'
-    npm list -g --depth=0 2>/dev/null || echo "npm not available"
+    if command -v npm >/dev/null 2>&1; then
+        npm list -g --depth=0 2>/dev/null
+    else
+        echo "(none — node/npm provided via mise; no global packages)"
+    fi
     echo '```'
     echo ""
 
     echo "## Key tool notes"
     echo ""
-    echo "- **mise** — version manager for dev tools (node, go, etc.)"
+    echo "- **mise** — single source of truth for dev tools (node, go, terraform, kubectl, etc.)"
+    echo "- **brew** — system libs, GUI casks, macOS-specific tools only"
     echo "- **OrbStack** — container runtime (Docker-compatible, paying user)"
     echo "- **Secretive** — SSH agent backed by Secure Enclave hardware keys"
     echo "- **GPG signing** enabled for git commits"
+    echo "- **Release-age buffer** — 3 days for both mise and pnpm/npm"
 } > "$SCRIPT_DIR/dev-tools.md"
 
 # --- npm-globals.txt ---
 echo "==> Generating npm-globals.txt"
-npm list -g --depth=0 --parseable 2>/dev/null \
-    | tail -n +2 \
-    | xargs -I{} basename {} \
-    | sort \
-    > "$SCRIPT_DIR/npm-globals.txt" || echo "npm not available" > "$SCRIPT_DIR/npm-globals.txt"
+if command -v npm >/dev/null 2>&1; then
+    npm list -g --depth=0 --parseable 2>/dev/null \
+        | tail -n +2 \
+        | xargs -I{} basename {} \
+        | sort \
+        > "$SCRIPT_DIR/npm-globals.txt"
+else
+    echo "(none — npm via mise, no global packages)" > "$SCRIPT_DIR/npm-globals.txt"
+fi
 
 # --- launch-agents.txt ---
 echo "==> Generating launch-agents.txt"

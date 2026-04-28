@@ -1,6 +1,6 @@
 # Installed Applications
 
-Generated: 2026-03-11
+Generated: 2026-04-28
 
 | Application | Source |
 |---|---|
@@ -15,4 +15,5 @@ Generated: 2026-03-11
 | Secretive | brew cask |
 | superwhisper | manual/App Store |
 | Tailscale | manual/App Store |
+| WhatsApp | manual/App Store |
 | Wireshark | manual/App Store |
