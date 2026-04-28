@@ -29,10 +29,8 @@ alias vpn='curl ifconfig.me;echo'
 alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
 
 # PATH setup - ensure critical directories are in PATH
-if [[ ":$PATH:" != *":$HOME/go/bin:"* ]] && [ -d "$HOME/go/bin" ]; then
-    export PATH="$HOME/go/bin:$PATH"
-fi
-if [[ ":$PATH:" != *":$HOME/cargp/bin:"* ]] && [ -d "$HOME/.cargo/bin" ]; then
+# ~/go/bin intentionally excluded — manage Go tools via mise (github:/aqua: backends)
+if [[ ":$PATH:" != *":$HOME/.cargo/bin:"* ]] && [ -d "$HOME/.cargo/bin" ]; then
     export PATH="$HOME/.cargo/bin:$PATH"
 fi
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && [ -d "$HOME/.local/bin" ]; then
