@@ -8,6 +8,7 @@ Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 ## mise-managed tools
 
 ```
+actionlint                               v1.7.11
 actionlint                               1.7.11    ~/.config/mise/config.toml  latest
 air                                      1.52.3    ~/.config/mise/config.toml  latest
 aqua:securego/gosec                      2.25.0    ~/.config/mise/config.toml  latest
@@ -24,8 +25,11 @@ fd                                       10.4.2    ~/.config/mise/config.toml  l
 firebase                                 15.15.0   ~/.config/mise/config.toml  latest
 fzf                                      0.71.0    ~/.config/mise/config.toml  latest
 gh                                       2.91.0    ~/.config/mise/config.toml  latest
+github:go-acme/lego                      4.35.2    ~/.config/mise/config.toml  latest
+github:golang-migrate/migrate            4.19.1    ~/.config/mise/config.toml  latest
 glow                                     2.1.2     ~/.config/mise/config.toml  latest
 go                                       1.26.2    ~/.config/mise/config.toml  1.26
+go:github.com/swaggo/swag/cmd/swag       1.16.4
 go:golang.org/x/tools/cmd/goimports      0.39.0    ~/.config/mise/config.toml  latest
 go:golang.org/x/vuln/cmd/govulncheck     1.1.4     ~/.config/mise/config.toml  latest
 golangci-lint                            2.11.4    ~/.config/mise/config.toml  latest
@@ -36,6 +40,7 @@ jq                                       1.7.1     ~/.config/mise/config.toml  l
 jwt                                      6.2.0     ~/.config/mise/config.toml  latest
 kind                                     0.31.0    ~/.config/mise/config.toml  latest
 krew                                     0.5.0     ~/.config/mise/config.toml  latest
+kubectl                                  1.35.4
 kubectl                                  1.36.0    ~/.config/mise/config.toml  1.36
 kubectx                                  0.11.0    ~/.config/mise/config.toml  latest
 lefthook                                 v2.0.9    ~/.config/mise/config.toml  latest

@@ -72,6 +72,12 @@ place_dotfiles() {
     mkdir -p ~/.w3m
     cp -v "$DOTFILES/w3m/config" ~/.w3m/
     cp -v "$DOTFILES/w3m/keymap" ~/.w3m/
+
+    # codex (config only; auth lands in macOS Keychain via cli_auth_credentials_store="auto")
+    if [[ -f "$DOTFILES/codex/config.toml" ]]; then
+        mkdir -p ~/.codex
+        cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
+    fi
 }
 
 # --- Phase 3: Dev tools ---

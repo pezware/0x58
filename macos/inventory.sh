@@ -145,6 +145,12 @@ if [[ -d ~/.config/git ]]; then
     [[ -f ~/.config/git/personal ]] && cp -p ~/.config/git/personal "$DOTFILES_DIR/config-git/personal"
 fi
 
+# codex (config only — auth.json, sessions, logs, history are not tracked)
+if [[ -f ~/.codex/config.toml ]]; then
+    mkdir -p "$DOTFILES_DIR/codex"
+    cp -p ~/.codex/config.toml "$DOTFILES_DIR/codex/config.toml"
+fi
+
 # w3m (config + keymap only, skip cache/history)
 if [[ -d ~/.w3m ]]; then
     mkdir -p "$DOTFILES_DIR/w3m"

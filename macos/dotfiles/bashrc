@@ -42,7 +42,7 @@ export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
 [ -f "$HOME/.env" ] && source "$HOME/.env"
 
 # Source modular configurations
-for config in ~/.bash/{aws,go,history,prompt,work_alias,glow,kubectl-context}.bash; do
+for config in ~/.bash/{aws,go,history,prompt,work_alias,glow,kubectl-context,gpg-keychain,gcloud-session}.bash; do
     [ -f "$config" ] && source "$config"
 done
 
