@@ -35,11 +35,16 @@ function kube_ps1() {
   if [[ "$context" == arn:aws:eks:* ]]; then
     # Extract the cluster name after 'cluster/'
     context=$(echo "$context" | sed 's/.*cluster\///')
-
   fi
 
   if [ -n "$context" ]; then
-    echo "[$context:$namespace] "
+    # Red for admin contexts (visual safety cue), blue for everything else
+    if [[ "$context" == *-admin* ]]; then
+      local RED=$'\001\e[01;31m\002'
+      echo "${RED}[$context:$namespace]${COLOR_NONE} "
+    else
+      echo "${BLUE}[$context:$namespace]${COLOR_NONE} "
+    fi
   fi
 }
 
@@ -57,8 +62,8 @@ function set_bash_prompt () {
     PS1+="${GRAY}\u@\h${COLOR_NONE} "
     # set up working directory
     PS1+="${GREEN}\w${COLOR_NONE} "
-    # set up kubernetes context
-    PS1+="${BLUE}$(kube_ps1)${COLOR_NONE}"
+    # set up kubernetes context (kube_ps1 handles its own color for admin contexts)
+    PS1+="$(kube_ps1)"
     # set up git branch
     PS1+="${GRAY}${BRANCH}${COLOR_NONE}\n#"
     # set up prompt character
