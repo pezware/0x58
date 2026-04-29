@@ -23,6 +23,17 @@ Host github.com
 ```
 This connects Secretive's hardware-backed keys to GitHub via the smart card interface.
 
+## GitLab
+
+GitLab uses the Secretive agent directly (no PKCS#11 layer needed):
+```
+Host gitlab.com
+  User git
+  IdentityAgent ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
+  IdentitiesOnly yes
+```
+The explicit block is required because the `Host *` catch-all has `IdentitiesOnly yes` but no fallback to `SSH_AUTH_SOCK` — without a dedicated block, SSH skips the agent entirely for GitLab.
+
 ## Other hosts
 
 | Host | Network | Notes |

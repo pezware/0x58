@@ -51,7 +51,7 @@ Every credential type is at-rest encrypted. Hierarchy by what holds it:
 | Tier | Backend | What's there |
 |---|---|---|
 | Hardware | Secure Enclave (Secretive) | SSH key (git, server access) — non-transferable per machine |
-| macOS Keychain | login.keychain-db | GPG cold backup (`gpg-archive-b64`), Codex auth (`Codex Auth`), Claude Code (`Claude Code-credentials-*`), `gh` token, Docker auths (`credsStore: osxkeychain`) |
+| macOS Keychain | login.keychain-db | GPG cold backup (`gpg-archive-b64`), Codex auth (`Codex Auth`), Claude Code (`Claude Code-credentials-*`), `gh` token, `glab` token (`--use-keyring`), Docker auths (`credsStore: osxkeychain`) |
 | Session-only | `~/.config/gcloud/credentials.db` | gcloud refresh token — removed by `gcloud_logout` at end of work session |
 | On disk | `~/.npmrc` | npm registry token (no keychain integration) |
 
