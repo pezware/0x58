@@ -1,0 +1,106 @@
+# mise — global dev tool configuration
+# Symlinked from ~/.config/mise/config.toml so this file is the source of truth.
+# Cross-platform (macOS + Linux). macOS-only tools live in macos/Brewfile.
+#
+# Backend preference: aqua (prebuilt binary) > github (binary release) > npm/pipx (when no binary)
+# Avoid go:/cargo: backends — they compile from source.
+# Note: ubi: is deprecated as of mise 2026.4.x; use github: instead.
+#
+# Install everything:  mise install
+# Inventory:           mise ls --installed
+# Refresh latest:      mise upgrade
+
+[settings]
+# Security buffer: ignore versions published <3 days ago (skip fast on supply-chain compromises)
+minimum_release_age = "3d"
+# Trust this config for auto-install when entering directories
+idiomatic_version_file_enable_tools = ["node", "python", "go", "ruby"]
+
+[tools]
+# === Languages & runtimes ===
+node    = "22"
+python  = "3.12"
+go      = "1.26"
+pnpm    = "latest"
+uv      = "latest"
+
+# === Cloud / Kubernetes ===
+terraform        = "1.14"
+kubectl          = "1.36"
+helm             = "latest"
+kind             = "latest"
+kubectx          = "latest"   # also installs kubens
+stern            = "latest"
+krew             = "latest"
+cloud-sql-proxy  = "latest"
+cloudflared      = "latest"
+awscli           = "latest"
+
+# === Infra / security scanning ===
+# trivy + osv-scanner moved to per-project ~/src/iden2/infra-tf/.mise.toml
+tflint      = "latest"
+tfsec       = "latest"
+checkov     = "latest"
+
+# === Data / shell ===
+jq = "latest"
+yq = "latest"
+
+# === File search / nav ===
+fd       = "latest"
+bat      = "latest"
+ripgrep  = "latest"
+fzf      = "latest"
+gh       = "latest"
+ast-grep = "latest"
+# ncdu / btop have no macOS binaries via aqua — kept in brew on Mac, install via mise on Linux
+
+# === Containers ===
+ctop = "latest"
+dive = "latest"
+
+# === Linting / quality ===
+hadolint      = "latest"
+actionlint    = "latest"
+shellcheck    = "latest"
+yamllint      = "latest"           # pipx (no binary)
+golangci-lint = "latest"
+"aqua:securego/gosec" = "latest"
+gotestsum     = "latest"
+prettier      = "latest"           # npm (no binary)
+swag          = "latest"
+
+# Go x/tools — no prebuilt binary upstream, must build from source
+"go:golang.org/x/tools/cmd/goimports"  = "latest"
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
+
+# === Build / task / hooks ===
+task       = "latest"
+lefthook   = "latest"
+air        = "latest"
+pre-commit = "latest"
+
+# === API / docs ===
+"npm:@redocly/cli"                        = "latest"
+"npm:@stoplight/spectral-cli"             = "latest"
+"npm:@openapitools/openapi-generator-cli" = "latest"
+
+# === Editors / TUI ===
+neovim = "latest"
+
+# === Dev tooling ===
+mkcert   = "latest"
+jwt      = "latest"   # jwt-cli (registry name is "jwt")
+"npm:esbuild" = "latest"
+temporal = "latest"
+packer   = "latest"   # was in ~/go/bin; aqua: hashicorp/packer
+glow     = "latest"   # markdown viewer; was in ~/go/bin; aqua: charmbracelet/glow
+"github:go-acme/lego" = "latest"   # ACME/Let's Encrypt client; was in ~/go/bin
+
+# === AI / cloud SDKs ===
+codex    = "0.125.0"  # @openai/codex (aqua binary; pin to skip 3d buffer + match team version)
+firebase = "latest"   # firebase-tools (aqua binary)
+wrangler = "latest"   # cloudflare wrangler (npm only)
+
+# === Migrations ===
+"github:golang-migrate/migrate" = "latest"

@@ -1,0 +1,79 @@
+# ~/.bashrc - Interactive shell configuration
+# This handles all interactive shell settings
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# History settings
+HISTCONTROL=ignoreboth
+HISTSIZE=10000
+HISTFILESIZE=20000
+HISTTIMEFORMAT='%Y-%m-%d %H:%M.%S | '
+HISTIGNORE="ls:exit:history:[bf]g:jobs"
+shopt -s histappend
+
+# Basic aliases for all environments
+alias vi=nvim
+alias vim=nvim
+alias cp="cp -i"
+#alias bat=batcat
+alias cat=bat
+alias less="less -r"
+alias ls="ls --color=auto"
+alias ll="ls --color"
+alias weather='curl wttr.in'
+alias vpn='curl ifconfig.me;echo'
+alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
+
+# PATH setup - ensure critical directories are in PATH
+# ~/go/bin and ~/.cargo/bin intentionally excluded — manage Rust/Go tools via mise
+# (project .mise.toml). Only ~/.cargo/bin user is mempal — handled there.
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && [ -d "$HOME/.local/bin" ]; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+# Development environment
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+[ -f "$HOME/.deno/env" ] && source "$HOME/.deno/env"
+[ -f "$HOME/.env" ] && source "$HOME/.env"
+
+# Source modular configurations
+for config in ~/.bash/{aws,go,history,prompt,work_alias,glow,kubectl-context,gpg-keychain,gcloud-session}.bash; do
+    [ -f "$config" ] && source "$config"
+done
+
+# OS-specific configurations
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    [ -f ~/.bash/macos.bash ] && source ~/.bash/macos.bash
+else
+    # Linux Completion
+    [ -f "/usr/share/bash-completion/bash_completion" ] && . "/usr/share/bash-completion/bash_completion"
+    [ -f "/usr/local/bin/eksctl" ] && source <(eksctl completion bash)
+    [ -f "$HOME/.local/share/bash-completion/completions/deno.bash" ] && source "$HOME/.local/share/bash-completion/completions/deno.bash"
+fi
+
+# jdk!
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+
+
+export GPG_TTY=$(tty)
+export DO_NOT_TRACK=1
+export SSH_AUTH_SOCK=/Users/arbeitandy/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
+
+# pnpm
+export PNPM_HOME="/Users/arbeitandy/Library/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end
+# test
+export MEMPAL_HOME="~/src/.mempal"
+
+export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"
+export GOOGLE_CLOUD_QUOTA_PROJECT=""
+eval "$(mise activate bash)"

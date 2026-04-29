@@ -1,0 +1,39 @@
+# EXTERN_LINK = under cursor
+# EXTERN      = current page
+
+keymap  O       EXTERN
+keymap  o       EXTERN_LINK
+
+keymap  yy      EXTERN_LINK 'tmux set-buffer'
+keymap  YY      EXTERN      'tmux set-buffer'
+
+# ############################ Quit with confirmation request (QUIT)
+keymap  :q      QUIT
+keymap  ZZ      QUIT
+keymap  Q       QUIT
+# ############################ Quit at once (EXIT)
+keymap  ZQ      EXIT
+# ############################ Quit at once and save session
+
+# ############################ vim key mapping
+# Navigation
+keymap j DOWN
+keymap k UP
+keymap h PREV
+keymap l NEXT
+keymap gg BEGIN
+keymap G END
+keymap d NEXT_PAGE
+keymap u PREV_PAGE
+keymap / SEARCH
+keymap n SEARCH_NEXT
+keymap N SEARCH_PREV
+
+# Tab operations
+keymap gt NEXT_TAB
+keymap gT PREV_TAB
+
+# Misc
+keymap yy EXTERN "echo %s | wl-copy"
+keymap o GOTO
+keymap O TAB_GOTO
