@@ -31,8 +31,9 @@ For Linux (OrbStack VMs), the same script detects the platform and installs via 
 Secretive creates a new Secure Enclave key pair per machine. **Keys are non-transferable.**
 1. Open Secretive app
 2. Add the new public key to GitHub (Settings → SSH keys)
-3. Add to remote servers: `pezware-uno`, `pezware-dos`
-4. Verify: `ssh -T git@github.com`
+3. Add the same public key to GitLab (Settings → SSH Keys)
+4. Add to remote servers: `pezware-uno`, `pezware-dos`
+5. Verify: `ssh -T git@github.com` and `ssh -T git@gitlab.com`
 
 ### Commit Signing (SSH via Secretive)
 Commit signing uses the same Secretive SSH key — no GPG needed for git.
@@ -62,7 +63,8 @@ On the same physical Mac the keychain entry is already there. **On a different M
 ### Auth
 All CLI auth lands in macOS Keychain when you log in:
 ```bash
-gh auth login         # token → keychain (gh.com:oauth_token)
+gh auth login                                        # token → keychain (gh.com:oauth_token)
+glab auth login --hostname gitlab.com --use-keyring  # token → keychain (no disk write)
 claude auth login     # OAuth bundle → keychain (Claude Code-credentials-*)
 codex login           # OAuth bundle → keychain (Codex Auth)
                       # — requires cli_auth_credentials_store = "auto" in ~/.codex/config.toml,
@@ -94,6 +96,18 @@ GKE/EKS auth flows through `gcloud_login` / `aws sso login`; tokens are short-li
 Claude config lives at `~/src/claude` on the external drive. After restoring dotfiles (which set `CLAUDE_CONFIG_DIR`), symlink it:
 ```bash
 ln -s ~/src/claude ~/.claude
+```
+
+### GitLab Mirror
+This repo mirrors to GitLab. After cloning on a new machine, add the GitLab remote and push URL:
+```bash
+git remote add gitlab git@gitlab.com:pezware/0x58.git
+git remote set-url --add --push origin git@github.com:pezware/0x58.git
+git remote set-url --add --push origin git@gitlab.com:pezware/0x58.git
+```
+Feature branches push to both remotes automatically via `git push`. After a PR merges on GitHub, sync main manually:
+```bash
+git fetch origin && git push gitlab main
 ```
 
 ### Tailscale
@@ -159,6 +173,8 @@ gpg_backup_to_keychain                    # re-stage in new machine's keychain
 - [ ] `kitty` launches with correct theme
 - [ ] `nvim` opens with plugins loaded (`:Lazy`)
 - [ ] `ssh -T git@github.com` succeeds
+- [ ] `ssh -T git@gitlab.com` succeeds (add Secretive public key to GitLab → Settings → SSH Keys first)
+- [ ] `glab auth status` shows logged in (`glab auth login --hostname gitlab.com --use-keyring`)
 - [ ] `git commit --allow-empty -m "test"` produces signed commit (Touch ID prompt)
 - [ ] `git log --show-signature -1` shows `Good "git" signature`
 - [ ] `gpg_verify_keychain_backup gpg-archive-b64` shows `OK`
