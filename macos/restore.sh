@@ -78,6 +78,20 @@ place_dotfiles() {
         mkdir -p ~/.codex
         cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
     fi
+
+    # kube (README + exec-based GKE/EKS configs; kind/orbstack regenerated via kube-setup-* commands)
+    if [[ -d "$DOTFILES/kube" ]]; then
+        mkdir -p ~/.kube/configs
+        [[ -f "$DOTFILES/kube/README.md" ]] && cp -v "$DOTFILES/kube/README.md" ~/.kube/README.md
+        if [[ -d "$DOTFILES/kube/configs" ]]; then
+            for d in "$DOTFILES/kube/configs"/*/; do
+                [[ -d "$d" ]] || continue
+                name=$(basename "$d")
+                mkdir -p ~/.kube/configs/"$name"
+                cp -v "$d/config" ~/.kube/configs/"$name/config"
+            done
+        fi
+    fi
 }
 
 # --- Phase 3: Dev tools ---
@@ -141,13 +155,18 @@ print_manual_steps() {
      gh auth login
      gcloud init && gcloud auth login
 
-  4. macOS Settings (cannot be scripted):
+  4. Kubernetes local clusters (TLS-cred configs are NOT tracked):
+     kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
+     kube-setup-kind iden2-dev   # if you have a kind cluster
+     kube-refresh                # rebuilds merged KUBECONFIG
+
+  5. macOS Settings (cannot be scripted):
      - Caps Lock → Control (Keyboard → Keyboard Shortcuts → Modifier Keys)
      - Display scaling (Displays → choose scaling)
 
-  5. Tailscale: Sign in (client-only)
+  6. Tailscale: Sign in (client-only)
 
-  6. Claude: symlink ~/src/claude → ~/.claude
+  7. Claude: symlink ~/src/claude → ~/.claude
      ln -s ~/src/claude ~/.claude
 MANUAL
     else

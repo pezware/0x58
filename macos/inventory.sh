@@ -145,6 +145,21 @@ if [[ -d ~/.config/git ]]; then
     [[ -f ~/.config/git/personal ]] && cp -p ~/.config/git/personal "$DOTFILES_DIR/config-git/personal"
 fi
 
+# kube (README + exec-based GKE/EKS configs only; orbstack/kind have embedded TLS creds)
+if [[ -d ~/.kube ]]; then
+    mkdir -p "$DOTFILES_DIR/kube/configs"
+    [[ -f ~/.kube/README.md ]] && cp -p ~/.kube/README.md "$DOTFILES_DIR/kube/README.md"
+    for d in ~/.kube/configs/gke-* ~/.kube/configs/eks-*; do
+        [[ -d "$d" ]] || continue
+        name=$(basename "$d")
+        # Skip if config has embedded credentials (defense in depth)
+        if [[ -f "$d/config" ]] && ! grep -qE '(client-(key|certificate)-data|^[[:space:]]*token:)' "$d/config"; then
+            mkdir -p "$DOTFILES_DIR/kube/configs/$name"
+            cp -p "$d/config" "$DOTFILES_DIR/kube/configs/$name/config"
+        fi
+    done
+fi
+
 # codex (config only — auth.json, sessions, logs, history are not tracked)
 if [[ -f ~/.codex/config.toml ]]; then
     mkdir -p "$DOTFILES_DIR/codex"
