@@ -51,17 +51,40 @@ git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 Then add the same public key to GitHub → Settings → SSH and GPG keys → **New SSH key** → Key type: **Signing Key**.
 
 ### GPG (encryption, not needed for commit signing)
+GPG private keys live in macOS Keychain (entry `gpg-archive-b64`), not on disk. Three shell functions in `~/.bash/gpg-keychain.bash` manage the lifecycle:
 ```bash
-# Restore from backup if needed for encryption/other GPG uses
-gpg --import ~/src/secrets/gpg-private.asc
-gpg --import-ownertrust ~/src/secrets/gpg-ownertrust.txt
+gpg_restore_from_keychain    # restore ~/.gnupg/ from keychain (prompts before clobbering)
+gpg_verify_keychain_backup   # SHA-256 round-trip check
+gpg_backup_to_keychain       # re-snapshot after generating/rotating keys
 ```
+On the same physical Mac the keychain entry is already there. **On a different Mac** see the [Fresh machine GPG recovery](#fresh-machine-gpg-recovery) section below.
 
 ### Auth
+All CLI auth lands in macOS Keychain when you log in:
 ```bash
-gh auth login                      # browser-based, uses keychain
-gcloud init && gcloud auth login   # browser-based
+gh auth login         # token → keychain (gh.com:oauth_token)
+claude auth login     # OAuth bundle → keychain (Claude Code-credentials-*)
+codex login           # OAuth bundle → keychain (Codex Auth)
+                      # — requires cli_auth_credentials_store = "auto" in ~/.codex/config.toml,
+                      #   which is restored by restore.sh
 ```
+gcloud has no keychain support — use the session helpers in `~/.bash/gcloud-session.bash`:
+```bash
+gcloud init           # one-time: pick default project
+gcloud_login          # start a work session (browser-based, also updates ADC)
+gcloud_status         # show active account + credentials.db state
+gcloud_logout         # revoke + remove credentials.db, access_tokens.db, ADC
+```
+Daily habit: `gcloud_login` when you start, `gcloud_logout` when you stop.
+
+### Kubernetes
+GKE/EKS configs are restored from the repo (exec-based, no embedded credentials). Local clusters need to be recreated:
+```bash
+kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
+kube-setup-kind iden2-dev   # only if you have a kind cluster
+kube-refresh                # rebuilds the merged KUBECONFIG
+```
+GKE/EKS auth flows through `gcloud_login` / `aws sso login`; tokens are short-lived and never persisted in kubeconfig.
 
 ### macOS Settings (cannot be scripted)
 - Caps Lock → Control: System Settings → Keyboard → Keyboard Shortcuts → Modifier Keys
@@ -78,39 +101,56 @@ Client-only on macOS — just sign in.
 
 ---
 
-## GPG Key Backup
+## GPG Key Backup (macOS Keychain)
 
-Store GPG keys in `~/src/secrets/` on the external drive with local-only version control:
+GPG private keys are kept off-disk via two macOS Keychain entries:
 
-### Backup (do this now)
+| Service name | Holds | Size |
+|---|---|---|
+| `gpg-archive-b64` | base64 of `tar -czf ~/.gnupg/` (privates + pubring + trustdb + revocs) | ~96 KB |
+| `keybase-paper-key-b64` | base64 of `~/.keybase-paper-key.gpg` (encrypted with iden2 key) | ~333 B |
+
+Each entry's `-j` (kind) field embeds the decoded SHA-256 of its payload, so the restore recipe is self-describing inside the keychain.
+
+### Snapshot (after generating or rotating keys)
 ```bash
-mkdir -p ~/src/secrets
-cd ~/src/secrets
-git init
-
-# Export keys
-gpg --export-secret-keys --armor > gpg-private.asc
-gpg --export --armor > gpg-public.asc
-gpg --export-ownertrust > gpg-ownertrust.txt
-
-# Commit locally (never push)
-git add -A
-git commit -m "gpg key backup"
+gpg_backup_to_keychain         # re-snapshots ~/.gnupg/ + .keybase-paper-key.gpg
+gpg_verify_keychain_backup     # SHA-256 round-trip check
 ```
 
-### Restore (on new machine)
+### Same-machine restore (after accidental delete of ~/.gnupg/private-keys-v1.d/)
 ```bash
-gpg --import ~/src/secrets/gpg-private.asc
-gpg --import-ownertrust ~/src/secrets/gpg-ownertrust.txt
-gpg --list-secret-keys --keyid-format=long  # find KEY_ID
-git config --global user.signingkey <KEY_ID>
-git config --global commit.gpgsign true
+gpg_restore_from_keychain      # prompts before clobbering existing ~/.gnupg/
+gpg --list-secret-keys         # sanity check; should show your 3 keys
 ```
+
+### Fresh-machine GPG recovery
+
+The keychain entry only exists on the original Mac. Choices for moving it:
+
+**Option 1 — macOS Migration Assistant (recommended).** Transferring "User Accounts" copies the login keychain. After Migration Assistant completes, `gpg_restore_from_keychain` works directly on the new machine.
+
+**Option 2 — Manual export from old machine, import on new machine.** On the old Mac:
+```bash
+security find-generic-password -s gpg-archive-b64 -a "$USER" -w \
+  | base64 -d > /Volumes/encrypted-stick/gpg-archive.tar.gz
+```
+Move the tar.gz over an encrypted channel (not in-line in chat or unencrypted email). On the new Mac:
+```bash
+[ -d ~/.gnupg ] && mv ~/.gnupg ~/.gnupg.preexisting.$(date +%s)
+tar xzf /Volumes/encrypted-stick/gpg-archive.tar.gz -C ~
+chmod 700 ~/.gnupg
+gpg --list-secret-keys                    # sanity check
+gpg_backup_to_keychain                    # re-stage in new machine's keychain
+```
+
+**Option 3 — Truly cold backup.** If both Macs are gone, the keychain backup is gone with them. For genuine disaster recovery, also keep an offline copy:
+- print the armored secret key (passphrase-protected) on paper, OR
+- store a passphrase-encrypted `gpg-archive.tar.gz.gpg` in 1Password / Bitwarden / a hardware-encrypted USB key.
 
 ### Notes
-- `~/src/secrets/` lives on the external drive — survives macOS reinstall
-- Local git only — **never add a remote, never push**
-- The private key file (`gpg-private.asc`) is the crown jewel — if you lose the drive, you lose the key
+- macOS Keychain at-rest encryption is bound to your login password (FileVault adds a second layer when the machine is powered off).
+- The local `keymaster` CLI (`~/.local/bin/keymaster`) was evaluated for this and is unsuitable: it has a 128-byte stdin cap that silently truncates blobs. Use `security add-generic-password` directly for files >128 B. Reserve `keymaster` for short tokens where TouchID-per-access matters.
 
 ---
 
@@ -121,7 +161,13 @@ git config --global commit.gpgsign true
 - [ ] `ssh -T git@github.com` succeeds
 - [ ] `git commit --allow-empty -m "test"` produces signed commit (Touch ID prompt)
 - [ ] `git log --show-signature -1` shows `Good "git" signature`
-- [ ] `gcloud auth list` shows active account
+- [ ] `gpg_verify_keychain_backup gpg-archive-b64` shows `OK`
+- [ ] `gpg --list-keys` shows your 3 keys (after `gpg_restore_from_keychain` if needed)
+- [ ] `gh auth status` shows logged in
+- [ ] `claude auth status` shows logged in (`apiProvider: firstParty`)
+- [ ] `codex --version` runs (auth is keychain-backed; no `~/.codex/auth.json`)
+- [ ] `gcloud_status` shows active account after `gcloud_login`
+- [ ] `kubectl config current-context` resolves (orbstack by default after `kube-setup-orbstack`)
 - [ ] `claude` and `codex` work
 - [ ] `w3m https://example.com` renders
 - [ ] Caps Lock acts as Control
@@ -132,5 +178,6 @@ git config --global commit.gpgsign true
 The external drive mounts with partitions including `~/src`. As long as auto-mount works:
 - All project data in `~/src/` is already there
 - Claude config at `~/src/claude` is already there
-- GPG backup at `~/src/secrets/` is already there
 - Only the dotfiles and packages need to be restored (that's what `restore.sh` does)
+
+GPG keys are NOT on the external drive — they live in macOS Keychain (see [GPG Key Backup](#gpg-key-backup-macos-keychain) above). Migration Assistant or a manual export is needed when moving to a new Mac.

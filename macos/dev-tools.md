@@ -1,6 +1,6 @@
 # Development Tools
 
-Generated: 2026-04-28
+Generated: 2026-04-29
 
 Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 (symlinked to `~/.config/mise/config.toml`)

@@ -1,8 +1,14 @@
 # GPG cold-storage in macOS Keychain (no on-disk backup)
 #
-# Stores ~/.gnupg/ as a base64-encoded gzipped tarball in the login keychain
-# alongside the keybase paper key. Decoded SHA-256 is embedded in each item's
-# kind ('-j') field so integrity is self-describing inside the keychain.
+# gpg_backup_to_keychain stores ~/.gnupg/ as a base64-encoded gzipped tarball
+# in the login keychain (service: gpg-archive-b64). Decoded SHA-256 is embedded
+# in the item's kind ('-j') field so integrity is self-describing inside the
+# keychain.
+#
+# A separate cold-storage entry 'keybase-paper-key-b64' is preserved from a
+# one-time migration; this script does not regenerate it. To retrieve:
+#   security find-generic-password -s keybase-paper-key-b64 -a "$USER" -w \
+#     | base64 -d | gpg -d
 
 _gpg_kc_account="${USER:-arbeitandy}"
 _gpg_kc_archive="gpg-archive-b64"
@@ -26,18 +32,6 @@ gpg_backup_to_keychain() {
     -j "decoded sha256 = $archive_sha" \
     -w "$(cat "$tmp/archive.b64")" -U || return 1
   echo "stored $_gpg_kc_archive (sha256: $archive_sha)"
-
-  local paper="$HOME/src/secrets/.keybase-paper-key.gpg"
-  if [ -f "$paper" ]; then
-    local paper_sha; paper_sha=$(shasum -a 256 "$paper" | awk '{print $1}')
-    base64 < "$paper" > "$tmp/paper.b64"
-    security add-generic-password \
-      -s "$_gpg_kc_paper" -a "$_gpg_kc_account" \
-      -l "Keybase paper key (base64)" \
-      -j "decoded sha256 = $paper_sha" \
-      -w "$(cat "$tmp/paper.b64")" -U || return 1
-    echo "stored $_gpg_kc_paper (sha256: $paper_sha)"
-  fi
 }
 
 gpg_verify_keychain_backup() {
