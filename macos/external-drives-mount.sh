@@ -135,7 +135,7 @@ if ! diskutil list | grep -q "ProjectsData"; then
 
       # Find the APFS volume within the container
       APFS_VOLUME=$(diskutil apfs list | grep -B 2 "ProjectsData" | grep "APFS Volume Disk" | awk '{print $5}')
-
+      
       if [ -n "$APFS_VOLUME" ]; then
         log "Found APFS volume: $APFS_VOLUME"
         # Mount the APFS volume (this will mount to /Volumes/ProjectsData first)
