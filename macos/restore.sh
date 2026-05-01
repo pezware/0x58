@@ -79,6 +79,14 @@ place_dotfiles() {
         cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
     fi
 
+    # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)
+    if [[ "$PLATFORM" == "macos" ]] && [[ -f "$SCRIPT_DIR/external-drives-mount.sh" ]]; then
+        mkdir -p ~/bin
+        cp -v "$SCRIPT_DIR/external-drives-mount.sh" ~/bin/external-drives-mount.sh
+        chmod +x ~/bin/external-drives-mount.sh
+        # Login Item registration is GUI-only (BTM database) — see macos/external-drives.md
+    fi
+
     # kube (README + exec-based GKE/EKS configs; kind/orbstack regenerated via kube-setup-* commands)
     if [[ -d "$DOTFILES/kube" ]]; then
         mkdir -p ~/.kube/configs
