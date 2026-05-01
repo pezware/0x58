@@ -173,4 +173,7 @@ if [[ -d ~/.w3m ]]; then
     [[ -f ~/.w3m/keymap ]] && cp -p ~/.w3m/keymap "$DOTFILES_DIR/w3m/keymap"
 fi
 
+# ~/bin scripts tracked individually (only those we want versioned — not the whole dir)
+[[ -f ~/bin/external-drives-mount.sh ]] && cp -p ~/bin/external-drives-mount.sh "$SCRIPT_DIR/external-drives-mount.sh"
+
 echo "==> Done. Review generated files in $SCRIPT_DIR/"
