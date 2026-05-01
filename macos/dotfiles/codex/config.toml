@@ -1,5 +1,5 @@
-model_reasoning_effort = "high"
-model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+model = "gpt-5.4"
 personality = "pragmatic"
 service_tier = "fast"
 cli_auth_credentials_store = "auto"
@@ -13,6 +13,9 @@ trust_level = "trusted"
 [projects."/Users/arbeitandy/src/public/0x59"]
 trust_level = "trusted"
 
+[projects."/Users/arbeitandy/src/public/0x58"]
+trust_level = "trusted"
+
 [notice]
 hide_gpt5_1_migration_prompt = true
 "hide_gpt-5.1-codex-max_migration_prompt" = true
@@ -21,4 +24,4 @@ hide_gpt5_1_migration_prompt = true
 enabled = true
 
 [tui.model_availability_nux]
-"gpt-5.5" = 1
+"gpt-5.5" = 3
