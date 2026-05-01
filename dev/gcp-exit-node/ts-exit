@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# On-demand Tailscale exit node manager.
+# Run from dev/gcp-exit-node/ after terraform apply.
+set -euo pipefail
+
+INSTANCE="tailscale-exit"
+PROJECT=$(terraform output -raw project_id 2>/dev/null)
+ZONE=$(terraform output -raw zone 2>/dev/null)
+
+if [[ -z "$PROJECT" ]]; then
+  echo "error: run terraform apply first" >&2
+  exit 1
+fi
+
+gcp() {
+  gcloud compute instances "$@" --zone="$ZONE" --project="$PROJECT"
+}
+
+case "${1:-}" in
+  start)
+    echo "Starting pezware-tres..."
+    gcp start "$INSTANCE"
+    echo "Node will appear in your tailnet in ~60s as 'pezware-tres'."
+    ;;
+  stop)
+    echo "Stopping pezware-tres..."
+    gcp stop "$INSTANCE"
+    ;;
+  status)
+    gcp describe "$INSTANCE" --format="value(status)"
+    ;;
+  ssh)
+    exec tailscale ssh pezware-tres
+    ;;
+  *)
+    echo "Usage: $(basename "$0") {start|stop|status|ssh}"
+    exit 1
+    ;;
+esac

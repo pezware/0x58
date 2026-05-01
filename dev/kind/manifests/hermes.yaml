@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: agents
+  labels:
+    app.kubernetes.io/name: hermes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hermes
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hermes
+    spec:
+      containers:
+        - name: hermes
+          image: nousresearch/hermes-agent:latest
+          imagePullPolicy: IfNotPresent
+          args: ["gateway", "run"]
+          ports:
+            - name: gateway
+              containerPort: 8642
+            - name: dashboard
+              containerPort: 9119
+          envFrom:
+            - secretRef:
+                name: hermes-secrets
+          # HTTP probes against :8642 — NOT `hermes status`, which has a known
+          # PID-1 false-negative bug in containers (NousResearch/hermes-agent#4776).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: gateway
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: gateway
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes
+  namespace: agents
+spec:
+  selector:
+    app.kubernetes.io/name: hermes
+  ports:
+    - name: gateway
+      port: 8642
+      targetPort: gateway
+    - name: dashboard
+      port: 9119
+      targetPort: dashboard
