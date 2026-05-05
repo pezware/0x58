@@ -174,6 +174,45 @@ kube-setup-kind() {
   kube-refresh
 }
 
+# Clean this kitty window's overlay back to the empty stub (preserves
+# current-context). Use after a `kind delete + kind create` cycle, or
+# anytime kubectl behaves weirdly because of stale cluster/context/user
+# entries that `kind export kubeconfig` (without --kubeconfig flag,
+# e.g. from `task switch:kind` or `task kind:up`) dumped into this
+# window's overlay file.
+kube-clean-overlay() {
+  if [[ -z "$_KUBE_WINDOW_FILE" ]]; then
+    echo "Not in a kitty window — nothing to clean."
+    return 0
+  fi
+  local current
+  current=$(kubectl config current-context 2>/dev/null || echo "$KUBE_DEFAULT_CONTEXT")
+  command cat > "$_KUBE_WINDOW_FILE" <<YAML
+apiVersion: v1
+kind: Config
+current-context: ${current}
+contexts: []
+clusters: []
+users: []
+YAML
+  echo "Cleaned $_KUBE_WINDOW_FILE (current-context=${current})."
+}
+
+# Refresh kind config after a cluster recreate (new CA + maybe new port).
+# Combines: re-export to dedicated file + clean window overlay.
+# Run after `task switch:kind` or `task kind:up` if you hit
+# "TLS verify failed" or "connection refused" from kubectl.
+kube-refresh-kind() {
+  local name=${1:-iden2-dev}
+  if ! kind get clusters 2>/dev/null | grep -q "^${name}$"; then
+    echo "Kind cluster '${name}' not found. Available: $(kind get clusters 2>/dev/null | tr '\n' ' ')"
+    return 1
+  fi
+  kube-setup-kind "$name"   # rewrites $config_dir/config with fresh CA/port
+  kube-clean-overlay        # removes stale cluster/context/user from overlay
+  echo "Kind '${name}' refreshed. kubectl --context kind-${name} should work."
+}
+
 # --- Setup: OrbStack native Kubernetes ---
 kube-setup-orbstack() {
   local config_dir="$KUBECONFIG_DIR/orbstack"
@@ -208,6 +247,7 @@ _kube_setup_kind_completions() {
   fi
 }
 complete -F _kube_setup_kind_completions kube-setup-kind
+complete -F _kube_setup_kind_completions kube-refresh-kind
 
 # --- EKS cluster-switcher wrapper ---
 # Note: this replaces KUBECONFIG entirely (cluster-switcher's behavior).

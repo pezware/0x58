@@ -1,6 +1,6 @@
 # Development Tools
 
-Generated: 2026-05-01
+Generated: 2026-05-05
 
 Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 (symlinked to `~/.config/mise/config.toml`)
@@ -78,6 +78,7 @@ yq                                       4.52.4    ~/.config/mise/config.toml  l
 
 ```
 /Users/arbeitandy/.local/share/mise/installs/node/22.17.1/lib
+├── @openai/codex@0.128.0
 ├── corepack@0.33.0
 └── npm@10.9.2
 
