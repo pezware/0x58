@@ -1,0 +1,20 @@
+#cloud-config
+# Templated by terraform's templatefile() — bracketed exprs are HCL refs.
+# bootstrap.sh is embedded raw via file() so its shell var references are untouched.
+hostname: ${hostname}
+preserve_hostname: false
+
+write_files:
+  # tmpfs path — gone on reboot. Auth key is needed only for first-boot `tailscale up`;
+  # afterward, /var/lib/tailscale state takes over and reboots reuse it.
+  - path: /run/tailscale-bootstrap.key
+    content: "${tailscale_auth_key}"
+    permissions: '0600'
+    owner: root:root
+  - path: /usr/local/sbin/tailscale-bootstrap
+    permissions: '0755'
+    content: |
+      ${indent(6, bootstrap_script)}
+
+runcmd:
+  - /usr/local/sbin/tailscale-bootstrap

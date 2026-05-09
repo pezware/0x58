@@ -6,10 +6,14 @@ METADATA="http://metadata.google.internal/computeMetadata/v1"
 
 meta() { curl -sf -H "Metadata-Flavor: Google" "${METADATA}/$1"; }
 
-# ── 1. IP forwarding — required for exit node to route traffic ────────────────
+# ── 1. IPv4 forwarding + IPv6 fully disabled (unused on this tailnet) ────────
 # Write to sysctl.d so it persists AND applies immediately (Tailscale checks the file)
-printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n' \
-  > /etc/sysctl.d/99-tailscale.conf
+cat > /etc/sysctl.d/99-tailscale.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+SYSCTL
 sysctl -p /etc/sysctl.d/99-tailscale.conf
 
 # ── 2. Align OS hostname with Tailscale node name ────────────────────────────
