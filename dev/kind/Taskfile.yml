@@ -1,0 +1,117 @@
+version: '3'
+
+silent: true
+
+vars:
+  CLUSTER_NAME: agent-lab
+  KIND_DIR: '{{.ROOT_DIR}}'
+  NS_AGENTS: agents
+  # Wrap every kubectl/helm call in --context so this lab never mutates the
+  # user's current shell context. Lets agent-lab and iden2-dev coexist.
+  KUBECTL: 'kubectl --context kind-{{.CLUSTER_NAME}}'
+  HELM: 'helm --kube-context kind-{{.CLUSTER_NAME}}'
+
+tasks:
+  # ===========================================================================
+  # Cluster lifecycle
+  # ===========================================================================
+  up:
+    desc: Create kind cluster (idempotent)
+    status:
+      - kind get clusters 2>/dev/null | grep -q '^{{.CLUSTER_NAME}}$'
+    cmds:
+      - echo "Creating kind cluster '{{.CLUSTER_NAME}}'..."
+      - kind create cluster --config {{.KIND_DIR}}/cluster.yaml --name {{.CLUSTER_NAME}}
+      - kind export kubeconfig --name {{.CLUSTER_NAME}}
+      - '{{.KUBECTL}} create namespace {{.NS_AGENTS}} --dry-run=client -o yaml | {{.KUBECTL}} apply -f -'
+      - echo "Cluster ready. Tasks target 'kind-{{.CLUSTER_NAME}}' via --context."
+
+  down:
+    desc: Delete kind cluster (nukes everything)
+    cmds:
+      - kind delete cluster --name {{.CLUSTER_NAME}}
+      - echo "Cluster '{{.CLUSTER_NAME}}' deleted."
+
+  status:
+    desc: Show cluster + agent pod health
+    cmds:
+      - '{{.KUBECTL}} cluster-info 2>/dev/null || echo "Cluster not running"'
+      - '{{.KUBECTL}} get pods -n {{.NS_AGENTS}} 2>/dev/null || true'
+
+  # ===========================================================================
+  # Hermes agent
+  # ===========================================================================
+  agent:hermes:secrets:
+    desc: Create/update hermes-secrets from macOS Keychain (env var fallback)
+    cmds:
+      - |
+        set -euo pipefail
+        source {{.KIND_DIR}}/scripts/keychain.sh
+
+        ANTHROPIC_API_KEY=$(kc_get anthropic-api-key) || exit 1
+        OPENAI_API_KEY=$(kc_get_optional openai-api-key)
+        TELEGRAM_BOT_TOKEN=$(kc_get_optional telegram-bot-token)
+
+        args=(--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY")
+        [ -n "$OPENAI_API_KEY" ]    && args+=(--from-literal=OPENAI_API_KEY="$OPENAI_API_KEY")
+        [ -n "$TELEGRAM_BOT_TOKEN" ] && args+=(--from-literal=TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN")
+
+        {{.KUBECTL}} -n {{.NS_AGENTS}} create secret generic hermes-secrets \
+          "${args[@]}" --dry-run=client -o yaml | {{.KUBECTL}} apply -f -
+        echo "hermes-secrets reconciled."
+
+  agent:hermes:start:
+    desc: Deploy Hermes agent (idempotent)
+    deps: [up, agent:hermes:secrets]
+    cmds:
+      - '{{.KUBECTL}} apply -f {{.KIND_DIR}}/manifests/hermes.yaml'
+      - '{{.KUBECTL}} -n {{.NS_AGENTS}} rollout status deployment/hermes --timeout=120s'
+      - echo "Hermes deployed. Run 'task agent:hermes:forward' to expose ports locally."
+
+  agent:hermes:stop:
+    desc: Remove Hermes agent (keeps cluster)
+    cmds:
+      - '{{.KUBECTL}} delete -f {{.KIND_DIR}}/manifests/hermes.yaml --ignore-not-found'
+      - '{{.KUBECTL}} -n {{.NS_AGENTS}} delete secret hermes-secrets --ignore-not-found'
+      - echo "Hermes removed."
+
+  agent:hermes:forward:
+    desc: Port-forward Hermes gateway (8642) and dashboard (9119) to localhost
+    cmds:
+      - pkill -f "kubectl --context kind-{{.CLUSTER_NAME}} port-forward.*hermes" 2>/dev/null || true
+      - sleep 1
+      - '{{.KUBECTL}} -n {{.NS_AGENTS}} port-forward svc/hermes 8642:8642 9119:9119 &'
+      - echo "Forwarding gateway → http://localhost:8642 and dashboard → http://localhost:9119"
+
+  agent:hermes:logs:
+    desc: Tail Hermes logs
+    cmds:
+      - '{{.KUBECTL}} -n {{.NS_AGENTS}} logs -f -l app.kubernetes.io/name=hermes'
+
+  # ===========================================================================
+  # Keychain helpers
+  # ===========================================================================
+  keychain:add:
+    desc: "Add/update a key in macOS Keychain (usage: task keychain:add -- anthropic-api-key)"
+    cmds:
+      - |
+        name="{{.CLI_ARGS}}"
+        if [ -z "$name" ]; then
+          echo "Usage: task keychain:add -- <name>"
+          echo "Examples: anthropic-api-key, openai-api-key, telegram-bot-token"
+          exit 1
+        fi
+        security add-generic-password -s "$name" -a "$USER" -U -w
+        echo "Stored '$name' in Keychain (account=$USER)."
+
+  keychain:list:
+    desc: List agent-related keychain entries
+    cmds:
+      - |
+        for name in anthropic-api-key openai-api-key telegram-bot-token; do
+          if security find-generic-password -s "$name" -a "$USER" >/dev/null 2>&1; then
+            printf "  %-22s present\n" "$name"
+          else
+            printf "  %-22s missing\n" "$name"
+          fi
+        done

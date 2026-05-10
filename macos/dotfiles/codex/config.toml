@@ -1,8 +1,8 @@
-model_reasoning_effort = "xhigh"
-model = "gpt-5.4"
+model = "gpt-5.5"
 personality = "pragmatic"
 service_tier = "fast"
 cli_auth_credentials_store = "auto"
+model_reasoning_effort = "high"
 
 [projects."/Users/arbeitandy/src/public/mirubato"]
 trust_level = "trusted"
@@ -16,6 +16,10 @@ trust_level = "trusted"
 [projects."/Users/arbeitandy/src/public/0x58"]
 trust_level = "trusted"
 
+[projects."/Users/arbeitandy/src/iden2/go-monorepo"]
+trust_level = "trusted"
+
+
 [notice]
 hide_gpt5_1_migration_prompt = true
 "hide_gpt-5.1-codex-max_migration_prompt" = true
@@ -23,5 +27,65 @@ hide_gpt5_1_migration_prompt = true
 [plugins."github@openai-curated"]
 enabled = true
 
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."code-simplifier@claude-plugins-official"]
+enabled = true
+
+[plugins."security-guidance@claude-plugins-official"]
+enabled = true
+
+[plugins."codex@openai-codex"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."test-android-apps@openai-curated"]
+enabled = true
+
+[plugins."codex-security@openai-curated"]
+enabled = true
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+
 [tui.model_availability_nux]
-"gpt-5.5" = 3
+"gpt-5.5" = 4
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-02T14:19:19Z"
+source_type = "local"
+source = "/Users/arbeitandy/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-05-01T23:45:23Z"
+source_type = "local"
+source = "/Users/arbeitandy/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[marketplaces.claude-plugins-official]
+last_updated = "2026-05-09T14:22:20Z"
+last_revision = "76b35e91d1c99c090b1a08dade53bcc5e352c1b2"
+source_type = "git"
+source = "https://github.com/anthropics/claude-plugins-official.git"
+
+[marketplaces.openai-codex]
+last_updated = "2026-05-09T14:22:21Z"
+last_revision = "807e03ac9d5aa23bc395fdec8c3767500a86b3cf"
+source_type = "git"
+source = "https://github.com/openai/codex-plugin-cc.git"
+
+[features]
+memories = true
+goal = true
+
+[memories]
+generate_memories = true
+use_memories = true

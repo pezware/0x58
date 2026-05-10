@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# On-demand Linode Tailscale exit node manager.
+# Pulls the Linode PAT and Tailscale auth key from macOS Keychain — never written to disk.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+# ── Secrets from Keychain (env-only; gone when this shell exits) ─────────────
+LINODE_TOKEN=$(security find-generic-password -s linode-pat -a "$USER" -w 2>/dev/null) || {
+  echo "error: keychain item 'linode-pat' not found." >&2
+  echo "       see ./README.md → Setup → Step 1" >&2
+  exit 1
+}
+export LINODE_TOKEN
+export TF_VAR_tailscale_auth_key
+
+instance_id() {
+  terraform output -raw instance_id 2>/dev/null
+}
+
+linode_api() {
+  curl -sf -H "Authorization: Bearer ${LINODE_TOKEN}" -H "Content-Type: application/json" "$@"
+}
+
+needs_auth_key() {
+  TF_VAR_tailscale_auth_key=$(security find-generic-password -s tailscale-exit-authkey -a "$USER" -w 2>/dev/null) || {
+    echo "error: keychain item 'tailscale-exit-authkey' not found." >&2
+    echo "       see ./README.md → Setup → Step 2" >&2
+    exit 1
+  }
+}
+
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+  apply)
+    needs_auth_key
+    [ -d .terraform/providers ] || terraform init
+    terraform apply "$@"
+    ;;
+  destroy)
+    # auth_key is a required var; pass an empty string just to satisfy the schema during destroy.
+    TF_VAR_tailscale_auth_key=""
+    terraform destroy "$@"
+    ;;
+  start)
+    ID=$(instance_id) || { echo "error: run './ts-exit apply' first" >&2; exit 1; }
+    echo "Booting pezware-cuatro (id ${ID})..."
+    linode_api -X POST "https://api.linode.com/v4/linode/instances/${ID}/boot" >/dev/null
+    echo "Node will appear in your tailnet in ~60s as 'pezware-cuatro'."
+    ;;
+  stop)
+    ID=$(instance_id) || exit 1
+    echo "Powering off pezware-cuatro (id ${ID})..."
+    echo "Note: Linode bills monthly regardless of power state — stop saves no money."
+    echo "      Use './ts-exit destroy' for full cleanup if going inactive for >a few days."
+    linode_api -X POST "https://api.linode.com/v4/linode/instances/${ID}/shutdown" >/dev/null
+    ;;
+  status)
+    ID=$(instance_id) || exit 1
+    linode_api "https://api.linode.com/v4/linode/instances/${ID}" \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))"
+    ;;
+  ssh)
+    LABEL=$(terraform output -raw label 2>/dev/null) || { echo "error: not applied" >&2; exit 1; }
+    exec tailscale ssh "$LABEL"
+    ;;
+  *)
+    echo "Usage: $(basename "$0") {apply|destroy|start|stop|status|ssh}"
+    exit 1
+    ;;
+esac

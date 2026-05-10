@@ -1,6 +1,6 @@
 # Development Tools
 
-Generated: 2026-05-01
+Generated: 2026-05-09
 
 Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 (symlinked to `~/.config/mise/config.toml`)
@@ -28,7 +28,8 @@ gh                                       2.91.0    ~/.config/mise/config.toml  l
 github:go-acme/lego                      4.35.2    ~/.config/mise/config.toml  latest
 github:golang-migrate/migrate            4.19.1    ~/.config/mise/config.toml  latest
 glow                                     2.1.2     ~/.config/mise/config.toml  latest
-go                                       1.26.2    ~/.config/mise/config.toml  1.26
+go                                       1.26.2
+go                                       1.26.3    ~/.config/mise/config.toml  1.26
 go:github.com/swaggo/swag/cmd/swag       1.16.4
 go:golang.org/x/tools/cmd/goimports      0.39.0    ~/.config/mise/config.toml  latest
 go:golang.org/x/vuln/cmd/govulncheck     1.1.4     ~/.config/mise/config.toml  latest
@@ -78,6 +79,7 @@ yq                                       4.52.4    ~/.config/mise/config.toml  l
 
 ```
 /Users/arbeitandy/.local/share/mise/installs/node/22.17.1/lib
+├── @openai/codex@0.128.0
 ├── corepack@0.33.0
 └── npm@10.9.2
 
