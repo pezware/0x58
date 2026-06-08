@@ -52,7 +52,7 @@ brew "nmap"
 brew "openjdk@17"
 brew "opensc"
 brew "openssh"
-brew "pam-reattach"
+brew "pam-reattach"  # Touch ID for sudo in tmux — restore.sh wires the PAM file
 brew "pandoc"
 brew "pass"
 brew "pinentry-mac"

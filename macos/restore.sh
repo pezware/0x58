@@ -144,6 +144,27 @@ setup_dev_tools() {
     fi
 }
 
+# --- Phase 4a: PAM (Touch ID for sudo, including inside tmux) ---
+# pam-reattach (from Brewfile) is inert until wired into the PAM stack.
+# Without it, Touch ID works for sudo in a fresh terminal but silently
+# falls back to password inside tmux. We write to /etc/pam.d/sudo_local
+# (already included by /etc/pam.d/sudo) so the recipe survives macOS
+# major-version upgrades — unlike editing /etc/pam.d/sudo directly.
+setup_pam_touchid() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    if [[ ! -f /opt/homebrew/lib/pam/pam_reattach.so ]]; then return; fi
+    # idempotent: skip if already wired in either file
+    if grep -qs pam_reattach /etc/pam.d/sudo /etc/pam.d/sudo_local 2>/dev/null; then
+        echo "==> PAM Touch-ID: already configured (pam_reattach present)"
+        return
+    fi
+    echo "==> PAM Touch-ID: writing /etc/pam.d/sudo_local (sudo prompt incoming)"
+    sudo tee /etc/pam.d/sudo_local >/dev/null <<'PAM'
+auth       optional       /opt/homebrew/lib/pam/pam_reattach.so
+auth       sufficient     pam_tid.so
+PAM
+}
+
 # --- Phase 4: macOS preferences ---
 apply_macos_defaults() {
     if [[ "$PLATFORM" != "macos" ]]; then return; fi
@@ -220,5 +241,6 @@ echo ""
 install_packages
 place_dotfiles
 setup_dev_tools
+setup_pam_touchid
 apply_macos_defaults
 print_manual_steps
