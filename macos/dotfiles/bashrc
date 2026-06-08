@@ -74,6 +74,6 @@ esac
 # test
 export MEMPAL_HOME="~/src/.mempal"
 
-export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"
+export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:$PATH"
 export GOOGLE_CLOUD_QUOTA_PROJECT=""
 eval "$(mise activate bash)"

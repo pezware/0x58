@@ -210,7 +210,8 @@ kube-refresh-kind() {
   fi
   kube-setup-kind "$name"   # rewrites $config_dir/config with fresh CA/port
   kube-clean-overlay        # removes stale cluster/context/user from overlay
-  echo "Kind '${name}' refreshed. kubectl --context kind-${name} should work."
+  kubectl config use-context "kind-${name}" >/dev/null
+  echo "Kind '${name}' refreshed and active. kubectl now points to kind-${name}."
 }
 
 # --- Setup: OrbStack native Kubernetes ---
