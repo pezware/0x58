@@ -54,6 +54,16 @@ place_dotfiles() {
     mkdir -p ~/.config/nvim
     rsync -a "$DOTFILES/config-nvim/" ~/.config/nvim/
 
+    # tmux (cross-platform — config has no OS-hardcoded paths)
+    if [[ -d "$DOTFILES/config-tmux" ]]; then
+        mkdir -p ~/.config/tmux
+        cp -v "$DOTFILES/config-tmux/tmux.conf" ~/.config/tmux/tmux.conf
+        # `prefix + C` capture binding writes to ~/tmp — make sure it exists.
+        # (On the primary macOS box ~/tmp is a symlink to the external drive;
+        #  mkdir -p is a no-op when the target already exists.)
+        mkdir -p ~/tmp
+    fi
+
     # kitty (macOS only — kitty on Linux uses different config paths sometimes)
     if [[ "$PLATFORM" == "macos" ]] && [[ -d "$DOTFILES/config-kitty" ]]; then
         mkdir -p ~/.config/kitty
@@ -113,6 +123,13 @@ setup_dev_tools() {
 
     # nvim plugins (lazy.nvim auto-bootstraps on first launch)
     echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"
+
+    # tmux: clone tpm so resurrect (and any future plugins) can be installed.
+    # User installs the plugins from inside tmux via  prefix + I.
+    if [[ ! -d ~/.tmux/plugins/tpm ]]; then
+        echo "    tmux: cloning tpm (run 'prefix + I' inside tmux to install plugins)"
+        git clone --depth 1 https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+    fi
 
     # vim plugins
     if command -v vim &>/dev/null && [[ -f ~/.vim/autoload/plug.vim ]]; then

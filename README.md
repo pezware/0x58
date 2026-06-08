@@ -38,6 +38,7 @@ macos/
     vimrc, vim/                    # Vim config + plugins
     config-nvim/                   # Neovim (lazy.nvim, copilot, LSP)
     config-kitty/                  # Kitty terminal config
+    config-tmux/                   # tmux config (cross-platform; tpm + resurrect)
     config-git/                    # Global gitignore + allowed_signers
     codex/config.toml              # Codex CLI config (cli_auth_credentials_store="auto")
     kube/                          # README + exec-based GKE/EKS configs (no secrets)
