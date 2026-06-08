@@ -8,19 +8,33 @@
 
 KUBECONFIG_DIR="${HOME}/.kube/configs"
 
-# --- Per-window context isolation (kitty terminal) ---
+# --- Per-pane / per-window context isolation ---
 # KUBECONFIG is a colon-separated merge list. kubectl reads from all files,
-# but writes (current-context) go to the FIRST file. By putting a per-window
-# overlay first, each kitty panel gets its own active context.
+# but writes (current-context) go to the FIRST file. By putting a per-pane
+# overlay first, each shell instance gets its own active context.
+#
+# Precedence:
+#   1. $TMUX_PANE       → per-tmux-pane isolation (works in any host terminal)
+#   2. $KITTY_WINDOW_ID → per-kitty-window isolation when tmux is not in play
 KUBE_DEFAULT_CONTEXT="${KUBE_DEFAULT_CONTEXT:-orbstack}"
 _KUBE_WINDOW_FILE=""
-if [[ -n "$KITTY_WINDOW_ID" ]]; then
+_kube_overlay_id=""
+if [[ -n "$TMUX_PANE" ]]; then
+  _kube_overlay_id="tmux-${TMUX_PANE#%}"
+elif [[ -n "$KITTY_WINDOW_ID" ]]; then
+  _kube_overlay_id="kitty-${KITTY_WINDOW_ID}"
+fi
+
+if [[ -n "$_kube_overlay_id" ]]; then
   _KUBE_WINDOW_DIR="${KUBECONFIG_DIR}/.window-overlays"
   mkdir -p "$_KUBE_WINDOW_DIR" 2>/dev/null
-  _KUBE_WINDOW_FILE="${_KUBE_WINDOW_DIR}/${KITTY_WINDOW_ID}.yaml"
+  _KUBE_WINDOW_FILE="${_KUBE_WINDOW_DIR}/${_kube_overlay_id}.yaml"
 
-  # Fresh overlay on each new shell (guard against re-source with env var)
-  if [[ -z "$_KUBE_OVERLAY_INIT" ]]; then
+  # Fresh overlay on each new shell. Env-var guard prevents re-source from
+  # clobbering. File-existence guard prevents the outer shell's init flag
+  # from leaking into tmux panes via tmux server env (which would otherwise
+  # cause every tmux pane to skip creating its own overlay).
+  if [[ -z "$_KUBE_OVERLAY_INIT" ]] || [[ ! -f "$_KUBE_WINDOW_FILE" ]]; then
     export _KUBE_OVERLAY_INIT=1
     command cat > "$_KUBE_WINDOW_FILE" <<YAML
 apiVersion: v1
@@ -35,6 +49,7 @@ YAML
   # Clean up stale overlays older than 7 days
   find "$_KUBE_WINDOW_DIR" -name "*.yaml" -mtime +7 -delete 2>/dev/null
 fi
+unset _kube_overlay_id
 
 # Build KUBECONFIG: window overlay (receives writes) + all config dirs (read-only)
 _kube_build_path() {
@@ -84,7 +99,11 @@ kube-use() {
 kube-current() {
   echo "Context: $(kubectl config current-context 2>/dev/null || echo '(none)')"
   if [[ -n "$_KUBE_WINDOW_FILE" ]]; then
-    echo "Window:  kitty #${KITTY_WINDOW_ID} (isolated)"
+    if [[ -n "$TMUX_PANE" ]]; then
+      echo "Pane:    tmux ${TMUX_PANE} (isolated)"
+    elif [[ -n "$KITTY_WINDOW_ID" ]]; then
+      echo "Window:  kitty #${KITTY_WINDOW_ID} (isolated)"
+    fi
   fi
   echo "Sources:"
   echo "$KUBECONFIG" | tr ':' '\n' | while read -r f; do
@@ -182,7 +201,7 @@ kube-setup-kind() {
 # window's overlay file.
 kube-clean-overlay() {
   if [[ -z "$_KUBE_WINDOW_FILE" ]]; then
-    echo "Not in a kitty window — nothing to clean."
+    echo "Not in an isolated context (no tmux pane / kitty window) — nothing to clean."
     return 0
   fi
   local current
@@ -210,7 +229,8 @@ kube-refresh-kind() {
   fi
   kube-setup-kind "$name"   # rewrites $config_dir/config with fresh CA/port
   kube-clean-overlay        # removes stale cluster/context/user from overlay
-  echo "Kind '${name}' refreshed. kubectl --context kind-${name} should work."
+  kubectl config use-context "kind-${name}" >/dev/null
+  echo "Kind '${name}' refreshed and active. kubectl now points to kind-${name}."
 }
 
 # --- Setup: OrbStack native Kubernetes ---

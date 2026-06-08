@@ -38,6 +38,7 @@ macos/
     vimrc, vim/                    # Vim config + plugins
     config-nvim/                   # Neovim (lazy.nvim, copilot, LSP)
     config-kitty/                  # Kitty terminal config
+    config-tmux/                   # tmux config (cross-platform; tpm + resurrect)
     config-git/                    # Global gitignore + allowed_signers
     codex/config.toml              # Codex CLI config (cli_auth_credentials_store="auto")
     kube/                          # README + exec-based GKE/EKS configs (no secrets)
@@ -65,3 +66,4 @@ GPG private keys are NOT in `~/.gnupg/private-keys-v1.d/` between sessions — t
 - **Migration Assistant** is the recommended path for new-machine setup; it transfers the login keychain so all credential restores Just Work afterwards
 - **Tailscale** — client-only, just sign in
 - **OrbStack** — container runtime; `restore.sh` also bootstraps Linux VMs
+- **Touch ID in tmux** — `pam-reattach` + a PAM edit needed; `restore.sh` automates it (see [setup-guide.md](macos/setup-guide.md#touch-id-for-sudo-in-tmux-pam-reattach))

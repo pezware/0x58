@@ -92,6 +92,18 @@ GKE/EKS auth flows through `gcloud_login` / `aws sso login`; tokens are short-li
 - Caps Lock → Control: System Settings → Keyboard → Keyboard Shortcuts → Modifier Keys
 - Display scaling: System Settings → Displays
 
+### Touch ID for sudo in tmux (pam-reattach)
+`restore.sh` handles this automatically on macOS (function `setup_pam_touchid`): if `pam-reattach` is installed and the wiring isn't already present in `/etc/pam.d/sudo` or `/etc/pam.d/sudo_local`, it writes the recipe into `sudo_local` (which the system `sudo` PAM stack `include`s on line 4 and which survives macOS major-version upgrades). You'll see a sudo prompt mid-bootstrap.
+
+Symptom if missing: Touch ID works for `sudo` in a fresh terminal but silently falls back to password **inside tmux** — sudo gets reparented away from the GUI session, so `pam_tid.so` can't reach the Touch ID prompt.
+
+Manual recipe (if you ever need to apply it by hand):
+```
+# /etc/pam.d/sudo_local
+auth       optional       /opt/homebrew/lib/pam/pam_reattach.so
+auth       sufficient     pam_tid.so
+```
+
 ### Claude Code
 Claude config lives at `~/src/claude` on the external drive. After restoring dotfiles (which set `CLAUDE_CONFIG_DIR`), symlink it:
 ```bash

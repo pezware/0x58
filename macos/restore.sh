@@ -54,6 +54,16 @@ place_dotfiles() {
     mkdir -p ~/.config/nvim
     rsync -a "$DOTFILES/config-nvim/" ~/.config/nvim/
 
+    # tmux (cross-platform — config has no OS-hardcoded paths)
+    if [[ -d "$DOTFILES/config-tmux" ]]; then
+        mkdir -p ~/.config/tmux
+        cp -v "$DOTFILES/config-tmux/tmux.conf" ~/.config/tmux/tmux.conf
+        # `prefix + C` capture binding writes to ~/tmp — make sure it exists.
+        # (On the primary macOS box ~/tmp is a symlink to the external drive;
+        #  mkdir -p is a no-op when the target already exists.)
+        mkdir -p ~/tmp
+    fi
+
     # kitty (macOS only — kitty on Linux uses different config paths sometimes)
     if [[ "$PLATFORM" == "macos" ]] && [[ -d "$DOTFILES/config-kitty" ]]; then
         mkdir -p ~/.config/kitty
@@ -114,6 +124,13 @@ setup_dev_tools() {
     # nvim plugins (lazy.nvim auto-bootstraps on first launch)
     echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"
 
+    # tmux: clone tpm so resurrect (and any future plugins) can be installed.
+    # User installs the plugins from inside tmux via  prefix + I.
+    if [[ ! -d ~/.tmux/plugins/tpm ]]; then
+        echo "    tmux: cloning tpm (run 'prefix + I' inside tmux to install plugins)"
+        git clone --depth 1 https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+    fi
+
     # vim plugins
     if command -v vim &>/dev/null && [[ -f ~/.vim/autoload/plug.vim ]]; then
         echo "    vim: installing plugins"
@@ -125,6 +142,27 @@ setup_dev_tools() {
         echo "    npm: installing globals"
         xargs npm install -g < "$SCRIPT_DIR/npm-globals.txt" 2>/dev/null || true
     fi
+}
+
+# --- Phase 4a: PAM (Touch ID for sudo, including inside tmux) ---
+# pam-reattach (from Brewfile) is inert until wired into the PAM stack.
+# Without it, Touch ID works for sudo in a fresh terminal but silently
+# falls back to password inside tmux. We write to /etc/pam.d/sudo_local
+# (already included by /etc/pam.d/sudo) so the recipe survives macOS
+# major-version upgrades — unlike editing /etc/pam.d/sudo directly.
+setup_pam_touchid() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    if [[ ! -f /opt/homebrew/lib/pam/pam_reattach.so ]]; then return; fi
+    # idempotent: skip if already wired in either file
+    if grep -qs pam_reattach /etc/pam.d/sudo /etc/pam.d/sudo_local 2>/dev/null; then
+        echo "==> PAM Touch-ID: already configured (pam_reattach present)"
+        return
+    fi
+    echo "==> PAM Touch-ID: writing /etc/pam.d/sudo_local (sudo prompt incoming)"
+    sudo tee /etc/pam.d/sudo_local >/dev/null <<'PAM'
+auth       optional       /opt/homebrew/lib/pam/pam_reattach.so
+auth       sufficient     pam_tid.so
+PAM
 }
 
 # --- Phase 4: macOS preferences ---
@@ -203,5 +241,6 @@ echo ""
 install_packages
 place_dotfiles
 setup_dev_tools
+setup_pam_touchid
 apply_macos_defaults
 print_manual_steps

@@ -1,4 +1,4 @@
-model = "gpt-5.5"
+model = "gpt-5.4"
 personality = "pragmatic"
 service_tier = "fast"
 cli_auth_credentials_store = "auto"
@@ -17,6 +17,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/Users/arbeitandy/src/iden2/go-monorepo"]
+trust_level = "trusted"
+
+[projects."/Users/arbeitandy/src/iden2/infra-tf"]
 trust_level = "trusted"
 
 
@@ -71,13 +74,13 @@ source_type = "local"
 source = "/Users/arbeitandy/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-05-09T14:22:20Z"
-last_revision = "76b35e91d1c99c090b1a08dade53bcc5e352c1b2"
+last_updated = "2026-06-08T04:17:26Z"
+last_revision = "1b46aa6d4a11b7f781a0aa8a0ba976d9cbf7eb74"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.openai-codex]
-last_updated = "2026-05-09T14:22:21Z"
+last_updated = "2026-06-08T04:17:28Z"
 last_revision = "807e03ac9d5aa23bc395fdec8c3767500a86b3cf"
 source_type = "git"
 source = "https://github.com/openai/codex-plugin-cc.git"
