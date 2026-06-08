@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# On-demand remote dev box manager.
+# Run from dev/exit-dev/gcp/ after terraform apply.
+set -euo pipefail
+
+INSTANCE="exit-dev"
+PROJECT=$(terraform output -raw project_id 2>/dev/null)
+ZONE=$(terraform output -raw zone 2>/dev/null)
+HOSTNAME=$(terraform output -raw hostname 2>/dev/null)
+
+if [[ -z "$PROJECT" ]]; then
+  echo "error: run terraform apply first" >&2
+  exit 1
+fi
+
+gcp() {
+  gcloud compute instances "$@" --zone="$ZONE" --project="$PROJECT"
+}
+
+case "${1:-}" in
+  start)
+    echo "Starting ${HOSTNAME}..."
+    gcp start "$INSTANCE"
+    echo "Node will appear in your tailnet in ~60s (first boot: ~3-5 min to install the toolchain)."
+    ;;
+  stop)
+    echo "Stopping ${HOSTNAME}..."
+    gcp stop "$INSTANCE"
+    ;;
+  status)
+    gcp describe "$INSTANCE" --format="value(status)"
+    ;;
+  ssh)
+    exec tailscale ssh "${HOSTNAME}"
+    ;;
+  *)
+    echo "Usage: $(basename "$0") {start|stop|status|ssh}"
+    exit 1
+    ;;
+esac
