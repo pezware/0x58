@@ -166,6 +166,15 @@ if [[ -f ~/.codex/config.toml ]]; then
     cp -p ~/.codex/config.toml "$DOTFILES_DIR/codex/config.toml"
 fi
 
+# claude code (hook scripts only — settings.json holds machine-specific state
+# and this is a public repo, so it's intentionally not tracked here)
+if [[ -d ~/.claude/hooks ]]; then
+    mkdir -p "$DOTFILES_DIR/claude/hooks"
+    for f in ~/.claude/hooks/*.sh; do
+        [[ -f "$f" ]] && cp -p "$f" "$DOTFILES_DIR/claude/hooks/$(basename "$f")"
+    done
+fi
+
 # w3m (config + keymap only, skip cache/history)
 if [[ -d ~/.w3m ]]; then
     mkdir -p "$DOTFILES_DIR/w3m"
