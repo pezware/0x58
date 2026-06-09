@@ -175,6 +175,17 @@ if [[ -d ~/.claude/hooks ]]; then
     done
 fi
 
+# claude knowledge book — general, non-sensitive gotchas only. KEEP IT THAT WAY:
+# this is a PUBLIC repo, so never add a knowledge entry containing secrets, host
+# names, SA/project names, or anything machine-specific (those belong in CLAUDE.md,
+# which is not tracked here).
+if [[ -d ~/.claude/knowledge ]]; then
+    mkdir -p "$DOTFILES_DIR/claude/knowledge"
+    for f in ~/.claude/knowledge/*.md; do
+        [[ -f "$f" ]] && cp -p "$f" "$DOTFILES_DIR/claude/knowledge/$(basename "$f")"
+    done
+fi
+
 # w3m (config + keymap only, skip cache/history)
 if [[ -d ~/.w3m ]]; then
     mkdir -p "$DOTFILES_DIR/w3m"
