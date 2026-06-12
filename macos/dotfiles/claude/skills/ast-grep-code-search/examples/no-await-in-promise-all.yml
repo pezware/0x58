@@ -1,0 +1,29 @@
+# Example: Detect await inside Promise.all
+# Finds inefficient promise handling that defeats parallel execution
+#
+# Usage: ast-grep scan --rule examples/no-await-in-promise-all.yml
+
+id: no-await-in-promise-all
+language: typescript
+severity: warning
+
+message: Don't use await inside Promise.all() - it defeats parallel execution
+
+note: |
+  When you use await inside Promise.all(), you're waiting for each promise
+  to resolve sequentially, which defeats the purpose of Promise.all().
+
+  Bad:  await Promise.all([await fetch(a), await fetch(b)])
+  Good: await Promise.all([fetch(a), fetch(b)])
+
+  Promise.all() is designed to run promises in parallel. Using await
+  inside makes them run sequentially, which is much slower.
+
+rule:
+  # Find Promise.all with await inside
+  pattern: Promise.all($ARGS)
+  has:
+    pattern: await $_
+    stopBy: end
+
+# No automatic fix - requires manual review to ensure correctness

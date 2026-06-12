@@ -1,0 +1,61 @@
+# Example: Logical Assignment Operators
+# Converts traditional assignment patterns to ES2021 logical assignment operators
+#
+# Usage: ast-grep scan --rule examples/logical-assignment.yml
+
+id: use-logical-or-assignment
+language: javascript
+severity: info
+
+message: Use logical OR assignment (||=) for default value assignment
+
+note: |
+  ES2021 introduced logical assignment operators that combine
+  logical operations with assignment.
+
+  Before: a = a || b
+  After:  a ||= b
+
+rule:
+  pattern: $VAR = $VAR || $DEFAULT
+
+fix: $VAR ||= $DEFAULT
+
+---
+
+id: use-logical-and-assignment
+language: javascript
+severity: info
+
+message: Use logical AND assignment (&&=) for conditional assignment
+
+note: |
+  Use &&= when you want to assign only if the variable is truthy.
+
+  Before: a = a && b
+  After:  a &&= b
+
+rule:
+  pattern: $VAR = $VAR && $VALUE
+
+fix: $VAR &&= $VALUE
+
+---
+
+id: use-nullish-coalescing-assignment
+language: javascript
+severity: info
+
+message: Use nullish coalescing assignment (??=) for null/undefined checks
+
+note: |
+  Use ??= for assigning default values when the variable is null or undefined.
+  Unlike ||=, this doesn't replace falsy values like 0 or "".
+
+  Before: a = a ?? b
+  After:  a ??= b
+
+rule:
+  pattern: $VAR = $VAR ?? $DEFAULT
+
+fix: $VAR ??= $DEFAULT

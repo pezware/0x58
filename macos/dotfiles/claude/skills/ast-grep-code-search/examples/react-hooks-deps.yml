@@ -1,0 +1,72 @@
+# Example: React useEffect Missing Dependencies
+# Detects when variables used in useEffect are not in the dependency array
+#
+# Usage: ast-grep scan --rule examples/react-hooks-deps.yml
+
+id: use-effect-exhaustive-deps
+language: typescript
+severity: warning
+
+message: useEffect may be missing dependencies
+
+note: |
+  Variables and functions used inside useEffect should be included
+  in the dependency array to avoid stale closures.
+
+  This rule is a simplified version. For production, use ESLint's
+  exhaustive-deps rule which has more comprehensive checking.
+
+rule:
+  pattern: |
+    useEffect(() => {
+      $$$
+    }, [$$$DEPS])
+
+# This is a basic rule. A complete solution would need to:
+# 1. Extract all variables used in the effect body
+# 2. Check if they're in the dependency array
+# 3. Account for exceptions (constants, refs, setState functions)
+
+---
+
+id: use-effect-missing-deps-array
+language: typescript
+severity: error
+
+message: useEffect is missing a dependency array
+
+note: |
+  useEffect without a dependency array runs on every render,
+  which can cause performance issues and infinite loops.
+
+  Add [] for effects that should run once on mount,
+  or [deps] for effects that depend on specific values.
+
+rule:
+  pattern: |
+    useEffect(() => {
+      $$$
+    })
+
+fix: |
+  useEffect(() => {
+    $$$
+  }, [])
+
+---
+
+id: use-callback-missing-deps
+language: typescript
+severity: warning
+
+message: useCallback is missing dependencies
+
+rule:
+  pattern: |
+    useCallback(() => {
+      $$$
+    }, [])
+
+note: |
+  If your callback uses any values from component scope,
+  they should be in the dependency array.
