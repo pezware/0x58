@@ -212,8 +212,10 @@ print_manual_steps() {
 
   6. Tailscale: Sign in (client-only)
 
-  7. Claude: symlink ~/src/claude → ~/.claude
-     ln -s ~/src/claude ~/.claude
+  7. Claude: symlink ~/.claude → ~/src/claude (real dir is ~/src/claude)
+     # only link when ~/.claude is absent — never onto an existing symlink (nested
+     # link) and never make ~/src/claude itself a symlink (loop)
+     [ -e ~/.claude ] || [ -L ~/.claude ] || ln -s ~/src/claude ~/.claude
 MANUAL
     else
         cat <<'MANUAL'

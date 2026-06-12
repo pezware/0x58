@@ -105,9 +105,9 @@ auth       sufficient     pam_tid.so
 ```
 
 ### Claude Code
-Claude config lives at `~/src/claude` on the external drive. After restoring dotfiles (which set `CLAUDE_CONFIG_DIR`), symlink it:
+The real Claude config directory is `~/src/claude` on the external drive; `~/.claude` is just a symlink pointing to it (`~/.claude → ~/src/claude`). The symlink is the only indirection — `CLAUDE_CONFIG_DIR` is not set. Link only when `~/.claude` is absent, so you never link onto an existing symlink (nested link) or turn `~/src/claude` itself into a symlink (loop):
 ```bash
-ln -s ~/src/claude ~/.claude
+[ -e ~/.claude ] || [ -L ~/.claude ] || ln -s ~/src/claude ~/.claude
 ```
 
 ### GitLab Mirror
