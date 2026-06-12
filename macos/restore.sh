@@ -26,7 +26,7 @@ install_packages() {
     else
         echo "==> Installing packages (apt)"
         sudo apt update
-        sudo apt install -y bash neovim git w3m curl ripgrep fzf jq bat tmux
+        sudo apt install -y bash neovim git w3m curl ripgrep fzf jq bat tmux rsync
         # mise
         if ! command -v mise &>/dev/null; then
             curl https://mise.run | sh
@@ -224,8 +224,12 @@ MANUAL
   2. GPG (if needed):
      gpg --import /path/to/gpg-private.asc
 
-  3. Claude:
-     npm install -g claude-code codex
+  3. Claude (native installer; codex comes from mise config):
+     curl -fsSL https://claude.ai/install.sh | bash
+
+  4. mise tools (config is symlinked from the 0x58 repo):
+     ln -sf ~/src/public/0x58/dotfiles/mise/config.toml ~/.config/mise/config.toml
+     mise trust ~/.config/mise/config.toml && mise install
 MANUAL
     fi
 
