@@ -1,0 +1,60 @@
+# Example: Remove Console Logging
+# Finds and optionally removes console.log statements
+#
+# Usage: ast-grep scan --rule examples/remove-console-log.yml
+
+id: no-console-log
+language: typescript
+severity: warning
+
+message: Remove console.log before committing
+
+note: |
+  Console statements should not be committed to production code.
+  Use a proper logging library or remove debugging statements.
+
+  Allowed contexts:
+  - Inside catch blocks (console.error is ok)
+  - Explicitly commented as intentional
+  - Development-only files (*.dev.ts, *.test.ts)
+
+rule:
+  any:
+    - pattern: console.log($$$)
+    - pattern: console.debug($$$)
+    - pattern: console.info($$$)
+
+  # Don't flag console in catch blocks
+  not:
+    inside:
+      pattern: |
+        catch ($ERR) {
+          $$$
+        }
+
+# No automatic fix - should be manually reviewed and removed
+
+---
+
+id: no-console-warn-error
+language: typescript
+severity: info
+
+message: Use a proper logging library instead of console
+
+note: |
+  console.warn and console.error are less problematic than console.log,
+  but production code should use a structured logging library.
+
+rule:
+  any:
+    - pattern: console.warn($$$)
+    - pattern: console.error($$$)
+
+  # Allow in catch blocks
+  not:
+    inside:
+      pattern: |
+        catch ($ERR) {
+          $$$
+        }

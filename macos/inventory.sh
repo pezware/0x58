@@ -166,6 +166,77 @@ if [[ -f ~/.codex/config.toml ]]; then
     cp -p ~/.codex/config.toml "$DOTFILES_DIR/codex/config.toml"
 fi
 
+# claude code (hook scripts only — settings.json holds machine-specific state
+# and this is a public repo, so it's intentionally not tracked here)
+if [[ -d ~/.claude/hooks ]]; then
+    mkdir -p "$DOTFILES_DIR/claude/hooks"
+    for f in ~/.claude/hooks/*.sh; do
+        [[ -f "$f" ]] && cp -p "$f" "$DOTFILES_DIR/claude/hooks/$(basename "$f")"
+    done
+fi
+
+# claude knowledge book — general, non-sensitive gotchas only. KEEP IT THAT WAY:
+# this is a PUBLIC repo, so never add a knowledge entry containing secrets, host
+# names, SA/project names, or anything machine-specific (those belong in CLAUDE.md,
+# which is not tracked here).
+if [[ -d ~/.claude/knowledge ]]; then
+    mkdir -p "$DOTFILES_DIR/claude/knowledge"
+    for f in ~/.claude/knowledge/*.md; do
+        [[ -f "$f" ]] && cp -p "$f" "$DOTFILES_DIR/claude/knowledge/$(basename "$f")"
+    done
+fi
+
+# PUBLIC-REPO content guard, shared by the commands + skills blocks below. If a file
+# matches any of these, it is NOT mirrored (a loud warning is printed instead). Keep the
+# pattern in sync with what must never appear in this public repo: private keys, common
+# token shapes, GCP SAs, and work-project identifiers (those belong in the untracked
+# CLAUDE.md / a project-local .claude/, not here).
+CLAUDE_SECRET_RE='(BEGIN [A-Z ]*PRIVATE KEY|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20}|gserviceaccount|iden2|pezware|phenix)'
+
+# claude commands — global slash commands authored locally. Same PUBLIC-REPO rule as the
+# knowledge book: never track a command containing secrets / host / SA / project names.
+if [[ -d ~/.claude/commands ]]; then
+    mkdir -p "$DOTFILES_DIR/claude/commands"
+    for f in ~/.claude/commands/*.md; do
+        [[ -f "$f" ]] || continue
+        if grep -qiE "$CLAUDE_SECRET_RE" "$f"; then
+            echo "  !! SKIP (sensitive content): claude/commands/$(basename "$f")" >&2
+            continue
+        fi
+        cp -p "$f" "$DOTFILES_DIR/claude/commands/$(basename "$f")"
+    done
+fi
+
+# claude skills — back up only PERSONAL (hand-authored) skills, never marketplace ones.
+# Canonical store is ~/.agents/skills (the ~/.claude/skills entries are symlinks into it).
+# A skill is "marketplace-managed" (re-installable, skip) iff it is a key in
+# ~/.agents/.skill-lock.json. Also skip: symlinks, third-party-packaged skills
+# (LICENSE / .claude-plugin), and — defense in depth for this PUBLIC repo — anything whose
+# content trips CLAUDE_SECRET_RE.
+AGENT_SKILLS="$HOME/.agents/skills"
+SKILL_LOCK="$HOME/.agents/.skill-lock.json"
+if [[ -d "$AGENT_SKILLS" ]]; then
+    managed=""
+    [[ -f "$SKILL_LOCK" ]] && managed=$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("skills",{}).keys()))' "$SKILL_LOCK" 2>/dev/null || true)
+    mkdir -p "$DOTFILES_DIR/claude/skills"
+    for path in "$AGENT_SKILLS"/*; do
+        [[ -e "$path" ]] || continue
+        name="$(basename "$path")"
+        [[ -L "$path" ]] && continue                                          # skip symlinks
+        printf '%s\n' "$managed" | grep -qx "$name" && continue               # skip marketplace-managed
+        [[ -e "$path/LICENSE" || -d "$path/.claude-plugin" ]] && continue     # skip third-party-packaged
+        if grep -rqiE "$CLAUDE_SECRET_RE" "$path" 2>/dev/null; then
+            echo "  !! SKIP (sensitive content): claude/skills/$name" >&2
+            continue
+        fi
+        if [[ -d "$path" ]]; then
+            rsync -a --delete --exclude='.git' "$path/" "$DOTFILES_DIR/claude/skills/$name/"
+        else
+            cp -p "$path" "$DOTFILES_DIR/claude/skills/$name"                  # single-file skill
+        fi
+    done
+fi
+
 # w3m (config + keymap only, skip cache/history)
 if [[ -d ~/.w3m ]]; then
     mkdir -p "$DOTFILES_DIR/w3m"

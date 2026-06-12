@@ -1,0 +1,73 @@
+# Example: Convert to Optional Chaining
+# Converts && checks to optional chaining operator (?.)
+#
+# Usage: ast-grep scan --rule examples/optional-chaining.yml
+
+id: use-optional-chaining
+language: typescript
+severity: info
+
+message: Use optional chaining (?.) for safer property access
+
+note: |
+  Optional chaining provides a shorter and cleaner way to check for
+  null/undefined values before accessing properties or calling methods.
+
+  Before: obj && obj.prop
+  After:  obj?.prop
+
+  Before: func && func()
+  After:  func?.()
+
+rule:
+  any:
+    # Pattern 1: obj && obj.prop
+    - pattern: $OBJ && $OBJ.$PROP
+
+    # Pattern 2: obj && obj.method()
+    - pattern: $OBJ && $OBJ.$METHOD($$$)
+
+    # Pattern 3: obj && obj()
+    - pattern: $OBJ && $OBJ($$$)
+
+    # Pattern 4: obj != null && obj.prop
+    - pattern: $OBJ != null && $OBJ.$PROP
+
+    # Pattern 5: obj !== null && obj.prop
+    - pattern: $OBJ !== null && $OBJ.$PROP
+
+fix: |
+  $OBJ?.$PROP
+
+# Note: The fix is simplified. For method calls, you'd need different rules.
+# See the multi-rule example below for a complete solution.
+
+---
+
+# More specific rule for method calls
+id: use-optional-chaining-method
+language: typescript
+severity: info
+
+message: Use optional chaining for method calls
+
+rule:
+  any:
+    - pattern: $OBJ && $OBJ.$METHOD($$$ARGS)
+    - pattern: $OBJ && $OBJ($$$ARGS)
+
+fix: $OBJ?.$METHOD($$$ARGS)
+
+---
+
+# Rule for function calls
+id: use-optional-chaining-call
+language: typescript
+severity: info
+
+message: Use optional chaining for function calls
+
+rule:
+  pattern: $FUNC && $FUNC($$$ARGS)
+
+fix: $FUNC?.($$$ARGS)

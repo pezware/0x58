@@ -1,0 +1,67 @@
+# Example: Convert Loop to List Comprehension
+# Finds loops that build lists and suggests list comprehensions
+#
+# Usage: ast-grep scan --rule examples/python-list-comprehension.yml
+
+id: use-list-comprehension
+language: python
+severity: info
+
+message: Consider using list comprehension for better readability
+
+note: |
+  List comprehensions are more Pythonic and often more readable
+  than explicit loops that build lists.
+
+  Before:
+    result = []
+    for item in items:
+        result.append(process(item))
+
+  After:
+    result = [process(item) for item in items]
+
+rule:
+  # This is a simplified pattern. Real-world usage would need
+  # more sophisticated matching to handle various loop patterns.
+  pattern: |
+    $RESULT = []
+    for $ITEM in $ITER:
+        $RESULT.append($EXPR)
+
+fix: |
+  $RESULT = [$EXPR for $ITEM in $ITER]
+
+# Note: This is a basic example. A complete rule would need to:
+# - Handle multi-line loop bodies
+# - Account for conditional appends (if statements)
+# - Verify EXPR uses ITEM
+# - Not match if loop has side effects beyond append
+
+---
+
+id: use-dict-comprehension
+language: python
+severity: info
+
+message: Consider using dict comprehension
+
+note: |
+  Dict comprehensions provide a concise way to build dictionaries.
+
+  Before:
+    result = {}
+    for key, val in items:
+        result[key] = val
+
+  After:
+    result = {key: val for key, val in items}
+
+rule:
+  pattern: |
+    $RESULT = {}
+    for $KEY, $VAL in $ITER:
+        $RESULT[$KEY] = $VAL
+
+fix: |
+  $RESULT = {$KEY: $VAL for $KEY, $VAL in $ITER}
