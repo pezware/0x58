@@ -62,7 +62,10 @@ eval "$(mise activate bash)" 2>/dev/null || true
     echo "## mise-managed tools"
     echo ""
     echo '```'
-    mise ls --installed 2>/dev/null || echo "mise not available"
+    # --current = one line per active tool resolved from config (not every stale
+    # version mise keeps on disk for rollback). Keeps this inventory aligned with
+    # config.toml as the source of truth.
+    mise ls --current 2>/dev/null || echo "mise not available"
     echo '```'
     echo ""
 
