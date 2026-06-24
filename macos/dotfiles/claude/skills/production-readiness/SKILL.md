@@ -1,3 +1,12 @@
+---
+name: production-readiness
+description: >-
+  Patterns and checklists for hardening Docker images, npm packages, and CI
+  pipelines before production deployment. Use for pre-release housekeeping,
+  Dockerfile bloat/leak review, npm package source-leak audits, or adding
+  BuildKit cache mounts.
+---
+
 # Production Readiness Audit
 
 Patterns and checklists for hardening Docker images, npm packages, and CI pipelines before production deployment.
