@@ -98,7 +98,7 @@ glow     = "latest"   # markdown viewer; was in ~/go/bin; aqua: charmbracelet/gl
 "github:go-acme/lego" = "latest"   # ACME/Let's Encrypt client; was in ~/go/bin
 
 # === AI / cloud SDKs ===
-codex    = "0.125.0"  # @openai/codex (aqua binary; pin to skip 3d buffer + match team version)
+codex    = "0.142.0-alpha.3"  # @openai/codex (aqua binary; pre-release pin — ahead of stable 0.141.0)
 firebase = "latest"   # firebase-tools (aqua binary)
 wrangler = "latest"   # cloudflare wrangler (npm only)
 
