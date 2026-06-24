@@ -1,3 +1,12 @@
+---
+name: dependabot-fix
+description: >-
+  Clear Dependabot alerts in pnpm monorepos (primary) and npm projects — triage
+  direct vs transitive vulnerabilities, pick the right fix mechanism, and pass
+  supply-chain maturity gates (minimumReleaseAge / min-release-age) without
+  disabling them. Use when clearing GitHub Dependabot alerts.
+---
+
 # Dependabot Fix Workflow
 
 Patterns for clearing dependabot alerts in pnpm monorepos (primary focus) and npm projects (contrasted inline where the two ecosystems diverge): triaging direct vs transitive vulnerabilities, picking the right fix mechanism, and getting through supply-chain maturity gates without disabling them.

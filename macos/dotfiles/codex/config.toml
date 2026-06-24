@@ -74,14 +74,14 @@ source_type = "local"
 source = "/Users/arbeitandy/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-06-12T04:37:55Z"
-last_revision = "78fa3df8d671bfe7ba4dcc972f1e12ae2b8750af"
+last_updated = "2026-06-24T02:03:28Z"
+last_revision = "bb335391eb831a044ce74d5bd4e30e46fc695096"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.openai-codex]
-last_updated = "2026-06-12T04:37:56Z"
-last_revision = "807e03ac9d5aa23bc395fdec8c3767500a86b3cf"
+last_updated = "2026-06-24T01:52:40Z"
+last_revision = "80c31f99570876c3ef40327838b0a2ca1ae2cd9c"
 source_type = "git"
 source = "https://github.com/openai/codex-plugin-cc.git"
 
