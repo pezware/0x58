@@ -58,6 +58,12 @@ place_dotfiles() {
     if [[ -d "$DOTFILES/config-tmux" ]]; then
         mkdir -p ~/.config/tmux
         cp -v "$DOTFILES/config-tmux/tmux.conf" ~/.config/tmux/tmux.conf
+        # alert-bell hook posts a desktop notification via this script; the
+        # hook references it by path, so it must land next to the config.
+        if [[ -f "$DOTFILES/config-tmux/notify-bell.sh" ]]; then
+            cp -v "$DOTFILES/config-tmux/notify-bell.sh" ~/.config/tmux/notify-bell.sh
+            chmod +x ~/.config/tmux/notify-bell.sh
+        fi
         # `prefix + C` capture binding writes to ~/tmp — make sure it exists.
         # (On the primary macOS box ~/tmp is a symlink to the external drive;
         #  mkdir -p is a no-op when the target already exists.)
