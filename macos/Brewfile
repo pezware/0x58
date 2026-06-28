@@ -1,5 +1,4 @@
 tap "bjarneo/cliamp", trusted: true
-tap "dagger/tap"
 tap "hashicorp/tap"
 tap "skyhook-io/tap"
 tap "tw93/tap"
@@ -26,7 +25,7 @@ brew "docker-compose"
 brew "docker-credential-helper-ecr"
 brew "docker-credential-helper"
 brew "docker-machine"
-brew "docker", link: false
+brew "docker"
 brew "emacs"
 brew "fastfetch"
 brew "ffind"

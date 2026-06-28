@@ -58,6 +58,12 @@ place_dotfiles() {
     if [[ -d "$DOTFILES/config-tmux" ]]; then
         mkdir -p ~/.config/tmux
         cp -v "$DOTFILES/config-tmux/tmux.conf" ~/.config/tmux/tmux.conf
+        # alert-bell hook posts a desktop notification via this script; the
+        # hook references it by path, so it must land next to the config.
+        if [[ -f "$DOTFILES/config-tmux/notify-bell.sh" ]]; then
+            cp -v "$DOTFILES/config-tmux/notify-bell.sh" ~/.config/tmux/notify-bell.sh
+            chmod +x ~/.config/tmux/notify-bell.sh
+        fi
         # `prefix + C` capture binding writes to ~/tmp — make sure it exists.
         # (On the primary macOS box ~/tmp is a symlink to the external drive;
         #  mkdir -p is a no-op when the target already exists.)
@@ -124,11 +130,15 @@ setup_dev_tools() {
     # nvim plugins (lazy.nvim auto-bootstraps on first launch)
     echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"
 
-    # tmux: clone tpm so resurrect (and any future plugins) can be installed.
+    # tmux: clone tpm so resurrect/continuum (and any future plugins) can be installed.
+    # Config lives at ~/.config/tmux/tmux.conf, so TPM installs plugins to
+    # ~/.config/tmux/plugins/ — keep tpm itself there too (the `run` line in
+    # tmux.conf points at this path). Cloning to ~/.tmux/plugins splits the
+    # plugin dir and silently breaks loading.
     # User installs the plugins from inside tmux via  prefix + I.
-    if [[ ! -d ~/.tmux/plugins/tpm ]]; then
+    if [[ ! -d ~/.config/tmux/plugins/tpm ]]; then
         echo "    tmux: cloning tpm (run 'prefix + I' inside tmux to install plugins)"
-        git clone --depth 1 https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+        git clone --depth 1 https://github.com/tmux-plugins/tpm ~/.config/tmux/plugins/tpm
     fi
 
     # vim plugins
@@ -172,6 +182,17 @@ apply_macos_defaults() {
 
     echo "==> Applying macOS defaults"
     bash "$SCRIPT_DIR/defaults-dump.sh"
+}
+
+# --- Phase 4b: Keyboard shortcuts (Mission Control Space switching) ---
+# Lives in a separate script because com.apple.symbolichotkeys is a nest of
+# dicts that defaults-dump.sh can't represent, and the numbered "Switch to
+# Desktop N" shortcuts ship disabled by default.
+apply_keyboard_shortcuts() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    if [[ ! -f "$SCRIPT_DIR/keyboard-shortcuts.sh" ]]; then return; fi
+
+    bash "$SCRIPT_DIR/keyboard-shortcuts.sh"
 }
 
 # --- Phase 5: Manual steps reminder ---
@@ -249,4 +270,5 @@ place_dotfiles
 setup_dev_tools
 setup_pam_touchid
 apply_macos_defaults
+apply_keyboard_shortcuts
 print_manual_steps
