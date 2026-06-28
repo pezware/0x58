@@ -180,8 +180,9 @@ fi
 
 # claude knowledge book — general, non-sensitive gotchas only. KEEP IT THAT WAY:
 # this is a PUBLIC repo, so never add a knowledge entry containing secrets, host
-# names, SA/project names, or anything machine-specific (those belong in CLAUDE.md,
-# which is not tracked here).
+# names, SA/project names, or anything machine-specific (those belong in a
+# project-local .claude/; CLAUDE.md is also backed up below, but only after it
+# passes the CLAUDE_SECRET_RE scan).
 if [[ -d ~/.claude/knowledge ]]; then
     mkdir -p "$DOTFILES_DIR/claude/knowledge"
     for f in ~/.claude/knowledge/*.md; do
@@ -192,9 +193,21 @@ fi
 # PUBLIC-REPO content guard, shared by the commands + skills blocks below. If a file
 # matches any of these, it is NOT mirrored (a loud warning is printed instead). Keep the
 # pattern in sync with what must never appear in this public repo: private keys, common
-# token shapes, GCP SAs, and work-project identifiers (those belong in the untracked
-# CLAUDE.md / a project-local .claude/, not here).
+# token shapes, GCP SAs, and work-project identifiers (work-specific runbooks belong in a
+# project-local .claude/). This guard also gates CLAUDE.md itself, below.
 CLAUDE_SECRET_RE='(BEGIN [A-Z ]*PRIVATE KEY|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20}|gserviceaccount|iden2|pezware|phenix)'
+
+# claude global CLAUDE.md — personal dev guidelines, backed up here BUT guarded: if it ever
+# contains a work/project identifier or secret it is SKIPPED (with a warning) instead of
+# leaking into this public repo. Keep machine/work-specific runbooks in a project-local
+# .claude/ (e.g. infra-tf), never in the global CLAUDE.md.
+if [[ -f ~/.claude/CLAUDE.md ]]; then
+    if grep -qiE "$CLAUDE_SECRET_RE" ~/.claude/CLAUDE.md; then
+        echo "  !! SKIP (sensitive content): claude/CLAUDE.md" >&2
+    else
+        cp -p ~/.claude/CLAUDE.md "$DOTFILES_DIR/claude/CLAUDE.md"
+    fi
+fi
 
 # claude commands — global slash commands authored locally. Same PUBLIC-REPO rule as the
 # knowledge book: never track a command containing secrets / host / SA / project names.
