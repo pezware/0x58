@@ -15,5 +15,6 @@ Generated: 2026-07-17
 | Secretive | brew cask |
 | superwhisper | manual/App Store |
 | Tailscale | manual/App Store |
+| tldraw offline | manual/App Store |
 | WhatsApp | manual/App Store |
 | Wireshark | manual/App Store |

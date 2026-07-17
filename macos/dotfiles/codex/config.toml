@@ -70,8 +70,8 @@ source_type = "local"
 source = "/Users/arbeitandy/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-07-17T17:00:45Z"
-last_revision = "49d9ab4c0b20eda5bb896d8fedf3271aa16cf59a"
+last_updated = "2026-07-17T22:55:11Z"
+last_revision = "2476d52abc961e2544c1b663f0541171aef2d3e1"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
