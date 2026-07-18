@@ -1,4 +1,4 @@
-model = "gpt-5.5"
+model = "gpt-5.6-terra"
 personality = "pragmatic"
 service_tier = "fast"
 cli_auth_credentials_store = "auto"
@@ -16,16 +16,10 @@ trust_level = "trusted"
 [projects."/Users/arbeitandy/src/public/0x58"]
 trust_level = "trusted"
 
-[projects."/Users/arbeitandy/src/iden2/go-monorepo"]
-trust_level = "trusted"
-
-[projects."/Users/arbeitandy/src/iden2/infra-tf"]
-trust_level = "trusted"
-
-
 [notice]
 hide_gpt5_1_migration_prompt = true
 "hide_gpt-5.1-codex-max_migration_prompt" = true
+hide_rate_limit_model_nudge = true
 
 [plugins."github@openai-curated"]
 enabled = true
@@ -62,6 +56,8 @@ enabled = true
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
+"gpt-5.6-sol" = 4
+"gpt-5.6-terra" = 1
 
 [marketplaces.openai-bundled]
 last_updated = "2026-05-02T14:19:19Z"
@@ -74,14 +70,14 @@ source_type = "local"
 source = "/Users/arbeitandy/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-06-28T04:36:31Z"
-last_revision = "30a213f9b39e3c40b0073bb5b41081da9f2b6634"
+last_updated = "2026-07-17T22:55:11Z"
+last_revision = "2476d52abc961e2544c1b663f0541171aef2d3e1"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.openai-codex]
-last_updated = "2026-06-24T01:52:40Z"
-last_revision = "80c31f99570876c3ef40327838b0a2ca1ae2cd9c"
+last_updated = "2026-07-09T02:41:13Z"
+last_revision = "db52e28f4d9ded852ab3942cea316258ae4ef346"
 source_type = "git"
 source = "https://github.com/openai/codex-plugin-cc.git"
 

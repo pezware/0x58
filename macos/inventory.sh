@@ -163,10 +163,35 @@ if [[ -d ~/.kube ]]; then
     done
 fi
 
-# codex (config only — auth.json, sessions, logs, history are not tracked)
+# PUBLIC-REPO content guard, shared by the codex, CLAUDE.md, commands, and skills
+# blocks below. Any file matching this is NOT mirrored verbatim — it is skipped with a
+# loud warning, or (for the codex config) has the offending lines filtered out. Keep the
+# pattern in sync with what must never appear in this public repo: private keys, common
+# token shapes, GCP SAs, and work-project identifiers (work-specific runbooks belong in a
+# project-local .claude/).
+CLAUDE_SECRET_RE='(BEGIN [A-Z ]*PRIVATE KEY|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20}|gserviceaccount|iden2|pezware|phenix|ROAD-[0-9]|PassProof|Didit|\bIAS\b)'
+
+# codex (config only — auth.json, sessions, logs, history are not tracked).
+# PUBLIC-REPO guard: the config's [projects."…"] trust entries embed absolute repo paths,
+# some of them work projects (CLAUDE_SECRET_RE). Drop any such section — header + body —
+# so work-project names never leak here; public-repo project entries are kept.
 if [[ -f ~/.codex/config.toml ]]; then
     mkdir -p "$DOTFILES_DIR/codex"
-    cp -p ~/.codex/config.toml "$DOTFILES_DIR/codex/config.toml"
+    CLAUDE_SECRET_RE="$CLAUDE_SECRET_RE" python3 - ~/.codex/config.toml "$DOTFILES_DIR/codex/config.toml" <<'PY'
+import os, re, sys
+pat = re.compile(os.environ["CLAUDE_SECRET_RE"], re.I)
+src, dst = sys.argv[1], sys.argv[2]
+kept, skip = [], False
+for line in open(src):
+    if line.startswith("["):
+        skip = line.startswith("[projects.") and bool(pat.search(line))
+    if not skip:
+        kept.append(line)
+text = "".join(kept)
+open(dst, "w").write(text)
+if pat.search(text):
+    sys.stderr.write("  !! WARNING: codex/config.toml still trips the secret guard after filtering\n")
+PY
 fi
 
 # claude code (hook scripts only — settings.json holds machine-specific state
@@ -189,13 +214,6 @@ if [[ -d ~/.claude/knowledge ]]; then
         [[ -f "$f" ]] && cp -p "$f" "$DOTFILES_DIR/claude/knowledge/$(basename "$f")"
     done
 fi
-
-# PUBLIC-REPO content guard, shared by the commands + skills blocks below. If a file
-# matches any of these, it is NOT mirrored (a loud warning is printed instead). Keep the
-# pattern in sync with what must never appear in this public repo: private keys, common
-# token shapes, GCP SAs, and work-project identifiers (work-specific runbooks belong in a
-# project-local .claude/). This guard also gates CLAUDE.md itself, below.
-CLAUDE_SECRET_RE='(BEGIN [A-Z ]*PRIVATE KEY|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20}|gserviceaccount|iden2|pezware|phenix)'
 
 # claude global CLAUDE.md — personal dev guidelines, backed up here BUT guarded: if it ever
 # contains a work/project identifier or secret it is SKIPPED (with a warning) instead of
