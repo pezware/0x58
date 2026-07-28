@@ -12,6 +12,12 @@ Core workflow: kitty + bash + nvim + git + w3m + claude/codex + gcloud.
 HEADLESS=1 ./macos/restore.sh   # ...plus laptop-as-server config (lid, battery)
 ```
 
+Bare Linux machine, nothing installed yet:
+
+```bash
+bash -c "$(curl -fsSL https://m.pezware.com/linux-start.sh)"
+```
+
 See [macos/setup-guide.md](macos/setup-guide.md) for manual steps (SSH keys, GPG, auth),
 or [linux/setup-guide.md](linux/setup-guide.md) for a Debian headless install.
 
@@ -48,9 +54,15 @@ macos/
     w3m/                           # w3m config + keymap
 
 linux/
+  start.sh               # Bare-metal one-liner: installs git, clones, runs restore.sh
   packages.txt           # apt base packages (dev tools come from mise, not apt)
   setup-server.sh        # Laptop-as-server: lid-close + battery charge ceiling
-  setup-guide.md         # Debian netinst walkthrough, headless tasksel choices
+  setup-guide.md         # Debian netinst walkthrough, partitioning, tasksel choices
+
+cloudflare/
+  worker.js              # Serves linux/start.sh at m.pezware.com/linux-start.sh
+  wrangler.toml          # Route + deploy config (wrangler comes from mise)
+  README.md              # DNS setup, and why a CNAME cannot do this
 ```
 
 ## Credential storage

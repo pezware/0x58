@@ -1,0 +1,16 @@
+name = "pezware-scripts"
+main = "worker.js"
+compatibility_date = "2026-07-28"
+
+# Worker routes need a DNS record to exist for the hostname AND be proxied
+# (orange cloud). The record is never connected to — Cloudflare short-circuits
+# to the Worker at the edge — so the convention is a discard address:
+#
+#   Type AAAA   Name m   Content 100::   Proxied: yes
+#
+# See cloudflare/README.md for the full setup.
+routes = [
+  { pattern = "m.pezware.com/*", zone_name = "pezware.com" }
+]
+
+# No KV, no secrets, no bindings: this Worker only proxies public repo files.

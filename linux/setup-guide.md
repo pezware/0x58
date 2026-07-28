@@ -53,19 +53,76 @@ too, which makes this a useful diagnostic as well as an install.
 
 4. Wired ethernet is strongly preferred for a server. Use wifi only if you must.
 
+## Partitioning
+
+Use **Guided – use entire disk and set up LVM**. Not the *encrypted* variant: on
+a headless box LUKS blocks every boot at the console waiting for a passphrase,
+and the machine stays unreachable until someone physically types it.
+
+When the installer asks **"Amount of volume group to use for guided
+partitioning"**, do not accept the maximum — that discards the entire point of
+LVM. On a 128 GB disk, entering ~80 GB gives:
+
+| Volume | Type | Size |
+|---|---|---|
+| ESP | plain | 512 MB (UEFI only) |
+| `/boot` | plain ext4 | 1 GB |
+| `swap` LV | swap | 4 GB |
+| `root` LV | ext4 | 30 GB — `/home` lives here, and mise puts ~5-10 GB of toolchains in it |
+| `var` LV | ext4 | 45 GB — container images and logs land here |
+| *unallocated* | — | ~47 GB held in reserve |
+
+The reserve is the feature: `lvextend -L +20G /dev/vg/var && resize2fs /dev/vg/var`
+grows `/var` online when image churn outpaces the guess. ext4 rather than XFS
+because XFS cannot shrink, and one-way resizing is a poor trade when you are
+estimating sizes up front.
+
+A separate `/var` also contains the classic failure: a runaway container log
+filling the disk takes out the whole system, including your ability to SSH in
+and clean it up.
+
+> Note for k8s: kubelet refuses to start with swap enabled (`--fail-swap-on`
+> defaults true). Either `swapoff -a` plus a commented fstab line, or set
+> `--fail-swap-on=false` deliberately. The 4 GB LV costs little and keeps both
+> options open — `apt` and `mise install` can OOM without it on a 2-4 GB box.
+
 ## Bootstrap
+
+On a bare machine, one command:
+
+```bash
+bash -c "$(curl -fsSL https://m.pezware.com/linux-start.sh)"
+```
+
+Prefer that form over `curl ... | bash` — piping puts the script on stdin, so a
+`sudo` re-prompt or an apt conffile question would consume the script's own bytes
+instead of your keystrokes. See [`../cloudflare/`](../cloudflare/) for how that
+URL is served (it is a Worker; a CNAME cannot do it).
+
+Straight from GitHub, no Cloudflare involved:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/pezware/0x58/main/linux/start.sh)"
+```
+
+Or by hand, if you would rather read before you run:
 
 ```bash
 sudo apt install -y git ca-certificates          # just enough to clone
 git clone https://github.com/pezware/0x58 ~/src/public/0x58
 cd ~/src/public/0x58
-
 HEADLESS=1 ./macos/restore.sh                    # packages + dotfiles + lid/battery
 ```
 
-`restore.sh` detects Linux and installs from [`packages.txt`](packages.txt).
-`HEADLESS=1` additionally runs [`setup-server.sh`](setup-server.sh); leave it off
-for VMs and containers, which have neither a lid nor a battery.
+[`start.sh`](start.sh) installs git, clones or fast-forwards the repo, and hands
+off to `restore.sh`, which detects Linux and installs from
+[`packages.txt`](packages.txt). `HEADLESS=1` additionally runs
+[`setup-server.sh`](setup-server.sh) — leave it off for VMs and containers, which
+have neither a lid nor a battery:
+
+```bash
+HEADLESS=1 bash -c "$(curl -fsSL https://m.pezware.com/linux-start.sh)"
+```
 
 Then follow the numbered manual steps the script prints at the end (auth, SSH
 key, Tailscale, `mise install`).
