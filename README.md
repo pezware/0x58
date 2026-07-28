@@ -1,16 +1,19 @@
 # 0x58
 
-Personal system configuration backup — quick bootstrap for macOS or Linux VMs.
+Personal system configuration backup — quick bootstrap for macOS, Linux VMs, or a
+headless Linux server.
 
 Core workflow: kitty + bash + nvim + git + w3m + claude/codex + gcloud.
 
 ## Quick Start
 
 ```bash
-./macos/restore.sh    # detects macOS vs Linux, installs everything
+./macos/restore.sh              # detects macOS vs Linux, installs everything
+HEADLESS=1 ./macos/restore.sh   # ...plus laptop-as-server config (lid, battery)
 ```
 
-See [macos/setup-guide.md](macos/setup-guide.md) for manual steps (SSH keys, GPG, auth).
+See [macos/setup-guide.md](macos/setup-guide.md) for manual steps (SSH keys, GPG, auth),
+or [linux/setup-guide.md](linux/setup-guide.md) for a Debian headless install.
 
 ## Structure
 
@@ -43,6 +46,11 @@ macos/
     codex/config.toml              # Codex CLI config (cli_auth_credentials_store="auto")
     kube/                          # README + exec-based GKE/EKS configs (no secrets)
     w3m/                           # w3m config + keymap
+
+linux/
+  packages.txt           # apt base packages (dev tools come from mise, not apt)
+  setup-server.sh        # Laptop-as-server: lid-close + battery charge ceiling
+  setup-guide.md         # Debian netinst walkthrough, headless tasksel choices
 ```
 
 ## Credential storage
@@ -66,4 +74,10 @@ GPG private keys are NOT in `~/.gnupg/private-keys-v1.d/` between sessions — t
 - **Migration Assistant** is the recommended path for new-machine setup; it transfers the login keychain so all credential restores Just Work afterwards
 - **Tailscale** — client-only, just sign in
 - **OrbStack** — container runtime; `restore.sh` also bootstraps Linux VMs
+- **Linux package split** — apt owns the base system, `mise` owns every dev tool and
+  runtime. No Homebrew on Linux: `dotfiles/mise/config.toml` is already cross-platform
+  and covers ~50 of the Brewfile's formulae, so a second package manager would only
+  add 1–3 GB and source builds. See [linux/setup-guide.md](linux/setup-guide.md)
+- **Headless laptop server** — lid-close suspend and permanent-AC battery swelling are
+  the two things that kill the project; `HEADLESS=1` handles both
 - **Touch ID in tmux** — `pam-reattach` + a PAM edit needed; `restore.sh` automates it (see [setup-guide.md](macos/setup-guide.md#touch-id-for-sudo-in-tmux-pam-reattach))

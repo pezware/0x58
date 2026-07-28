@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOTFILES="$SCRIPT_DIR/dotfiles"
+LINUX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/linux"
 
 # --- Detect platform ---
 OS="$(uname -s)"
@@ -24,9 +25,21 @@ install_packages() {
         echo "==> Installing packages from Brewfile"
         HOMEBREW_NO_AUTO_UPDATE=1 brew bundle install --file="$SCRIPT_DIR/Brewfile" --no-lock
     else
-        echo "==> Installing packages (apt)"
+        # apt owns only the base system; dev tools come from mise
+        # (dotfiles/mise/config.toml, already cross-platform). Keeping the two
+        # lists disjoint is why the package set lives in a file rather than
+        # inline here — see the header of linux/packages.txt.
+        if [[ ! -f "$LINUX_DIR/packages.txt" ]]; then
+            echo "ERROR: missing $LINUX_DIR/packages.txt" >&2
+            exit 1
+        fi
+        echo "==> Installing packages (apt) from linux/packages.txt"
+        local pkgs
+        pkgs=$(grep -vE '^[[:space:]]*(#|$)' "$LINUX_DIR/packages.txt" | awk '{print $1}')
         sudo apt update
-        sudo apt install -y bash neovim git w3m curl ripgrep fzf jq bat tmux rsync
+        # shellcheck disable=SC2086  # word splitting is intended: one package per line
+        sudo apt install -y $pkgs
+
         # mise
         if ! command -v mise &>/dev/null; then
             curl https://mise.run | sh
@@ -195,6 +208,24 @@ apply_keyboard_shortcuts() {
     bash "$SCRIPT_DIR/keyboard-shortcuts.sh"
 }
 
+# --- Phase 4c: Linux headless server (laptop-as-server) ---
+# Lid-close suspend and permanent-AC battery swelling are the two failure modes
+# that end a laptop-server project. Both need root, so this is opt-in via
+# HEADLESS=1 rather than running on every Linux box (VMs and containers have
+# neither a lid nor a battery).
+setup_linux_server() {
+    if [[ "$PLATFORM" != "linux" ]]; then return; fi
+    if [[ "${HEADLESS:-0}" != "1" ]]; then
+        echo "==> Headless server config: skipped (re-run with HEADLESS=1 to enable)"
+        return
+    fi
+    if [[ ! -x "$LINUX_DIR/setup-server.sh" ]]; then
+        echo "ERROR: $LINUX_DIR/setup-server.sh missing or not executable" >&2
+        exit 1
+    fi
+    bash "$LINUX_DIR/setup-server.sh"
+}
+
 # --- Phase 5: Manual steps reminder ---
 print_manual_steps() {
     echo ""
@@ -253,6 +284,19 @@ MANUAL
   4. mise tools (config is symlinked from the 0x58 repo):
      ln -sf ~/src/public/0x58/dotfiles/mise/config.toml ~/.config/mise/config.toml
      mise trust ~/.config/mise/config.toml && mise install
+
+  5. SSH access from the Mac (Secretive key stays on the Mac — only the
+     PUBLIC half comes here, so the Secure Enclave key is never transferred):
+     mkdir -p ~/.ssh && chmod 700 ~/.ssh
+     # on the Mac:  ssh-add -L | pbcopy    then paste into:
+     vim ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+
+  6. Tailscale (reach the box without port-forwarding):
+     curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --ssh
+
+  7. Headless server config (laptop-as-server only — lid + battery):
+     HEADLESS=1 ./macos/restore.sh     # or: bash linux/setup-server.sh
+     See linux/setup-guide.md for the install-time choices that can't be scripted.
 MANUAL
     fi
 
@@ -269,6 +313,7 @@ install_packages
 place_dotfiles
 setup_dev_tools
 setup_pam_touchid
+setup_linux_server
 apply_macos_defaults
 apply_keyboard_shortcuts
 print_manual_steps

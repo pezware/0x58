@@ -61,24 +61,29 @@ else
     [ -f "$HOME/.local/share/bash-completion/completions/deno.bash" ] && source "$HOME/.local/share/bash-completion/completions/deno.bash"
 fi
 
-# jdk!
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+# --- macOS-only environment -------------------------------------------------
+# restore.sh copies this file verbatim onto Linux boxes, and these exports are
+# hardcoded to macOS paths. Two of them are actively harmful there:
+#   - /usr/libexec/java_home does not exist -> an error on every interactive shell
+#   - pinning SSH_AUTH_SOCK to the Secretive socket CLOBBERS a forwarded agent,
+#     silently breaking git-over-SSH after `ssh -A` into the box
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+    export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
+    export PNPM_HOME="$HOME/Library/pnpm"
+    export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:$PATH"
+else
+    # Leave SSH_AUTH_SOCK untouched so a forwarded agent survives.
+    export PNPM_HOME="$HOME/.local/share/pnpm"
+fi
 
-
-export GPG_TTY=$(tty)
-export DO_NOT_TRACK=1
-export SSH_AUTH_SOCK=/Users/arbeitandy/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
-
-# pnpm
-export PNPM_HOME="/Users/arbeitandy/Library/pnpm"
 case ":$PATH:" in
   *":$PNPM_HOME:"*) ;;
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
-# pnpm end
-# test
-export MEMPAL_HOME="~/src/.mempal"
 
-export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:$PATH"
+export GPG_TTY=$(tty)
+export DO_NOT_TRACK=1
+export MEMPAL_HOME="~/src/.mempal"
 export GOOGLE_CLOUD_QUOTA_PROJECT=""
 eval "$(mise activate bash)"
