@@ -9,8 +9,15 @@
 #   commands  apply destroy plan | start stop status | ssh ip
 #
 # Secrets come from the macOS Keychain into the environment for the duration of
-# this process only — never to disk, never into tfstate. Same contract as
-# dev/exit-node/linode/ts-exit, which this generalises.
+# this process. Same contract as dev/exit-node/linode/ts-exit, which this
+# generalises. Be precise about what that does and does not buy:
+#
+#   LINODE_TOKEN  never a Terraform variable, so it cannot reach tfstate.
+#   auth key      DOES reach tfstate and cloud-init's /var/lib/cloud cache,
+#                 because it is rendered into instance user_data. `sensitive`
+#                 only masks CLI output. Mitigate by preferring SINGLE-USE keys
+#                 (spent at first join, so the copy at rest is worthless) and by
+#                 keeping expiry short. tfstate is gitignored but is NOT secret-free.
 #
 # NOTE: dev/exit-node/ is deliberately left alone. It holds live state for the
 # currently-active pezware-cuatro; `minimal` here is its successor for NEW
@@ -36,14 +43,19 @@ ROLE_DIR="roles/$ROLE"
     exit 1
 }
 
-# ── Keychain: Linode PAT (shared by every role) ─────────────────────────────
-LINODE_TOKEN=$(security find-generic-password -s linode-pat -a "$USER" -w 2>/dev/null) || {
-    echo "error: keychain item 'linode-pat' not found." >&2
-    echo "       see dev/exit-node/linode/README.md -> Setup -> Step 1" >&2
-    exit 1
-}
-export LINODE_TOKEN
 export TF_VAR_tailscale_auth_key
+
+# ── Keychain: Linode PAT ────────────────────────────────────────────────────
+# Loaded only by the commands that actually talk to Linode, so `ssh` and `ip`
+# never carry the token in their environment at all.
+needs_linode_token() {
+    LINODE_TOKEN=$(security find-generic-password -s linode-pat -a "$USER" -w 2>/dev/null) || {
+        echo "error: keychain item 'linode-pat' not found." >&2
+        echo "       see dev/exit-node/linode/README.md -> Setup -> Step 1" >&2
+        exit 1
+    }
+    export LINODE_TOKEN
+}
 
 # Per-role auth keys, because a Tailscale key grants ALL of its tags to the node
 # it registers — one shared multi-tag key would make every box wear every tag
@@ -70,40 +82,50 @@ tf() { terraform -chdir="$ROLE_DIR" "$@"; }
 
 instance_id() { tf output -raw instance_id 2>/dev/null; }
 
+# The Authorization header goes in via a stdin config file rather than argv,
+# where any local process could read it out of /proc or `ps` while curl runs.
 linode_api() {
-    curl -sf -H "Authorization: Bearer ${LINODE_TOKEN}" -H "Content-Type: application/json" "$@"
+    curl -sf -K - -H "Content-Type: application/json" "$@" <<CFG
+header = "Authorization: Bearer ${LINODE_TOKEN}"
+CFG
 }
 
 case "$CMD" in
     apply)
+        needs_linode_token
         needs_auth_key
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf apply "$@"
         ;;
     plan)
+        needs_linode_token
         needs_auth_key
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf plan "$@"
         ;;
     destroy)
+        needs_linode_token
         # auth_key is required by the schema; empty satisfies it during destroy.
         TF_VAR_tailscale_auth_key=""
         tf destroy "$@"
         echo "Remember to remove the stale node from https://login.tailscale.com/admin/machines"
         ;;
     start)
+        needs_linode_token
         ID=$(instance_id) || { echo "error: run './ts-node $ROLE apply' first" >&2; exit 1; }
         echo "Booting $ROLE (id $ID)..."
         linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/boot" >/dev/null
         echo "On the tailnet in ~60s."
         ;;
     stop)
+        needs_linode_token
         ID=$(instance_id) || exit 1
         echo "Powering off $ROLE (id $ID)."
         echo "NOTE: Linode bills a powered-off instance in full. Only 'destroy' stops charges."
         linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/shutdown" >/dev/null
         ;;
     status)
+        needs_linode_token
         ID=$(instance_id) || { echo "not applied"; exit 0; }
         linode_api "https://api.linode.com/v4/linode/instances/$ID" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))"

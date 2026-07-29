@@ -46,14 +46,28 @@ A Tailscale auth key grants *all* of its tags to whatever registers with it, so
 one shared multi-tag key would make every box wear every tag and collapse the
 ACL separation. Hence one key each:
 
-| Role | Keychain item | Tag |
-|---|---|---|
-| `devbox` | `tailscale-devbox-authkey` | `tag:devbox` |
-| `k8s` | `tailscale-k8s-authkey` | `tag:k8s` |
-| `minimal` | `tailscale-exit-authkey` *(existing)* | `tag:exit-node` |
+| Role | Keychain item | Tag | Key kind |
+|---|---|---|---|
+| `devbox` | `tailscale-devbox-authkey` | `tag:devbox` | **single-use** |
+| `k8s` | `tailscale-k8s-authkey` | `tag:k8s` | reusable |
+| `minimal` | `tailscale-exit-authkey` *(existing)* | `tag:exit-node` | reusable |
+
+**Single-use where you can, reusable only where you must.** The key is rendered
+into instance `user_data`, so it lands in tfstate and in cloud-init's
+`/var/lib/cloud` cache — `sensitive` only masks CLI output. A single-use key is
+spent the moment the node joins, which makes the copy at rest worthless. That is
+why `devbox`, built once and kept, uses one.
+
+`k8s` stays reusable purely for ergonomics: it is destroyed and rebuilt
+constantly, and minting a key per rebuild is friction you would route around.
+It is therefore the higher-exposure key of the three — keep its expiry short.
+
+**A single-use key is consumed on first join.** Rebuilding `devbox` after a
+`destroy` needs a freshly minted key in the Keychain, or the node comes up
+without a tailnet identity and is unreachable.
 
 Generate at <https://login.tailscale.com/admin/settings/keys> with
-**Reusable: ON · Pre-approved: ON · Tags: ON**, then:
+**Pre-approved: ON · Tags: ON**, then:
 
 ```bash
 security add-generic-password -U -s tailscale-devbox-authkey -a "$USER" -w
@@ -157,6 +171,14 @@ node redundant while `devbox` is up.
   `k8s` and 4096 on `devbox`. The split is the only reason both can be right.
 - **Tag-owned devices reject SSH by default** — needs the explicit `ssh` ACL
   rule above, or `tailscale ssh` fails in a way that looks like a firewall.
+- **cloud-init `runcmd` is once-per-INSTANCE, not once-per-boot.** The
+  `scripts-user` module defaults to that frequency, so a reboot never re-runs
+  it. Anything that must survive a reboot goes in `0x58-node-boot.service`,
+  installed by `common_install_perboot_unit`, which re-runs the role script
+  with `--per-boot`. That is why the devbox `tmux` session comes back.
+- **The auth key is not tmpfs-only.** It is rendered into `user_data`, so it
+  reaches tfstate and cloud-init's persistent cache. `/run` shredding limits the
+  live copy, not the durable ones — hence the single-use preference above.
 - **`templatefile()` cannot see `path.module`.** Sibling files must be read in
   the calling `.tf` and passed as vars — see `modules/linode-node/main.tf`.
 - **Destroying a node leaves a stale machine** in the Tailscale admin console,

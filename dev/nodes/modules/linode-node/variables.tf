@@ -58,6 +58,11 @@ variable "swap_mb" {
   EOT
   type        = number
   default     = 0
+
+  validation {
+    condition     = var.swap_mb >= 0 && floor(var.swap_mb) == var.swap_mb
+    error_message = "swap_mb must be a non-negative whole number of megabytes."
+  }
 }
 
 variable "extra_tags" {

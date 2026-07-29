@@ -69,12 +69,13 @@ setup_battery_threshold() {
     echo "==> Battery threshold: capping charge at ${BATT_STOP_THRESHOLD}% ($sysfs)"
     echo "$BATT_STOP_THRESHOLD" | sudo tee "$sysfs" >/dev/null
 
-    if [[ -f "$unit" ]]; then
-        echo "    boot-time unit already present ($unit)"
-        return
-    fi
-
-    sudo tee "$unit" >/dev/null <<UNIT
+    # Always render, then replace only on difference. Returning early when the
+    # unit merely exists would let a re-run with a new BATT_STOP_THRESHOLD write
+    # the live sysfs value while leaving the OLD value baked into ExecStart —
+    # so the change would silently revert at the next boot.
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp" <<UNIT
 [Unit]
 Description=0x58 — cap battery charge for laptop-as-server
 ConditionPathExists=$sysfs
@@ -89,9 +90,17 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
+    if sudo cmp -s "$tmp" "$unit" 2>/dev/null; then
+        echo "    boot-time unit already current ($unit)"
+        rm -f "$tmp"
+        return
+    fi
+
+    sudo install -m 644 "$tmp" "$unit"
+    rm -f "$tmp"
     sudo systemctl daemon-reload
     sudo systemctl enable 0x58-battery-threshold.service >/dev/null
-    echo "    enabled 0x58-battery-threshold.service (reapplies on boot)"
+    echo "    enabled 0x58-battery-threshold.service (reapplies ${BATT_STOP_THRESHOLD}% on boot)"
 }
 
 # --- 3. Report ---

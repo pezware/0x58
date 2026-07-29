@@ -29,7 +29,7 @@ module "node" {
 
   tailscale_auth_key = var.tailscale_auth_key
   tailscale_tag      = "tag:exit-node"
-  tailscale_flags    = "--advertise-exit-node"
+  tailscale_flags    = "--advertise-exit-node=true"
 
   swap_mb = 0
 

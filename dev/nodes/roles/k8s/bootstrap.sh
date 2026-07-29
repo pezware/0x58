@@ -16,6 +16,10 @@ CLUSTER_NAME="${CLUSTER_NAME:-dev}"
 
 as_user() { sudo -u "$USER_NAME" -H bash -lc "$*"; }
 
+# Everything below is first-boot only. On reboot, dockerd comes back via systemd
+# and kind's node containers restart themselves, so there is nothing to reconcile.
+first_boot || { log "per-boot: nothing to do"; exit 0; }
+
 # ── Docker: kind's "nodes" are containers, which is why this works on a VPS ──
 # (A VM-driver minikube would need nested virtualisation, which Linode has not.)
 log "installing docker"

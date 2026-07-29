@@ -2,15 +2,20 @@
 #
 # 0x58 bare-metal bootstrap — takes a fresh Debian install to a working box.
 #
-#   bash -c "$(curl -fsSL https://pezware.com/linux-start.sh)"
+#   bash -c "$(curl -fsSL https://m.pezware.com/linux-start.sh)"
 #
 # Use that form rather than `curl ... | bash`: piping puts this script on stdin,
 # so anything downstream that reads from the terminal (a sudo re-prompt, an apt
 # conffile question) consumes the script's own bytes instead of your keystrokes.
 #
-# Everything below lives in a function and `main` is called on the LAST line, so
-# a truncated download — connection dropped mid-transfer — defines some functions
-# and then does nothing, rather than executing half a script.
+# Everything below lives in a function and `main` is called on the LAST line.
+# That MITIGATES truncation but does not eliminate it: a cut anywhere inside a
+# function body is a syntax error and nothing runs, but a cut landing in the
+# final few bytes — right after `main` — still yields a valid call. Command
+# substitution also discards curl's exit status, so `bash -c` never learns the
+# download failed. When that matters, download and verify first:
+#
+#   curl -fsSL -o /tmp/start.sh https://m.pezware.com/linux-start.sh && bash /tmp/start.sh
 #
 # Env overrides:  REPO_URL  REPO_DIR  REPO_BRANCH  HEADLESS=1
 set -euo pipefail

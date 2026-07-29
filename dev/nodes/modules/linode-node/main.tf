@@ -37,13 +37,24 @@ resource "linode_instance" "node" {
       tailscale_auth_key = var.tailscale_auth_key
       common_script      = file("${path.module}/common.sh")
       bootstrap_script   = var.bootstrap_script
+      # Every value is quoted: this file is `.`-sourced by common.sh, so an
+      # unquoted multi-flag string like `--advertise-exit-node --accept-routes`
+      # would make the second flag a command and abort the bootstrap before the
+      # tailnet join — locking us out of the only access path.
       node_env = join("\n", [
-        "ROLE=${var.role}",
-        "TS_TAG=${var.tailscale_tag}",
-        "TS_EXTRA_FLAGS=${var.tailscale_flags}",
-        "SWAP_MB=${var.swap_mb}",
+        "ROLE=\"${var.role}\"",
+        "TS_TAG=\"${var.tailscale_tag}\"",
+        "TS_EXTRA_FLAGS=\"${var.tailscale_flags}\"",
+        "SWAP_MB=\"${var.swap_mb}\"",
       ])
     }))
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.role != "k8s" || var.swap_mb == 0
+      error_message = "kubelet refuses to start when swap is enabled, so the k8s role must set swap_mb = 0."
+    }
   }
 }
 

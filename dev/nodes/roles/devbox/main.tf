@@ -37,7 +37,10 @@ module "node" {
 
   tailscale_auth_key = var.tailscale_auth_key
   tailscale_tag      = "tag:devbox"
-  tailscale_flags    = var.advertise_exit_node ? "--advertise-exit-node" : ""
+  # Explicit =true/=false rather than present/absent: `tailscale set` only
+  # changes settings you actually pass, so omitting the flag would leave a
+  # previously-advertised exit node still advertising.
+  tailscale_flags = var.advertise_exit_node ? "--advertise-exit-node=true" : "--advertise-exit-node=false"
 
   # 2 GB is comfortable for agents but thin for golangci-lint or a Go build.
   # Swap is safe here precisely because this node never runs kubelet.
