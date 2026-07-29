@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# Tailscale node orchestrator.  ./ts-node <role> <command>
+#
+#   roles     devbox   Linode 2GB, always on — repos, agents, kubectl
+#             k8s      Linode 4GB, on demand — docker + kind, disposable
+#             minimal  Nanode 1GB — exit node only, the fall-back tier
+#
+#   commands  apply destroy plan | start stop status | ssh ip
+#
+# Secrets come from the macOS Keychain into the environment for the duration of
+# this process only — never to disk, never into tfstate. Same contract as
+# dev/exit-node/linode/ts-exit, which this generalises.
+#
+# NOTE: dev/exit-node/ is deliberately left alone. It holds live state for the
+# currently-active pezware-cuatro; `minimal` here is its successor for NEW
+# builds, not a migration of the existing one.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+usage() {
+    sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-1}"
+}
+
+ROLE="${1:-}"; shift || true
+CMD="${1:-}";  shift || true
+
+[ -n "$ROLE" ] && [ -n "$CMD" ] || usage 1
+
+ROLE_DIR="roles/$ROLE"
+[ -d "$ROLE_DIR" ] || {
+    echo "error: unknown role '$ROLE'" >&2
+    echo "       valid: $(find roles -maxdepth 1 -mindepth 1 -type d -exec basename {} \; | sort | tr '\n' ' ')" >&2
+    exit 1
+}
+
+# ── Keychain: Linode PAT (shared by every role) ─────────────────────────────
+LINODE_TOKEN=$(security find-generic-password -s linode-pat -a "$USER" -w 2>/dev/null) || {
+    echo "error: keychain item 'linode-pat' not found." >&2
+    echo "       see dev/exit-node/linode/README.md -> Setup -> Step 1" >&2
+    exit 1
+}
+export LINODE_TOKEN
+export TF_VAR_tailscale_auth_key
+
+# Per-role auth keys, because a Tailscale key grants ALL of its tags to the node
+# it registers — one shared multi-tag key would make every box wear every tag
+# and defeat the ACL separation.
+ts_keychain_item() {
+    case "$1" in
+        minimal) echo "tailscale-exit-authkey" ;;   # reuse the existing item
+        *)       echo "tailscale-$1-authkey" ;;
+    esac
+}
+
+needs_auth_key() {
+    local item; item=$(ts_keychain_item "$ROLE")
+    TF_VAR_tailscale_auth_key=$(security find-generic-password -s "$item" -a "$USER" -w 2>/dev/null) || {
+        echo "error: keychain item '$item' not found." >&2
+        echo "       Generate a reusable + pre-approved key tagged tag:$ROLE at" >&2
+        echo "       https://login.tailscale.com/admin/settings/keys then:" >&2
+        echo "         security add-generic-password -U -s $item -a \"\$USER\" -w" >&2
+        exit 1
+    }
+}
+
+tf() { terraform -chdir="$ROLE_DIR" "$@"; }
+
+instance_id() { tf output -raw instance_id 2>/dev/null; }
+
+linode_api() {
+    curl -sf -H "Authorization: Bearer ${LINODE_TOKEN}" -H "Content-Type: application/json" "$@"
+}
+
+case "$CMD" in
+    apply)
+        needs_auth_key
+        [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
+        tf apply "$@"
+        ;;
+    plan)
+        needs_auth_key
+        [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
+        tf plan "$@"
+        ;;
+    destroy)
+        # auth_key is required by the schema; empty satisfies it during destroy.
+        TF_VAR_tailscale_auth_key=""
+        tf destroy "$@"
+        echo "Remember to remove the stale node from https://login.tailscale.com/admin/machines"
+        ;;
+    start)
+        ID=$(instance_id) || { echo "error: run './ts-node $ROLE apply' first" >&2; exit 1; }
+        echo "Booting $ROLE (id $ID)..."
+        linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/boot" >/dev/null
+        echo "On the tailnet in ~60s."
+        ;;
+    stop)
+        ID=$(instance_id) || exit 1
+        echo "Powering off $ROLE (id $ID)."
+        echo "NOTE: Linode bills a powered-off instance in full. Only 'destroy' stops charges."
+        linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/shutdown" >/dev/null
+        ;;
+    status)
+        ID=$(instance_id) || { echo "not applied"; exit 0; }
+        linode_api "https://api.linode.com/v4/linode/instances/$ID" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))"
+        ;;
+    ssh)
+        LABEL=$(tf output -raw label 2>/dev/null) || { echo "error: not applied" >&2; exit 1; }
+        exec tailscale ssh "$LABEL" "$@"
+        ;;
+    ip)
+        LABEL=$(tf output -raw label 2>/dev/null) || { echo "error: not applied" >&2; exit 1; }
+        tailscale ip -4 "$LABEL"
+        ;;
+    *)
+        usage 1
+        ;;
+esac

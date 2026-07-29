@@ -1,0 +1,168 @@
+# Tailscale Nodes
+
+Role-based Linode nodes on the tailnet. One shared Terraform module, one
+dispatcher, three roles you can scale up and down independently.
+
+```
+dev/nodes/
+├── ts-node                     # ./ts-node <role> <command>
+├── modules/linode-node/        # instance + firewall + cloud-init + common.sh
+└── roles/
+    ├── devbox/                 # 2 GB, always on  — repos, agents, kubectl
+    ├── k8s/                    # 4 GB, on demand  — docker + kind, disposable
+    └── minimal/                # 1 GB             — exit node only, fall-back tier
+```
+
+Every node: **no inbound ports** (Cloud Firewall `DROP`, OpenSSH disabled),
+Tailscale SSH as the only access path, secrets from Keychain into env for the
+duration of one command.
+
+## Relationship to `dev/exit-node/`
+
+`dev/exit-node/` is **untouched and still authoritative** for the running
+`pezware-cuatro`. It holds live tfstate; moving it would orphan that. The
+`minimal` role here is its successor for *new* builds — if you ever build
+`minimal`, destroy `pezware-cuatro` first or you will pay for both.
+
+## Roles
+
+| Role | Plan | Cost | Lifetime | Swap |
+|---|---|---|---|---|
+| `devbox` | g6-standard-1 · 2 GB | $12/mo | permanent | 4 GB — safe, never runs kubelet |
+| `k8s` | g6-standard-2 · 4 GB | ~$0.036/hr (~$3 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
+| `minimal` | g6-nanode-1 · 1 GB | $5/mo | fall-back | 0 |
+
+Typical steady state is `devbox` alone at $12/mo, plus `k8s` for the hours you
+actually need a cluster.
+
+## Setup
+
+The `linode-pat` Keychain item already exists (see
+[`../exit-node/linode/README.md`](../exit-node/linode/README.md)) and its scope —
+Linodes R/W, Firewalls R/W — already covers these roles. What is new is one
+**auth key per role**.
+
+A Tailscale auth key grants *all* of its tags to whatever registers with it, so
+one shared multi-tag key would make every box wear every tag and collapse the
+ACL separation. Hence one key each:
+
+| Role | Keychain item | Tag |
+|---|---|---|
+| `devbox` | `tailscale-devbox-authkey` | `tag:devbox` |
+| `k8s` | `tailscale-k8s-authkey` | `tag:k8s` |
+| `minimal` | `tailscale-exit-authkey` *(existing)* | `tag:exit-node` |
+
+Generate at <https://login.tailscale.com/admin/settings/keys> with
+**Reusable: ON · Pre-approved: ON · Tags: ON**, then:
+
+```bash
+security add-generic-password -U -s tailscale-devbox-authkey -a "$USER" -w
+# paste tskey-auth-... at the prompt (never on the command line — shell history)
+```
+
+### ACL additions
+
+Extend the policy at <https://login.tailscale.com/admin/acls/file>. The
+`tag:exit-node` pieces already exist; add the two new tags and the traffic rules:
+
+```jsonc
+{
+  "tagOwners": {
+    "tag:exit-node": ["autogroup:admin"],
+    "tag:devbox":    ["autogroup:admin"],
+    "tag:k8s":       ["autogroup:admin"]
+  },
+
+  "acls": [
+    // My own devices reach the work boxes.
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:devbox:*", "tag:k8s:*"] },
+
+    // devbox reaches the cluster API. Deliberately NOT the reverse, and
+    // deliberately nothing toward the MacBook Air — a compromised VPS gets no
+    // path back to the laptop.
+    { "action": "accept", "src": ["tag:devbox"], "dst": ["tag:k8s:6443,22"] }
+  ],
+
+  // Tag-owned devices reject SSH unless a rule says otherwise; without this,
+  // `tailscale ssh` fails with a policy error that looks like a network problem.
+  "ssh": [
+    { "action": "check", "src": ["autogroup:member"],
+      "dst": ["tag:devbox", "tag:k8s"], "users": ["arbeitandy", "root"] }
+  ]
+}
+```
+
+Defining `acls` replaces Tailscale's permissive default, so anything not listed
+is denied — which is the point.
+
+## Daily use
+
+```bash
+./ts-node devbox apply       # one-time, ~5 min including the 0x58 restore
+./ts-node devbox ssh
+./ts-node devbox status
+
+./ts-node k8s apply          # when you need a cluster (~4 min incl. node image)
+./ts-node k8s destroy        # when you are done — ONLY this stops the billing
+
+./ts-node <role> plan|start|stop|ip
+```
+
+### Attaching from a phone or tablet
+
+`tmux` keeps the session alive; `mosh` survives the wifi-to-cellular handover
+that kills plain SSH. `devbox` bootstrap creates a detached session named `main`
+so the first connection from a phone has something to attach to:
+
+```bash
+mosh pezware-devbox -- tmux attach -t main
+```
+
+iOS: Tailscale + Blink Shell (native mosh). Android: Tailscale + Termux
+(`pkg install mosh openssh`).
+
+### Using the cluster from the devbox
+
+`kind get kubeconfig` prints to stdout, which drops straight into the existing
+`kubectl-context.bash` layout:
+
+```bash
+mkdir -p ~/.kube/configs/kind-dev
+ssh pezware-k8s 'kind get kubeconfig --name dev' > ~/.kube/configs/kind-dev/config
+kube-refresh && kube-use kind-dev
+```
+
+## Scaling back to minimal
+
+```bash
+./ts-node k8s destroy
+./ts-node devbox destroy
+./ts-node minimal apply          # $5/mo, exit node only
+```
+
+Set `advertise_exit_node = false` on `devbox` if you would rather keep exit-node
+duty on a separate box; the default is `true`, which makes a standalone exit
+node redundant while `devbox` is up.
+
+## Gotchas
+
+- **Powered-off Linodes still bill in full.** `stop` is a power switch, not a
+  cost control. Only `destroy` stops charges — already documented in
+  `../exit-node/README.md` and just as true here.
+- **kind binds its API server to `127.0.0.1` by default**, so its kubeconfig is
+  useless from another host and the serving cert has no SAN for the tailnet
+  address. `roles/k8s/bootstrap.sh` sets `apiServerAddress` at creation time
+  because it *cannot be retrofitted* — you would have to recreate the cluster.
+- **kubelet will not start with swap enabled**, which is why `swap_mb` is 0 on
+  `k8s` and 4096 on `devbox`. The split is the only reason both can be right.
+- **Tag-owned devices reject SSH by default** — needs the explicit `ssh` ACL
+  rule above, or `tailscale ssh` fails in a way that looks like a firewall.
+- **`templatefile()` cannot see `path.module`.** Sibling files must be read in
+  the calling `.tf` and passed as vars — see `modules/linode-node/main.tf`.
+- **Destroying a node leaves a stale machine** in the Tailscale admin console,
+  and the next build appends `-1` to the hostname. Delete it after `destroy`.
+
+## TODO
+
+- [ ] Tailscale OAuth client instead of per-role auth keys (same TODO as `../exit-node/`)
+- [ ] Optional Linode Volume on `devbox` so repos survive a rebuild
