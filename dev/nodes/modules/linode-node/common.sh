@@ -125,13 +125,24 @@ common_tailscale() {
     fi
 
     [ -r "$KEY_FILE" ] || { echo "no auth key at $KEY_FILE" >&2; return 1; }
-    log "joining tailnet as $TS_TAG"
+
+    # Advertise the tag EXPLICITLY rather than trusting the auth key to carry it.
+    # An untagged key silently yields a USER-owned node: every ACL rule written
+    # against tag:<role> then fails to match, and — the part that bites months
+    # later — the node gets a key expiry, since only tag-owned nodes are exempt.
+    # Passing it here makes the tag a property of the code, not of how someone
+    # happened to click through the key-creation form.
+    local tag_flag=()
+    [ -n "$TS_TAG" ] && tag_flag=(--advertise-tags="$TS_TAG")
+
+    log "joining tailnet as ${TS_TAG:-<untagged>}"
     # file: form keeps the key out of the process argument vector, where any
     # local process could read it from /proc/<pid>/cmdline while `up` runs.
     # shellcheck disable=SC2086
     tailscale up \
         --auth-key="file:$KEY_FILE" \
         --hostname="$(hostname)" \
+        "${tag_flag[@]}" \
         --ssh --accept-dns=false $TS_EXTRA_FLAGS
 }
 

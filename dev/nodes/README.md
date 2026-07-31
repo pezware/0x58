@@ -109,6 +109,25 @@ Extend the policy at <https://login.tailscale.com/admin/acls/file>. The
 Defining `acls` replaces Tailscale's permissive default, so anything not listed
 is denied — which is the point.
 
+## Verify after apply
+
+Check the node came up **tag-owned**. This is the failure that hides:
+
+```bash
+ssh arbeitandy@$(tailscale ip -4 pezware-devbox) 'tailscale status --json' \
+  | python3 -c "import sys,json; s=json.load(sys.stdin)['Self']; print('Tags:', s.get('Tags'), '| KeyExpiry:', s.get('KeyExpiry'))"
+```
+
+Want `Tags: ['tag:devbox'] | KeyExpiry: None`.
+
+If you see `Tags: None` and a real expiry roughly six months out, the node
+registered **user-owned**. Everything appears to work — SSH included, because
+`autogroup:self` covers a user-owned node — but every ACL rule written against
+`tag:devbox` silently fails to match, and the node drops off the tailnet when
+that key expires. `common.sh` now passes `--advertise-tags` explicitly so this
+cannot depend on how the auth key was created, but create the key with the tag
+as well.
+
 ## Daily use
 
 ```bash
