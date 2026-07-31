@@ -20,6 +20,10 @@ venv/
 # OS
 .DS_Store
 
+# Local-only working contracts — never committed, never referenced in commits/PRs
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_PLAN-*.md
+
 # Terraform — never commit local state or downloaded providers (per-dir
 # .gitignore files cover this too, but a top-level rule is belt-and-suspenders
 # for any future Terraform path in the repo)

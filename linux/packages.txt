@@ -1,0 +1,60 @@
+# 0x58 — apt base packages for a headless Linux box (Debian trixie / Ubuntu)
+#
+# Scope: apt owns ONLY the base system. Every language runtime and dev CLI comes
+# from mise (dotfiles/mise/config.toml), which is already cross-platform. Do not
+# duplicate anything mise manages — node, go, python, kubectl, terraform, gh,
+# ripgrep, fd, bat, fzf, jq, yq, neovim, shellcheck, ... Listing them here just
+# shadows mise's shims with older Debian builds and makes upgrades ambiguous.
+#
+# Format: one package per line. '#' comments and blank lines are ignored.
+# Consumed by macos/restore.sh -> install_packages().
+# Inventory the live system with:  apt-mark showmanual
+
+# === Remote access — the entire point of this box ===
+openssh-server
+
+# === TLS + fetch (mise's installer and every aqua/github backend need these) ===
+ca-certificates
+curl
+wget
+
+# === Required by restore.sh itself ===
+git
+rsync          # place_dotfiles() syncs config-nvim/ with `rsync -a`
+vim            # setup_dev_tools() runs `vim +PlugInstall`; also the rescue editor
+unzip          # mise extracts many release archives with unzip
+xz-utils       # ...and the rest with xz
+
+# === Core workflow (README: kitty + bash + nvim + git + w3m + claude/codex) ===
+tmux
+w3m
+less
+bash-completion   # bashrc sources /usr/share/bash-completion/bash_completion
+gnupg
+pass
+
+# === Server observability ===
+# dotfiles/mise/config.toml notes these two have no macOS aqua binaries and are
+# "kept in brew on Mac" — but no mise entry exists for them, so on Linux apt is
+# the one thing that actually provides them.
+btop
+ncdu
+
+# === Optional — uncomment per box, not by default ===
+# Deliberately off: this is a 2-4 GB laptop and the point is to stay minimal.
+#
+# build-essential   # ~200 MB. Only needed if a mise tool compiles from source.
+#                   # The `go:` entries (goimports, govulncheck) are pure Go and
+#                   # do NOT need it — mise's own Go toolchain is enough.
+# tlp               # Battery/thermal tuning. NOT needed just for charge limits —
+#                   # linux/setup-server.sh uses the in-kernel thinkpad_acpi sysfs.
+# zram-tools        # Compressed swap. Worth it under ~2 GB; a headless Debian
+#                   # idles near 150 MB, so usually unnecessary.
+# mtr-tiny          # Network path diagnostics (mtr on the Brewfile side).
+# nmap
+# fail2ban          # Only if SSH is exposed to the public internet. With
+#                   # Tailscale-only access (see linux/setup-guide.md) it is noise.
+# unattended-upgrades  # Security patches. Debian's is far quieter than Ubuntu's,
+#                      # but it is still unsupervised change on a remote box.
+# firmware-iwlwifi  # Intel wifi. The official Debian netinst already pulls the
+#                   # firmware it detects; only needed if you skipped it at install.
