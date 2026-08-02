@@ -107,6 +107,22 @@ else
     # Leave SSH_AUTH_SOCK untouched so a forwarded agent survives — this is what
     # lets the devbox sign and push with the Mac's Secure Enclave key, Touch-ID
     # gated, without any private key ever reaching this machine.
+    #
+    # ...but pin every shell to a STABLE path. The forwarded socket lives at a
+    # per-connection path (/tmp/auth-agentNNNN/listener.sock) that dies with the
+    # connection, so a tmux pane created during one session holds a dead path the
+    # next time you attach, and sign-push then refuses with "no SSH agent keys".
+    # Re-pointing one symlink means long-lived panes keep working across
+    # reconnects without their environment ever being touched: the target moves
+    # underneath them. Fix the indirection rather than chase the value.
+    if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK:-}" ] \
+       && [ "$SSH_AUTH_SOCK" != "$HOME/.ssh/agent.sock" ]; then
+        mkdir -p "$HOME/.ssh" && ln -sfn "$SSH_AUTH_SOCK" "$HOME/.ssh/agent.sock"
+    fi
+    # -S follows the symlink, so a dangling one is simply not adopted.
+    if [ -S "$HOME/.ssh/agent.sock" ]; then
+        export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
+    fi
     export PNPM_HOME="$HOME/.local/share/pnpm"
     # The per-boot unit creates the tmux session via `sudo -u`, which has no
     # login session and therefore no XDG_RUNTIME_DIR. Every shell inside that
