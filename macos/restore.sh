@@ -196,6 +196,18 @@ place_dotfiles() {
                 echo "    codex: hardening prepended to existing config (backup: config.toml.bak-0x58)"
             fi
         fi
+
+        # systemd user unit for the Codex broker.
+        #
+        # Installed but NOT enabled: which workspaces get a broker is a per-machine
+        # choice, and enabling an instance for a repo that is not cloned would just
+        # fail on every boot. See dev/nodes/README.md for the enable step, which
+        # also needs lingering.
+        if [[ -f "$LINUX_DIR/codex-broker@.service" ]]; then
+            mkdir -p ~/.config/systemd/user
+            cp -v "$LINUX_DIR/codex-broker@.service" ~/.config/systemd/user/
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
     fi
 
     # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)
