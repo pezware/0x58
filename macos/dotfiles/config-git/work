@@ -1,0 +1,8 @@
+# Work identity, included for ~/src/iden2/ so commits to those repos carry the
+# right address and signing key. Mirrors the Mac's attribution, inverted: there
+# work is the global default with ~/src/public/ overriding, here personal is the
+# default and this overrides. Both public keys are already in allowed_signers.
+[user]
+	name = Andy Xiang
+	email = andy@iden2.com
+	signingkey = key::ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHtka53TISNw3+5ybiF6VIiV79Q2fkBUKBgX/NdKa+bAKcHw7rAlPetisbFoHu3U12kmAbJaSJnqMOEdvfF56/w= andy@iden2.com

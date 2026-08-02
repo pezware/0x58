@@ -215,6 +215,24 @@ place_dotfiles() {
         git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "arbeitandy"
         git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "andy@pezware.com"
 
+        # SSH-based commit signing through the FORWARDED agent, so the private key
+        # never reaches this machine. All three repos enforce required_signatures
+        # via rulesets, so unsigned commits simply cannot land on main.
+        #
+        # A devbox-local signing key was considered and rejected: ~/.ssh and
+        # ~/.gnupg are in the sandbox's denyRead, so an agent could not read it
+        # anyway — and putting one somewhere readable would let any agent-run
+        # command exfiltrate it, which destroys the only thing a signature proves.
+        if [[ -f "$DOTFILES/config-git/personal" ]]; then
+            git config --global user.signingkey "$(sed -n 's/^[[:space:]]*signingkey = //p' "$DOTFILES/config-git/personal")"
+        fi
+        git config --global gpg.format ssh
+        git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+        if [[ -f "$DOTFILES/config-git/work" ]]; then
+            cp -v "$DOTFILES/config-git/work" ~/.config/git/work
+            git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
+        fi
+
         # systemd user unit for the Codex broker.
         #
         # Installed but NOT enabled: which workspaces get a broker is a per-machine

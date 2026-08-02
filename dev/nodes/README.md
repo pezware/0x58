@@ -323,3 +323,43 @@ gets a warm shared runtime instead of a cold spawn.
 - Granting `~/.codex` writes, `auth.json` reads and OpenAI egress — three broad
   holes that put the OpenAI token inside the blast radius of anything Claude
   fetches from the web. The relay costs one command and grants nothing.
+
+## Signing commits made on the devbox
+
+All three repos enforce `required_signatures` via rulesets, so unsigned commits
+cannot land on `main`.
+
+`commit.gpgsign` is deliberately **off** on this box. Signing needs the forwarded
+SSH agent, whose socket is AF_UNIX — refused at `socket()` inside Claude Code's
+sandbox. With it on, every agent commit would fail hard rather than merely be
+unsigned.
+
+So agents commit unsigned and you sign the batch on the way out:
+
+```bash
+ssh -A devbox                      # -A is required; the agent IS the mechanism
+cd ~/src/iden2/go-monorepo
+~/src/public/0x58/linux/sign-push  # signs unsigned commits, verifies, pushes
+```
+
+One Touch ID tap per commit. Signing rewrites SHAs, so do it before anyone else
+fetches the branch; `sign-push` uses `--force-with-lease` accordingly.
+
+### Why not a devbox signing key
+
+Considered and rejected. `~/.ssh` and `~/.gnupg` are in the sandbox's `denyRead`,
+so an agent could not read a local key anyway — it would fail exactly as it does
+now. Putting one somewhere readable would let any agent-run command exfiltrate
+it, and `github.com` is in the egress allowlist. A stolen *signing* key lets
+someone produce commits that appear verified as you, which is the one property
+the Secure Enclave guarantees by construction: the key cannot be extracted, even
+by you.
+
+Leaving agent commits visibly unsigned until a human vouches for them is better
+provenance than always-signing with a key that lives on a server.
+
+### Identity split
+
+Mirrors the Mac's attribution, inverted. Personal is the global default here;
+`~/src/iden2/` includes `~/.config/git/work` for the work identity and key.
+Both public keys are already in `allowed_signers`.

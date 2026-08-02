@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Sign every unsigned commit on this branch, then push.
+#
+#   sign-push [remote] [branch]
+#
+# Agents on this box commit UNSIGNED, deliberately: signing needs the forwarded
+# SSH agent, whose socket is AF_UNIX, and Claude Code's sandbox refuses AF_UNIX
+# at socket(). Enabling commit.gpgsign globally would make every agent commit
+# fail hard rather than merely be unsigned.
+#
+# So the human signs the batch on the way out. That keeps a signature meaning
+# "a person touched a Secure Enclave", rather than "a process on a server could
+# read a file" — which is what a devbox-local signing key would have reduced it
+# to. It also leaves agent work visibly unsigned until someone vouches for it.
+#
+# Run this from your OWN shell, connected with `ssh -A` so the agent is present.
+set -euo pipefail
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+REMOTE="${1:-origin}"
+BRANCH="${2:-$(git rev-parse --abbrev-ref HEAD)}"
+
+[ "$BRANCH" != "HEAD" ] || die "detached HEAD — check out a branch first"
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+
+# The agent is the whole mechanism; without it every amend would fail one by one
+# halfway through a rebase, leaving the branch in a worse state than it started.
+ssh-add -L >/dev/null 2>&1 || die "no SSH agent keys — reconnect with 'ssh -A'"
+
+# Rebase onto the MERGE-BASE, not onto the remote head. Using origin/main would
+# quietly rebase the branch onto newer upstream work as a side effect of signing
+# it — a surprising thing for a command called sign-push to do.
+BASE=$(git merge-base HEAD "$REMOTE/main" 2>/dev/null) \
+    || die "cannot find merge-base with $REMOTE/main"
+
+mapfile -t UNSIGNED < <(git log --format='%h %G?' "$BASE..HEAD" | awk '$2!="G"{print $1}')
+TOTAL=$(git rev-list --count "$BASE..HEAD")
+
+if [ "$TOTAL" -eq 0 ]; then
+    echo "==> Nothing to push: no commits since $(git rev-parse --short "$BASE")"
+    exit 0
+fi
+
+if [ "${#UNSIGNED[@]}" -eq 0 ]; then
+    echo "==> All $TOTAL commit(s) already signed"
+else
+    echo "==> Signing ${#UNSIGNED[@]} of $TOTAL commit(s) — expect one Touch ID tap each"
+    # --no-edit keeps messages byte-identical; only the signature is added.
+    git rebase --exec 'git commit --amend --no-edit -S' "$BASE"
+fi
+
+echo "==> Verifying"
+BAD=$(git log --format='%h %G?' "$BASE..HEAD" | awk '$2!="G"{print $1}' | tr '\n' ' ')
+[ -z "$BAD" ] || die "still unsigned after signing: $BAD"
+git log --format='  %h %G? %s' "$BASE..HEAD"
+
+echo "==> Pushing to $REMOTE/$BRANCH"
+# --force-with-lease because signing rewrote the SHAs. The lease is what stops
+# it clobbering someone else's work if the branch moved underneath you.
+git push --force-with-lease -u "$REMOTE" "$BRANCH"
