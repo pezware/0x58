@@ -283,3 +283,43 @@ persisted state, re-run `codex-broker start`.
 
 Never clean up with `pkill -f app-server-broker` — that pattern matches the shell
 running the command and kills your own session. `codex-broker stop` kills by PID.
+
+### Claude cannot reach the broker — use the relay
+
+Tested and settled, so it does not get re-derived: **Claude Code's sandbox blocks
+AF_UNIX at the syscall level.** From inside it, creating even its own socket in
+`/tmp` — a path no allowlist governs — fails with `EPERM`. Since `connect()`
+requires `socket()` first, every path-based exception is unreachable before it is
+consulted. `allowUnixSockets` is set correctly and makes no difference.
+
+The sandbox runs as PID 1 in its own PID namespace with outbound TCP brokered
+through a SOCKS proxy; there is no equivalent shim for unix sockets. That also
+explains why, from inside, `ss` sees none of the host's listeners and `kill -0`
+reports live processes as dead — a limit of vantage point, not a fact about the
+host. Verify anything about the host from outside it.
+
+So the handoff is a **relay**, not a direct call:
+
+```bash
+# you, in your own shell (unsandboxed) — one line per handoff
+node ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs \
+  task --background "<prompt>"
+```
+
+Claude then reads the structured result itself from
+`state/<slug>-<hash>/jobs/<id>.json` — no pasting output back.
+
+The brokers still earn their keep: your invocation reaches them, so the companion
+gets a warm shared runtime instead of a cold spawn.
+
+**Rejected alternatives**, and why, so they are not retried:
+
+- `excludedCommands: ["node"]` — matching is command-name based, so this exempts
+  every node invocation, i.e. arbitrary JS outside the sandbox. Broader than the
+  thing it was meant to avoid.
+- `allowUnsandboxedCommands: true` — a common misreading. It does not enable
+  `excludedCommands`; it lets the model use `dangerouslyDisableSandbox` on any
+  command, removing the fail-closed guarantee entirely.
+- Granting `~/.codex` writes, `auth.json` reads and OpenAI egress — three broad
+  holes that put the OpenAI token inside the blast radius of anything Claude
+  fetches from the web. The relay costs one command and grants nothing.
