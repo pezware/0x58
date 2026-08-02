@@ -108,6 +108,27 @@ place_dotfiles() {
         cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
     fi
 
+    # ssh config fragment for tailnet nodes (macOS side — this is the client).
+    #
+    # Placed as an Include fragment so ~/.ssh/config keeps its private hosts and
+    # stays out of git, while the reproducible devbox/k8s entries are versioned.
+    # The Include line is prepended, because ssh takes the FIRST value it finds
+    # for each keyword — appending it after an existing `Host *` block would let
+    # those catch-all settings win over ours.
+    if [[ "$PLATFORM" == "macos" ]] && [[ -f "$DOTFILES/ssh/config.d/0x58-devbox" ]]; then
+        mkdir -p ~/.ssh/config.d && chmod 700 ~/.ssh
+        cp -v "$DOTFILES/ssh/config.d/0x58-devbox" ~/.ssh/config.d/0x58-devbox
+        chmod 600 ~/.ssh/config.d/0x58-devbox
+        touch ~/.ssh/config && chmod 600 ~/.ssh/config
+        if ! grep -qE '^\s*Include\s+~?/?\.?ssh/config\.d/\*|^\s*Include\s+config\.d/\*' ~/.ssh/config; then
+            echo "    adding Include line to ~/.ssh/config (backup: config.bak-0x58)"
+            cp ~/.ssh/config ~/.ssh/config.bak-0x58
+            printf 'Include ~/.ssh/config.d/*\n\n%s' "$(cat ~/.ssh/config)" > ~/.ssh/config.tmp
+            mv ~/.ssh/config.tmp ~/.ssh/config
+            chmod 600 ~/.ssh/config
+        fi
+    fi
+
     # Agent sandbox hardening — Linux only.
     #
     # On the Mac, Claude Code uses seatbelt and credentials live in the Keychain.
