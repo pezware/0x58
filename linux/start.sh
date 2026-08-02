@@ -62,6 +62,11 @@ fetch_repo() {
         log "cloning $REPO_URL -> $REPO_DIR"
         mkdir -p "$(dirname "$REPO_DIR")"
         git clone --quiet --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+        # Fetch over HTTPS (public repo, no credential needed at bootstrap) but
+        # PUSH over SSH, so it goes through the forwarded Secure Enclave key and
+        # needs a Touch ID tap. Otherwise the first push asks for a GitHub
+        # username and there is no credential on the box to answer with.
+        git -C "$REPO_DIR" remote set-url --push origin "${REPO_PUSH_URL:-git@github.com:pezware/0x58.git}"
     fi
 }
 

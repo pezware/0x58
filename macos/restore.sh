@@ -197,6 +197,42 @@ place_dotfiles() {
             fi
         fi
 
+        # Git identity. Without it every commit on the box dies with "Please tell
+        # me who you are", which is how an agent ended up hand-setting repo-local
+        # config just to get a commit through.
+        #
+        # Only set when absent, so a machine-specific choice is never clobbered.
+        #
+        # NOTE this differs from the Mac deliberately. There the global identity is
+        # the work one and ~/src/public/ overrides to personal; here personal is the
+        # default, so commits to the iden2 repos carry it too. If that matters, add:
+        #   git config --global includeIf.gitdir:~/src/iden2/.path ~/.config/git/work
+        #
+        # commit.gpgsign is deliberately NOT enabled. Signing needs the forwarded
+        # SSH agent, and the agent socket is AF_UNIX — which Claude Code's sandbox
+        # refuses at socket(). Forcing it would make every agent commit fail hard
+        # rather than merely be unsigned. Sign from your own shell with `git -S`.
+        git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "arbeitandy"
+        git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "andy@pezware.com"
+
+        # SSH-based commit signing through the FORWARDED agent, so the private key
+        # never reaches this machine. All three repos enforce required_signatures
+        # via rulesets, so unsigned commits simply cannot land on main.
+        #
+        # A devbox-local signing key was considered and rejected: ~/.ssh and
+        # ~/.gnupg are in the sandbox's denyRead, so an agent could not read it
+        # anyway — and putting one somewhere readable would let any agent-run
+        # command exfiltrate it, which destroys the only thing a signature proves.
+        if [[ -f "$DOTFILES/config-git/personal" ]]; then
+            git config --global user.signingkey "$(sed -n 's/^[[:space:]]*signingkey = //p' "$DOTFILES/config-git/personal")"
+        fi
+        git config --global gpg.format ssh
+        git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+        if [[ -f "$DOTFILES/config-git/work" ]]; then
+            cp -v "$DOTFILES/config-git/work" ~/.config/git/work
+            git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
+        fi
+
         # systemd user unit for the Codex broker.
         #
         # Installed but NOT enabled: which workspaces get a broker is a per-machine
