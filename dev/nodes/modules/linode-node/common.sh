@@ -178,6 +178,19 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/local/sbin/node-bootstrap --per-boot
 
+# KillMode=process is load-bearing, not tidiness. The default is
+# control-group: when a oneshot's ExecStart exits, systemd tears down the whole
+# cgroup — which includes the detached tmux server this script just started.
+# The unit then reports Result=success while having killed its own only lasting
+# effect, so the reconcile looks like it worked and the session is simply gone.
+# Observed on the first real reboot.
+KillMode=process
+
+# Keeps the unit visible as active afterwards. A oneshot that goes inactive/dead
+# on success is indistinguishable from one that never ran, which is exactly the
+# ambiguity that made the above take a reboot to notice.
+RemainAfterExit=yes
+
 [Install]
 WantedBy=multi-user.target
 UNIT
