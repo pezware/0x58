@@ -197,6 +197,24 @@ place_dotfiles() {
             fi
         fi
 
+        # Git identity. Without it every commit on the box dies with "Please tell
+        # me who you are", which is how an agent ended up hand-setting repo-local
+        # config just to get a commit through.
+        #
+        # Only set when absent, so a machine-specific choice is never clobbered.
+        #
+        # NOTE this differs from the Mac deliberately. There the global identity is
+        # the work one and ~/src/public/ overrides to personal; here personal is the
+        # default, so commits to the iden2 repos carry it too. If that matters, add:
+        #   git config --global includeIf.gitdir:~/src/iden2/.path ~/.config/git/work
+        #
+        # commit.gpgsign is deliberately NOT enabled. Signing needs the forwarded
+        # SSH agent, and the agent socket is AF_UNIX — which Claude Code's sandbox
+        # refuses at socket(). Forcing it would make every agent commit fail hard
+        # rather than merely be unsigned. Sign from your own shell with `git -S`.
+        git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "arbeitandy"
+        git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "andy@pezware.com"
+
         # systemd user unit for the Codex broker.
         #
         # Installed but NOT enabled: which workspaces get a broker is a per-machine
