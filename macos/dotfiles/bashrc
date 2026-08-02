@@ -19,8 +19,15 @@ shopt -s histappend
 alias vi=nvim
 alias vim=nvim
 alias cp="cp -i"
-#alias bat=batcat
-alias cat=bat
+# `cat` -> bat on macOS only. On a remote box it actively gets in the way: bat
+# paginates and adds line numbers and decorations, so reading a file in an ssh
+# tmux pane produces output you cannot cleanly copy. It also muddies debugging —
+# during sandbox verification `cat` of a denied path returned bat's formatting
+# instead of the plain read failure, which made a working deny look ambiguous.
+# Keep the real cat where you are inspecting things over a wire.
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    alias cat=bat
+fi
 alias less="less -r"
 alias ls="ls --color=auto"
 alias ll="ls --color"
