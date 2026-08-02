@@ -32,7 +32,13 @@
 set -euo pipefail
 
 PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codex-openai-codex}"
-SOCKET_DIR="${CODEX_BROKER_SOCKET_DIR:-$HOME/.cache/codex-broker}"
+# MUST sit inside the sandbox's filesystem.allowWrite roots. Connecting to a
+# unix socket needs WRITE permission on the socket file -- it is not a read -- so
+# a socket under ~/.cache is visible but unconnectable from sandboxed bash, which
+# fails as EPERM rather than ENOENT and looks like a dead broker.
+# /tmp is already writable there. It is cleared on reboot, which is harmless:
+# the systemd units recreate the sockets at boot.
+SOCKET_DIR="${CODEX_BROKER_SOCKET_DIR:-/tmp/codex-broker}"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 

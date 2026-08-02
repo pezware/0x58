@@ -64,9 +64,9 @@
     "network": {
       "allowLocalBinding": true,
       "allowUnixSockets": [
-        "/home/arbeitandy/.cache/codex-broker/0x58.sock",
-        "/home/arbeitandy/.cache/codex-broker/go-monorepo.sock",
-        "/home/arbeitandy/.cache/codex-broker/platform-apis.sock"
+        "/tmp/codex-broker/0x58.sock",
+        "/tmp/codex-broker/go-monorepo.sock",
+        "/tmp/codex-broker/platform-apis.sock"
       ],
       "allowedDomains": [
         "registry.npmjs.org",

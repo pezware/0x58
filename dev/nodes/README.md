@@ -258,7 +258,7 @@ systemctl --user enable --now "codex-broker@$(systemd-escape ~/src/iden2/go-mono
 last session ends, so the broker dies whenever you disconnect — which on a
 headless box is most of the time.
 
-Sockets live at `~/.cache/codex-broker/<slug>.sock` and are listed explicitly in
+Sockets live at `~//tmp/codex-broker/<slug>.sock` and are listed explicitly in
 [`linux/claude-settings.json`](../../linux/claude-settings.json). A new workspace
 needs its socket added there. The path is pinned deliberately: the plugin's own
 brokers land in random `/tmp/cxc-XXXXXX/` directories, which cannot be
