@@ -1,0 +1,47 @@
+# 0x58 — tailnet nodes from dev/nodes/. Placed by restore.sh; edits are overwritten.
+#
+# An Include fragment rather than a full ~/.ssh/config, so private hosts stay
+# local and unversioned while the reproducible parts live in git.
+#
+# Short MagicDNS names, not FQDNs. Two reasons: the tailnet search domain makes
+# `pezware-devbox` resolve on its own, and an FQDN would bake this tailnet's
+# identifier into a PUBLIC repository for no benefit. If short names ever stop
+# resolving, check that the Mac has `--accept-dns=true` — that is what installs
+# the search domain.
+
+Host devbox pezware-devbox
+    HostName pezware-devbox
+    User arbeitandy
+
+    # Forward the Secretive agent so git push and commit signing on the devbox
+    # use the Mac's Secure Enclave key — the private key never reaches the box.
+    #
+    # Scoped to this Host on purpose. A forwarded agent lets the remote host use
+    # your key while you are connected, which is normally a real risk. It is
+    # acceptable here only because Secretive requires a Touch ID tap per
+    # signature: a compromised devbox cannot use the key silently, it can only
+    # make your Mac ask a question you did not expect.
+    ForwardAgent yes
+
+    # The devbox is deliberately disposable, and tailscaled regenerates its host
+    # key on every rebuild — so a persisted known_hosts entry would produce a
+    # mismatch warning after each one. Training yourself to click through those
+    # is worse than not storing the key at all.
+    #
+    # What this gives up is small: the connection is already authenticated and
+    # encrypted by WireGuard before SSH starts, and peer identity comes from the
+    # tailnet. Forging it means already owning the tailnet, at which point the
+    # SSH host key was never the control that mattered.
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking accept-new
+    LogLevel ERROR
+
+# The on-demand kind host. Same reasoning, more so: created and destroyed per
+# session, so it churns host keys even faster than the devbox.
+Host k8s pezware-k8s
+    HostName pezware-k8s
+    User arbeitandy
+    ForwardAgent yes
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking accept-new
+    LogLevel ERROR
