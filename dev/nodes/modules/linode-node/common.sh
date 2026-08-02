@@ -85,6 +85,19 @@ common_volume() {
     fi
 
     mkdir -p "$VOLUME_MOUNT"
+
+    # Mounting over a POPULATED directory hides its contents instead of failing,
+    # so data written before the volume existed silently vanishes from view and
+    # looks lost. Seen for real: a node whose volume creation failed cloned the
+    # repo to the root disk, and attaching the volume later shadowed it.
+    # Mount anyway — the volume is the intended state — but say plainly where the
+    # shadowed data went, because nothing else will.
+    if ! mountpoint -q "$VOLUME_MOUNT" && [ -n "$(ls -A "$VOLUME_MOUNT" 2>/dev/null)" ]; then
+        log "WARNING: $VOLUME_MOUNT is not empty; mounting will hide its current contents"
+        log "         recover with:  mkdir -p /tmp/rootview && mount --bind / /tmp/rootview"
+        log "         then look in:  /tmp/rootview$VOLUME_MOUNT"
+    fi
+
     # nofail: a missing volume must not wedge boot into emergency mode on a box
     # whose only access path comes up later in the boot sequence.
     grep -q " $VOLUME_MOUNT " /etc/fstab \

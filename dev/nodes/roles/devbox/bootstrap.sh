@@ -31,6 +31,27 @@ if first_boot; then
     else
         log "0x58 restore FAILED — node is on the tailnet, finish it manually (see post_apply_steps)"
     fi
+
+    # ── mise toolchain ──────────────────────────────────────────────────────
+    # restore.sh installs mise but deliberately stops short of installing tools;
+    # it prints the symlink and `mise install` as manual steps. That is right for
+    # a general Linux box and wrong for this one: a devbox whose whole purpose is
+    # running Claude and Codex is not a working machine without node, python and
+    # go, and "rebuild in 10 minutes" is untrue if it is followed by two manual
+    # commands and a 15-minute wait nobody remembers.
+    #
+    # Slow (~15 min for ~60 tools) but safe to be slow: common_main already
+    # joined the tailnet, so the node is reachable throughout and a failure here
+    # leaves a debuggable box rather than an unreachable one.
+    log "linking mise config and installing toolchain (~15 min for ~60 tools)"
+    as_user 'mkdir -p ~/.config/mise && ln -sfn ~/src/public/0x58/dotfiles/mise/config.toml ~/.config/mise/config.toml' \
+        || log "mise config symlink failed (non-fatal)"
+    as_user 'mise trust ~/.config/mise/config.toml' >/dev/null 2>&1 || true
+    if as_user 'mise install'; then
+        log "mise toolchain installed"
+    else
+        log "mise install FAILED — run 'mise install' by hand once the box is up"
+    fi
 fi
 
 # ── A tmux session waiting to be attached (EVERY boot) ──────────────────────
