@@ -128,6 +128,22 @@ common_user() {
         install -m 600 -o "$user" -g "$user" /tmp/gh.keys "/home/$user/.ssh/authorized_keys"
         rm -f /tmp/gh.keys
     fi
+
+    # Pre-seed GitHub's host key. Without it the first `git clone` over SSH fails
+    # with "Could not read from remote repository. Please make sure you have the
+    # correct access rights" — which points squarely at authentication and sends
+    # you debugging the agent, the forwarded key, and repo permissions. The actual
+    # cause is host-key verification: a non-interactive git has no way to answer
+    # the are-you-sure prompt, so it just dies. Observed on the first real clone.
+    local kh="/home/$user/.ssh/known_hosts"
+    if ! grep -qs '^github\.com' "$kh"; then
+        # Non-fatal: a GitHub outage must not break the tailnet join that follows.
+        if ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$kh" 2>/dev/null; then
+            log "seeded github.com host key"
+        fi
+        chown "$user:$user" "$kh" 2>/dev/null || true
+        chmod 600 "$kh" 2>/dev/null || true
+    fi
 }
 
 # ── Swapfile — stretches a small devbox; MUST stay 0 on k8s nodes ───────────
