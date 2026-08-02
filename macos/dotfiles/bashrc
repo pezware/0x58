@@ -39,15 +39,12 @@ alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
 # 'gpt-5-codex' and 400s on ChatGPT auth. -m overrides that; codex exec/plugins
 # pass their own model so they're unaffected.
 #
-# On Linux the devbox profile also layers sandbox hardening on top of the shared
-# config (workspace-write, network denied, approval on-request). Kept as a
-# profile rather than edits to config.toml, because that file is copied to both
-# machines and the Mac's -s read-only workflow should not change.
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    _CODEX_FLAGS=(-m gpt-5.6-sol)
-else
-    _CODEX_FLAGS=(-p devbox -m gpt-5.6-sol)
-fi
+# Sandbox hardening is deliberately NOT here. It used to ride on a `-p devbox`
+# profile selected by this alias, which meant it applied only to interactive
+# shells — Claude Code's Bash tool and any script got the unhardened defaults.
+# It now lives in ~/.codex/config.toml on Linux (see linux/codex-hardening.toml),
+# so every invocation path gets it and this wrapper only picks a model.
+_CODEX_FLAGS=(-m gpt-5.6-sol)
 
 # A function, not an alias, because -p and -m are only valid on RUNTIME
 # subcommands. An alias prepends them to everything, so `codex login` failed with
