@@ -44,6 +44,20 @@ SYSCTL
     sysctl -p /etc/sysctl.d/99-0x58.conf >/dev/null
 }
 
+# ── /etc/hosts entry for our own hostname ───────────────────────────────────
+# cloud-init sets the hostname but leaves /etc/hosts alone, so every sudo prints
+# "unable to resolve host <name>". Cosmetic, but it appears on EVERY privileged
+# command, and output that is always noise is output you stop reading — which is
+# a poor habit on the box where sudo actually matters. 127.0.1.1 is the Debian
+# convention for a machine's own name, kept distinct from localhost.
+common_hostname() {
+    local h
+    h=$(hostname)
+    [ -n "$h" ] || return 0
+    grep -qE "^127\.0\.1\.1[[:space:]]+${h}([[:space:]]|\$)" /etc/hosts \
+        || printf '127.0.1.1\t%s\n' "$h" >> /etc/hosts
+}
+
 # ── Persistent Block Storage volume ─────────────────────────────────────────
 # Formats ONLY if the device has no filesystem, so a rebuilt node re-attaching an
 # existing volume keeps its data. That check is the whole safety property here:
@@ -186,6 +200,7 @@ common_tailscale() {
 common_main() {
     log "bootstrap starting"
     common_sysctl
+    common_hostname
     common_disable_openssh
     common_user
     # After common_user: the mount point lives inside the home directory it creates.
