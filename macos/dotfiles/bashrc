@@ -31,7 +31,15 @@ alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
 # the model from the last thread in the cwd, which stuck on the retired
 # 'gpt-5-codex' and 400s on ChatGPT auth. -m overrides that; codex exec/plugins
 # pass their own model so they're unaffected.
-alias codex='codex -m gpt-5.6-terra'
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    alias codex='codex -m gpt-5.6-sol'
+else
+    # On Linux the devbox profile layers sandbox hardening on top of the shared
+    # config (workspace-write, network denied, approval on-request). Kept as a
+    # profile rather than edits to config.toml because that file is copied to
+    # both machines and the Mac's -s read-only workflow should not change.
+    alias codex='codex -p devbox -m gpt-5.6-sol'
+fi
 
 # PATH setup - ensure critical directories are in PATH
 # ~/go/bin and ~/.cargo/bin intentionally excluded — manage Rust/Go tools via mise

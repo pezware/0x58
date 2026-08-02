@@ -1,0 +1,32 @@
+# Codex sandbox profile for the devbox — layered ON TOP of ~/.codex/config.toml.
+#
+# A profile rather than edits to the shared config, because macos/dotfiles/codex/
+# config.toml is copied to BOTH machines and the Mac's Codex workflow (which uses
+# per-invocation `-s read-only`, see the Operations Runbook) should not change as
+# a side effect of hardening a Linux box.
+#
+# Placed at ~/.codex/devbox.config.toml by restore.sh on Linux, and selected by
+# the `codex` alias in bashrc, which adds `-p devbox` on Linux only.
+#
+# Verify it is actually in effect:
+#   codex -p devbox exec -s workspace-write 'echo test' --json | grep -i sandbox
+
+# workspace-write, not danger-full-access: model-generated commands may write to
+# the working tree and /tmp, and nothing else.
+sandbox_mode = "workspace-write"
+
+# Escalate to a human rather than silently widening scope.
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+# The devbox holds two subscription refresh tokens and every checked-out repo.
+# The realistic attack is not someone reaching the box — Tailscale and the Cloud
+# Firewall handle that — it is prompt injection persuading an agent already on it
+# to read a credential and POST it out. Egress is where that is stopped, and the
+# Linode firewall's outbound policy is ACCEPT, so it will not stop it for us.
+network_access = false
+
+# Exclude the same paths Claude Code's sandbox denies, so the two agents cannot
+# be played off against each other.
+exclude_tmpdir_env_var = false
+writable_roots = ["/home/arbeitandy/src", "/tmp"]

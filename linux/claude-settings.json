@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "sandbox": {
+    "enabled": true,
+    "enabledPlatforms": ["linux"],
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": ["git"],
+    "credentials": {
+      "files": [
+        { "path": "~/.claude/.credentials.json", "mode": "deny" },
+        { "path": "~/.codex/auth.json", "mode": "deny" },
+        { "path": "~/.npmrc", "mode": "deny" },
+        { "path": "~/.config/gh/hosts.yml", "mode": "deny" },
+        { "path": "~/.git-credentials", "mode": "deny" }
+      ],
+      "envVars": [
+        { "name": "ANTHROPIC_API_KEY", "mode": "deny" },
+        { "name": "OPENAI_API_KEY", "mode": "deny" },
+        { "name": "GH_TOKEN", "mode": "deny" },
+        { "name": "GITHUB_TOKEN", "mode": "deny" },
+        { "name": "LINODE_TOKEN", "mode": "deny" },
+        { "name": "TF_VAR_tailscale_auth_key", "mode": "deny" },
+        { "name": "NPM_TOKEN", "mode": "deny" }
+      ]
+    },
+    "filesystem": {
+      "denyRead": [
+        "~/.ssh",
+        "~/.gnupg",
+        "~/.config/gcloud",
+        "~/.kube",
+        "~/.aws",
+        "~/.config/tailscale",
+        "/var/lib/tailscale",
+        "/etc/0x58-node.env"
+      ],
+      "allowWrite": ["~/src", "/tmp"]
+    },
+    "network": {
+      "allowLocalBinding": true,
+      "allowedDomains": [
+        "registry.npmjs.org",
+        "*.npmjs.org",
+        "proxy.golang.org",
+        "sum.golang.org",
+        "storage.googleapis.com",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "github.com",
+        "*.github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "releases.hashicorp.com",
+        "registry.terraform.io",
+        "deb.debian.org",
+        "security.debian.org",
+        "mise.jdx.dev",
+        "crates.io",
+        "static.crates.io"
+      ]
+    }
+  }
+}
