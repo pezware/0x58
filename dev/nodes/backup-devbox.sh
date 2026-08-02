@@ -48,6 +48,10 @@ readonly JUNK_EXCLUDES=(
     --exclude 'target/'
     --exclude '.gradle/'
     --exclude '.cache/'
+    # Every ext4 filesystem has one, root-owned 0700, so rsync running as a
+    # normal user cannot read it and exits 23. It holds nothing worth keeping —
+    # only orphaned inodes fsck recovers, which are not backup material.
+    --exclude 'lost+found/'
 )
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -95,9 +99,21 @@ cmd_snapshot() {
     echo "==> Pulling ${HOST}:${REMOTE_SRC} -> $dest"
     [ -n "$previous" ] && echo "    hardlinking unchanged files against $(basename "$previous")"
 
+    local rc=0
     rsync -a --delete --partial --human-readable --stats \
         "${link_dest[@]}" "${SECRET_EXCLUDES[@]}" "${JUNK_EXCLUDES[@]}" \
-        "${REMOTE_USER}@${HOST}:${REMOTE_SRC}" "$dest/"
+        "${REMOTE_USER}@${HOST}:${REMOTE_SRC}" "$dest/" || rc=$?
+
+    # 24 is "partial transfer due to vanished source files" — normal on a live
+    # box where a build deletes a temp file mid-sync, and not a reason to
+    # distrust the snapshot. Anything else is real: leave the marker unwritten so
+    # `list` shows INCOMPLETE, and fail loudly rather than banking a bad backup.
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
+        die "rsync exited $rc — snapshot left INCOMPLETE at $dest"
+    fi
+    if [ "$rc" -eq 24 ]; then
+        echo "    note: some files vanished mid-transfer (rsync 24) — expected on a live box"
+    fi
 
     # A snapshot nobody can date is a snapshot nobody trusts.
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.snapshot-completed"
