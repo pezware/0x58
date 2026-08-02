@@ -176,10 +176,25 @@ place_dotfiles() {
         #
         # Prepended: the shared config ends in [projects."..."] tables, and bare
         # keys after a table header belong to that table.
-        if [[ -f "$LINUX_DIR/codex-hardening.toml" ]] && [[ -f "$DOTFILES/codex/config.toml" ]]; then
+        #
+        # Three cases, because restore.sh must be safely RE-runnable. Codex writes
+        # its own tables into this file — marketplaces, memories, plugins, hooks —
+        # so regenerating it from the repo copy on a live box would destroy them.
+        if [[ -f "$LINUX_DIR/codex-hardening.toml" ]]; then
             mkdir -p ~/.codex
-            cat "$LINUX_DIR/codex-hardening.toml" "$DOTFILES/codex/config.toml" > ~/.codex/config.toml
-            echo "    codex: hardened config written (sandbox_mode + network_access=false)"
+            if [[ ! -f ~/.codex/config.toml ]]; then
+                # Fresh node: hardening + the shared config from the repo.
+                cat "$LINUX_DIR/codex-hardening.toml" "$DOTFILES/codex/config.toml" > ~/.codex/config.toml
+                echo "    codex: hardened config written (sandbox_mode + network_access=false)"
+            elif grep -q '^sandbox_mode' ~/.codex/config.toml; then
+                echo "    codex: config already hardened — left alone"
+            else
+                # Re-run on a live box: prepend to what is actually on disk, so
+                # everything Codex wrote for itself survives.
+                cp ~/.codex/config.toml ~/.codex/config.toml.bak-0x58
+                cat "$LINUX_DIR/codex-hardening.toml" ~/.codex/config.toml.bak-0x58 > ~/.codex/config.toml
+                echo "    codex: hardening prepended to existing config (backup: config.toml.bak-0x58)"
+            fi
         fi
     fi
 
