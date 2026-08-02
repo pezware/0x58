@@ -31,9 +31,13 @@ module "node" {
   label = "pezware-devbox"
   role  = "devbox"
 
-  # g6-standard-1: 1 vCPU / 2 GB / 50 GB / $12 mo. Always on — this is the box
+  # g6-standard-2: 2 vCPU / 4 GB / 80 GB / $24 mo. Always on — this is the box
   # that holds repos and keeps Claude Code and Codex alive in tmux.
-  type = "g6-standard-1"
+  #
+  # 4 GB, not 2: Anthropic documents 4 GB as Claude Code's minimum, and the 2 GB
+  # build left roughly 600 MB of headroom with a single agent idle. Changing
+  # `type` is an in-place Linode resize (with a reboot), not a rebuild.
+  type = "g6-standard-2"
 
   tailscale_auth_key = var.tailscale_auth_key
   tailscale_tag      = "tag:devbox"
@@ -42,9 +46,17 @@ module "node" {
   # previously-advertised exit node still advertising.
   tailscale_flags = var.advertise_exit_node ? "--advertise-exit-node=true" : "--advertise-exit-node=false"
 
-  # 2 GB is comfortable for agents but thin for golangci-lint or a Go build.
-  # Swap is safe here precisely because this node never runs kubelet.
+  # Kept at 4 GB even after the RAM upgrade: golangci-lint and Go builds still
+  # spike well past resident memory, and swap is safe here precisely because
+  # this node never runs kubelet.
   swap_mb = 4096
+
+  # 50 GB at $0.10/GB = $5/mo, mounted at ~/src to mirror the Mac's layout.
+  # Measured payload for the iden2 tree is ~10.4 GB once node_modules and
+  # .terraform are excluded — both fully reproducible from lockfiles — so 50 GB
+  # leaves substantial room for additional worktrees.
+  volume_gb    = 50
+  volume_mount = "/home/arbeitandy/src"
 
   bootstrap_script = file("${path.module}/bootstrap.sh")
   extra_tags       = ["always-on"]

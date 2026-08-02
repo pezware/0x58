@@ -22,10 +22,11 @@ PERBOOT_UNIT="0x58-node-boot.service"
 wipe_key() { shred -u "$KEY_FILE" 2>/dev/null || rm -f "$KEY_FILE" 2>/dev/null || true; }
 trap wipe_key EXIT
 
-# ROLE, TS_TAG, TS_EXTRA_FLAGS, SWAP_MB — written by cloud-init from terraform.
+# ROLE, TS_TAG, TS_EXTRA_FLAGS, SWAP_MB, VOLUME_* — written by cloud-init.
 # shellcheck disable=SC1090
 [ -r "$NODE_ENV" ] && . "$NODE_ENV"
 : "${ROLE:=unknown}" "${TS_TAG:=}" "${TS_EXTRA_FLAGS:=}" "${SWAP_MB:=0}"
+: "${VOLUME_LABEL:=}" "${VOLUME_MOUNT:=}"
 
 # Mode flag — positional params are inherited from the sourcing script.
 PER_BOOT=0
@@ -41,6 +42,42 @@ common_sysctl() {
 net.ipv4.ip_forward = 1
 SYSCTL
     sysctl -p /etc/sysctl.d/99-0x58.conf >/dev/null
+}
+
+# ── Persistent Block Storage volume ─────────────────────────────────────────
+# Formats ONLY if the device has no filesystem, so a rebuilt node re-attaching an
+# existing volume keeps its data. That check is the whole safety property here:
+# an unconditional mkfs would silently destroy every working tree on rebuild.
+common_volume() {
+    [ -n "$VOLUME_LABEL" ] && [ -n "$VOLUME_MOUNT" ] || return 0
+
+    local dev="/dev/disk/by-id/scsi-0Linode_Volume_${VOLUME_LABEL}"
+    # Attachment can lag the first boot; wait rather than silently skipping.
+    local waited=0
+    while [ ! -e "$dev" ] && [ "$waited" -lt 60 ]; do
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [ ! -e "$dev" ]; then
+        log "volume $VOLUME_LABEL never appeared at $dev — skipping mount"
+        return 0
+    fi
+
+    if ! blkid "$dev" >/dev/null 2>&1; then
+        log "volume is blank — creating ext4 (first use)"
+        mkfs.ext4 -L "${VOLUME_LABEL:0:16}" "$dev" >/dev/null
+    else
+        log "volume already has a filesystem — preserving it"
+    fi
+
+    mkdir -p "$VOLUME_MOUNT"
+    # nofail: a missing volume must not wedge boot into emergency mode on a box
+    # whose only access path comes up later in the boot sequence.
+    grep -q " $VOLUME_MOUNT " /etc/fstab \
+        || echo "$dev $VOLUME_MOUNT ext4 defaults,noatime,nofail 0 2" >> /etc/fstab
+    mountpoint -q "$VOLUME_MOUNT" || mount "$VOLUME_MOUNT"
+    chown arbeitandy:arbeitandy "$VOLUME_MOUNT"
+    log "volume mounted at $VOLUME_MOUNT ($(df -h --output=size "$VOLUME_MOUNT" | tail -1 | tr -d ' '))"
 }
 
 # ── Kill OpenSSH: Tailscale SSH is the only access path ─────────────────────
@@ -151,6 +188,8 @@ common_main() {
     common_sysctl
     common_disable_openssh
     common_user
+    # After common_user: the mount point lives inside the home directory it creates.
+    common_volume
     common_swap
     common_install_perboot_unit
     common_tailscale

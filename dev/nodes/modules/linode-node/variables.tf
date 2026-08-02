@@ -70,3 +70,27 @@ variable "extra_tags" {
   type        = list(string)
   default     = []
 }
+
+variable "volume_gb" {
+  description = <<-EOT
+    Persistent Block Storage volume in GB, 0 for none. $0.10/GB/month.
+
+    This is what makes "rebuild in 10 minutes" true rather than aspirational:
+    the node stays disposable while working trees survive its destruction.
+    It deliberately does NOT hold credentials — those stay on the root disk so
+    that destroying the node actually removes them.
+  EOT
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.volume_gb == 0 || (var.volume_gb >= 10 && floor(var.volume_gb) == var.volume_gb)
+    error_message = "volume_gb must be 0, or a whole number of GB >= 10 (Linode's minimum volume size)."
+  }
+}
+
+variable "volume_mount" {
+  description = "Mount point for the volume inside the node. Mirrors the Mac's ~/src layout."
+  type        = string
+  default     = "/home/arbeitandy/src"
+}
