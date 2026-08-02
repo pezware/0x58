@@ -207,3 +207,23 @@ node redundant while `devbox` is up.
 
 - [ ] Tailscale OAuth client instead of per-role auth keys (same TODO as `../exit-node/`)
 - [ ] Optional Linode Volume on `devbox` so repos survive a rebuild
+
+## Private agent instructions
+
+`macos/dotfiles/claude/CLAUDE.md` in this repo is **sanitized**: the iden2-com
+ticket runbook is stripped, because this repository is public and those project
+and field IDs are employer-internal. `restore.sh` places that sanitized copy at
+`~/.claude/CLAUDE.md` on Linux nodes, and symlinks `~/.codex/AGENTS.md` to it so
+Codex and Claude read the same instructions.
+
+The full version lives only on the Mac. Push it after a rebuild:
+
+```bash
+rsync -a ~/.claude/CLAUDE.md devbox:/home/arbeitandy/.claude/CLAUDE.md
+```
+
+The symlink means Codex picks the update up automatically — no second copy.
+
+This is a deliberate trade: full reproducibility from git would mean publishing
+the internal sections, so the node is reproducible up to a one-line sync. If you
+skip it, the node still works; it just loses the ticket-creation runbook.
