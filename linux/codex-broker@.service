@@ -1,0 +1,37 @@
+# Persistent Codex broker, one instance per workspace.
+#
+#   systemctl --user enable --now codex-broker@$(systemd-escape /home/arbeitandy/src/public/0x58).service
+#
+# The instance name is a systemd-escaped absolute path, so one unit file covers
+# every workspace. Escape it — a bare path contains slashes and will not work.
+#
+# REQUIRES LINGERING. Without it, systemd --user tears down when your last
+# session ends, so the broker would die whenever you disconnect from SSH — which
+# on a headless box is most of the time:
+#
+#   sudo loginctl enable-linger arbeitandy
+#
+# Verify:  loginctl show-user arbeitandy | grep Linger
+
+[Unit]
+Description=Codex app-server broker for %I
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+# codex-broker start returns once the socket is listening and broker.json is
+# written, so forking is honest here rather than a guess with a sleep.
+ExecStart=%h/src/public/0x58/linux/codex-broker start %I
+ExecStop=%h/src/public/0x58/linux/codex-broker stop %I
+Restart=on-failure
+RestartSec=10
+
+# The broker deliberately holds the OpenAI token — that is the entire point, it
+# is the thing standing outside the sandbox so Claude never needs the credential.
+# Keep it minimal anyway.
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=default.target
