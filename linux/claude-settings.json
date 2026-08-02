@@ -1,5 +1,16 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:code.claude.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebFetch(domain:support.claude.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:pkg.go.dev)"
+    ]
+  },
   "sandbox": {
     "enabled": true,
     "enabledPlatforms": ["linux"],
