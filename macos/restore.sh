@@ -148,9 +148,18 @@ place_dotfiles() {
                 cp -v "$LINUX_DIR/claude-settings.json" ~/.claude/settings.json
             fi
         fi
-        if [[ -f "$LINUX_DIR/codex-devbox.config.toml" ]]; then
+        # Codex hardening goes into the REAL config, not a profile. A profile has
+        # to be selected (`-p devbox`), which we did via a shell alias — and
+        # aliases exist only in interactive shells, so Claude Code's Bash tool
+        # and any script got the unhardened defaults while the config looked
+        # hardened. Defaults belong in the config file.
+        #
+        # Prepended: the shared config ends in [projects."..."] tables, and bare
+        # keys after a table header belong to that table.
+        if [[ -f "$LINUX_DIR/codex-hardening.toml" ]] && [[ -f "$DOTFILES/codex/config.toml" ]]; then
             mkdir -p ~/.codex
-            cp -v "$LINUX_DIR/codex-devbox.config.toml" ~/.codex/devbox.config.toml
+            cat "$LINUX_DIR/codex-hardening.toml" "$DOTFILES/codex/config.toml" > ~/.codex/config.toml
+            echo "    codex: hardened config written (sandbox_mode + network_access=false)"
         fi
     fi
 

@@ -1,0 +1,31 @@
+# Codex sandbox hardening for Linux nodes.
+#
+# restore.sh PREPENDS this to the shared macos/dotfiles/codex/config.toml when
+# writing ~/.codex/config.toml on Linux, so these become the effective defaults
+# there while the Mac's copy is untouched.
+#
+# Prepended, not appended, because the shared config ends in [projects."..."]
+# tables — bare keys placed after a table header belong to that table, so
+# appending would silently nest these inside a project entry and do nothing.
+# For the same reason sandbox_workspace_write uses INLINE table syntax: it stays
+# a top-level key and needs no header of its own.
+#
+# This replaced a `-p devbox` profile selected by a shell alias. That was wrong:
+# aliases exist only in interactive shells, so Claude Code's Bash tool — which
+# runs non-interactive — got none of it, and `codex exec` ran with default
+# posture while the config looked hardened. Defaults belong in the config file.
+
+# Model-generated commands may write the working tree and /tmp, nothing else.
+sandbox_mode = "workspace-write"
+
+# Escalate to a human rather than silently widening scope. Note this cannot save
+# you under `codex exec`, which is non-interactive by definition and therefore
+# never asks — that is a property of exec mode, not of this setting.
+approval_policy = "on-request"
+
+# The devbox holds two subscription refresh tokens and every checked-out repo.
+# The realistic attack is not someone reaching the box — Tailscale and the Cloud
+# Firewall handle that — it is prompt injection persuading an agent already on it
+# to read a credential and post it out. Egress is where that is stopped, and the
+# Linode firewall's outbound policy is ACCEPT, so it will not stop it for us.
+sandbox_workspace_write = { network_access = false, writable_roots = ["/home/arbeitandy/src", "/tmp"] }
