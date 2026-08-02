@@ -32,12 +32,20 @@
 set -euo pipefail
 
 PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codex-openai-codex}"
-# MUST sit inside the sandbox's filesystem.allowWrite roots. Connecting to a
-# unix socket needs WRITE permission on the socket file -- it is not a read -- so
-# a socket under ~/.cache is visible but unconnectable from sandboxed bash, which
-# fails as EPERM rather than ENOENT and looks like a dead broker.
-# /tmp is already writable there. It is cleared on reboot, which is harmless:
-# the systemd units recreate the sockets at boot.
+# Kept inside the sandbox's filesystem.allowWrite roots on the theory that
+# connecting to a unix socket needs WRITE permission on the socket file, which
+# would explain why a socket under ~/.cache failed EPERM rather than ENOENT and
+# looked like a dead broker.
+#
+# That theory is WRONG, and this whole path is a dead end on this box: sandboxed
+# bash cannot listen() on a socket it creates itself under /tmp either. AF_UNIX
+# is refused at socket() before any path is considered, so neither allowWrite nor
+# allowUnixSockets can reach it. Verified 2026-08-02 against both placements.
+# The working handoff is the other direction -- see codex-task.
+#
+# The placement is retained because it costs nothing and is correct if a future
+# sandbox does permit AF_UNIX. /tmp is cleared on reboot, which is harmless: the
+# systemd units recreate the sockets at boot.
 SOCKET_DIR="${CODEX_BROKER_SOCKET_DIR:-/tmp/codex-broker}"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
