@@ -108,6 +108,31 @@ place_dotfiles() {
         cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
     fi
 
+    # Agent sandbox hardening — Linux only.
+    #
+    # On the Mac, Claude Code uses seatbelt and credentials live in the Keychain.
+    # On a remote box both subscription refresh tokens sit in plaintext files, so
+    # the sandbox is what stands between an injected agent and those tokens.
+    # See linux/sandbox.md for the posture and its deliberate trade-offs.
+    if [[ "$PLATFORM" == "linux" ]]; then
+        if [[ -f "$LINUX_DIR/claude-settings.json" ]]; then
+            mkdir -p ~/.claude
+            if [[ -f ~/.claude/settings.json ]]; then
+                # Never clobber existing settings — a silent overwrite here could
+                # drop hooks or permissions the user depends on. Land it beside
+                # the real file and make the merge an explicit decision.
+                cp -v "$LINUX_DIR/claude-settings.json" ~/.claude/settings.0x58-sandbox.json
+                echo "    NOTE: ~/.claude/settings.json exists — merge sandbox block from settings.0x58-sandbox.json"
+            else
+                cp -v "$LINUX_DIR/claude-settings.json" ~/.claude/settings.json
+            fi
+        fi
+        if [[ -f "$LINUX_DIR/codex-devbox.config.toml" ]]; then
+            mkdir -p ~/.codex
+            cp -v "$LINUX_DIR/codex-devbox.config.toml" ~/.codex/devbox.config.toml
+        fi
+    fi
+
     # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)
     if [[ "$PLATFORM" == "macos" ]] && [[ -f "$SCRIPT_DIR/external-drives-mount.sh" ]]; then
         mkdir -p ~/bin

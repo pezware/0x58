@@ -33,6 +33,15 @@ bash-completion   # bashrc sources /usr/share/bash-completion/bash_completion
 gnupg
 pass
 
+# === Agent sandboxing — REQUIRED, not optional ===
+# Claude Code's Linux sandbox is bubblewrap + socat, and Codex's is bubblewrap.
+# linux/claude-settings.json sets failIfUnavailable=true, which means a missing
+# bwrap is a hard startup failure rather than a silent fall back to running
+# model-generated commands unsandboxed. Removing these does not soften the
+# posture — it stops Claude Code from running at all. That is the intent.
+bubblewrap
+socat
+
 # === Server observability ===
 # dotfiles/mise/config.toml notes these two have no macOS aqua binaries and are
 # "kept in brew on Mac" — but no mise entry exists for them, so on Linux apt is

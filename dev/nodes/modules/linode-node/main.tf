@@ -46,6 +46,8 @@ resource "linode_instance" "node" {
         "TS_TAG=\"${var.tailscale_tag}\"",
         "TS_EXTRA_FLAGS=\"${var.tailscale_flags}\"",
         "SWAP_MB=\"${var.swap_mb}\"",
+        "VOLUME_LABEL=\"${var.volume_gb > 0 ? "${var.label}-data" : ""}\"",
+        "VOLUME_MOUNT=\"${var.volume_mount}\"",
       ])
     }))
   }
@@ -55,6 +57,30 @@ resource "linode_instance" "node" {
       condition     = var.role != "k8s" || var.swap_mb == 0
       error_message = "kubelet refuses to start when swap is enabled, so the k8s role must set swap_mb = 0."
     }
+  }
+}
+
+# Persistent working storage, attached at boot and mounted by common_volume().
+#
+# prevent_destroy is deliberate: this holds working trees, so `terraform destroy`
+# MUST fail loudly rather than quietly deleting them. To tear the whole thing
+# down on purpose, drop it from state first:
+#
+#   terraform -chdir=roles/devbox state rm 'module.node.linode_volume.data[0]'
+#
+# which orphans the volume intact (still billed) and lets the node destroy.
+resource "linode_volume" "data" {
+  count = var.volume_gb > 0 ? 1 : 0
+
+  label     = "${var.label}-data"
+  region    = var.region
+  size      = var.volume_gb
+  linode_id = linode_instance.node.id
+
+  tags = ["0x58", var.role]
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
