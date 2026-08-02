@@ -108,6 +108,14 @@ else
     # lets the devbox sign and push with the Mac's Secure Enclave key, Touch-ID
     # gated, without any private key ever reaching this machine.
     export PNPM_HOME="$HOME/.local/share/pnpm"
+    # The per-boot unit creates the tmux session via `sudo -u`, which has no
+    # login session and therefore no XDG_RUNTIME_DIR. Every shell inside that
+    # session then fails `systemctl --user` with "Failed to connect to user scope
+    # bus" — which reads like systemd is broken rather than like a missing env
+    # var. Set it when absent; systemd --user is already running under this uid.
+    if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    fi
     # DO_NOT_TRACK disables the feature-flag evaluation Claude Code's Remote
     # Control depends on, so it is 0 here and only here. Scoped to Linux
     # deliberately: the phone path lives on the devbox, and the Mac's privacy
