@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# Queue a Codex task for Claude to read back.
+#
+#   codex-task [--write] [--model M] [--effort E] <prompt>
+#   codex-task jobs [workspace-root]      # print the dir Claude reads results from
+#
+# WHY THIS EXISTS
+#
+# The broker (see codex-broker) was meant to let Claude's sandboxed bash speak
+# JSON-RPC to a Codex running as you. It does not work on this box: the sandbox
+# refuses AF_UNIX outright, not per-path. Claude cannot even listen() on a socket
+# it creates itself under /tmp, which is inside filesystem.allowWrite. Connect
+# fails EPERM at socket() -- before the path is ever considered -- so pinning the
+# socket somewhere writable does not help, and neither does allowUnixSockets.
+#
+# So the handoff runs the other direction. You invoke this, unsandboxed, holding
+# the token; the companion writes the job and its result to disk as JSON; Claude
+# reads that file. One line typed by you per call, nothing pasted back.
+#
+# The alternative was granting the sandbox credential reads, ~/.codex writes and
+# OpenAI egress -- three broad holes so that a prompt injected from a fetched web
+# page could reach an API key. A file read is the smaller surface.
+set -euo pipefail
+
+# Jobs live under TMPDIR, NOT under the plugin data dir -- that one holds
+# broker.json and long-lived state, and an early job landing there was a
+# different code path. Verified 2026-08-02: a run from ~/src/public/0x58 wrote to
+# /tmp/codex-companion/0x58-<hash>/jobs.
+JOB_ROOT="${TMPDIR:-/tmp}/codex-companion"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# mise shims: bashrc returns early for non-interactive shells, so a systemd unit
+# or `ssh host cmd` gets none of the login PATH. Add them explicitly.
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
+
+find_companion() {
+    # Version-agnostic: the plugin cache path carries a version that changes
+    # under us. Pin nothing, take the newest.
+    find "$HOME/.claude/plugins/cache" -name 'codex-companion.mjs' -type f 2>/dev/null \
+        | sort -V | tail -1
+}
+
+# Mirrors codex-broker's state_dir_for, which mirrors scripts/lib/state.mjs:
+# `${slug}-${sha256(canonicalRoot).slice(0,16)}`. Kept as a copy rather than
+# sourced -- codex-broker runs its case statement at load and would exit.
+state_dir_for() {
+    local canonical slug hash
+    canonical=$(realpath "$1")
+    slug=$(basename "$canonical" | sed -E 's/[^a-zA-Z0-9._-]+/-/g; s/^-+|-+$//g')
+    [ -n "$slug" ] || slug=workspace
+    hash=$(printf '%s' "$canonical" | sha256sum | cut -c1-16)
+    printf '%s/%s-%s' "$JOB_ROOT" "$slug" "$hash"
+}
+
+# The companion resolves the workspace from cwd. Anchor to the git toplevel so
+# results land in one predictable state dir per repo instead of one per subdir.
+workspace_root() {
+    git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+cmd_jobs() {
+    local root; root=$(realpath "${1:-$(workspace_root)}")
+    printf '%s/jobs\n' "$(state_dir_for "$root")"
+}
+
+cmd_run() {
+    local companion root state
+    companion=$(find_companion)
+    [ -n "$companion" ] || die "codex-companion.mjs not found -- is the codex plugin installed?"
+    command -v node >/dev/null || die "node not on PATH (mise shims missing?)"
+
+    root=$(workspace_root)
+    state=$(state_dir_for "$root")
+
+    # --background returns the job id immediately. Foreground would block this
+    # terminal for the whole turn, and the result is read from disk either way.
+    node "$companion" task --background "$@"
+
+    # Claude cannot discover this itself: its TMPDIR is remapped to
+    # /tmp/claude-1000, so a companion run from inside the sandbox resolves
+    # /tmp/claude-1000/codex-companion/... instead of this one. Print the path.
+    printf '\nresults: %s/jobs\n' "$state"
+}
+
+case "${1:-}" in
+    "")     sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    jobs)   shift; cmd_jobs "$@" ;;
+    *)      cmd_run "$@" ;;
+esac
