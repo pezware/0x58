@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+#
+# Persistent Codex app-server broker, one per workspace.
+#
+#   codex-broker start  <workspace-root>
+#   codex-broker stop   <workspace-root>
+#   codex-broker status [workspace-root]
+#   codex-broker socket <workspace-root>   # print the socket path (for allowUnixSockets)
+#
+# WHY THIS EXISTS
+#
+# Claude Code's bash runs sandboxed: it cannot read ~/.codex/auth.json, cannot
+# write ~/.codex, and cannot reach OpenAI. So a Codex invoked as a child of that
+# bash dies before it authenticates — it fails creating its sqlite state.
+#
+# The broker sidesteps that. Started HERE, outside the sandbox and as you, it
+# holds the token and does the work; Claude only speaks JSON-RPC to it over a
+# unix socket. The alternative was granting the sandbox credential reads, ~/.codex
+# writes and OpenAI egress — three broad holes versus one socket.
+#
+# The plugin spawns its own brokers into random /tmp/cxc-XXXXXX/ directories,
+# which cannot be pre-declared in allowUnixSockets. This script pins a stable
+# path per workspace so the grant can be written once.
+#
+# FRAGILITY — read before relying on this
+#
+# broker.json is an internal plugin format that we write by hand, so a plugin
+# update can break this without warning. The failure looks like Codex silently
+# reverting to `mode: direct` and dying on the sqlite write. Recovery is in
+# CLAUDE.md ("Codex plugin broken after a codex CLI upgrade"): kill the broker
+# and its app-server child, clear the persisted state, re-run this.
+set -euo pipefail
+
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/codex-openai-codex}"
+SOCKET_DIR="${CODEX_BROKER_SOCKET_DIR:-$HOME/.cache/codex-broker}"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# mise shims: bashrc returns early for non-interactive shells, so a systemd unit
+# or `ssh host cmd` gets none of the login PATH. Add them explicitly.
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
+
+find_broker_script() {
+    # Version-agnostic: the plugin cache path carries a version that changes
+    # under us. Pin nothing, take the newest.
+    find "$HOME/.claude/plugins/cache" -name 'app-server-broker.mjs' -type f 2>/dev/null \
+        | sort -V | tail -1
+}
+
+# Mirrors scripts/lib/state.mjs: `${slug}-${sha256(canonicalRoot).slice(0,16)}`.
+# If this ever stops matching, the companion will not find broker.json and will
+# quietly spawn its own sandboxed broker instead — which fails on sqlite.
+state_dir_for() {
+    local root canonical slug hash
+    root="$1"
+    canonical=$(realpath "$root")
+    slug=$(basename "$canonical" | sed -E 's/[^a-zA-Z0-9._-]+/-/g; s/^-+|-+$//g')
+    [ -n "$slug" ] || slug=workspace
+    hash=$(printf '%s' "$canonical" | sha256sum | cut -c1-16)
+    printf '%s/state/%s-%s' "$PLUGIN_DATA" "$slug" "$hash"
+}
+
+socket_for() {
+    local canonical slug
+    canonical=$(realpath "$1")
+    slug=$(basename "$canonical" | sed -E 's/[^a-zA-Z0-9._-]+/-/g; s/^-+|-+$//g')
+    printf '%s/%s.sock' "$SOCKET_DIR" "$slug"
+}
+
+cmd_start() {
+    local root sock state script pidfile
+    root=$(realpath "${1:?usage: codex-broker start <workspace-root>}")
+    [ -d "$root" ] || die "no such directory: $root"
+
+    script=$(find_broker_script)
+    [ -n "$script" ] || die "app-server-broker.mjs not found — is the codex plugin installed?"
+    command -v node >/dev/null || die "node not on PATH (mise shims missing?)"
+
+    sock=$(socket_for "$root")
+    state=$(state_dir_for "$root")
+    pidfile="${sock%.sock}.pid"
+    mkdir -p "$SOCKET_DIR" "$state"
+
+    if [ -S "$sock" ] && [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+        echo "already running (pid $(cat "$pidfile")) on $sock"
+        return 0
+    fi
+    # Stale socket from a dead broker blocks bind().
+    rm -f "$sock"
+
+    # setsid so it outlives the shell that started it — the whole point.
+    setsid nohup node "$script" serve \
+        --endpoint "unix:$sock" --cwd "$root" --pid-file "$pidfile" \
+        > "${sock%.sock}.log" 2>&1 < /dev/null &
+
+    local waited=0
+    while [ ! -S "$sock" ] && [ "$waited" -lt 20 ]; do sleep 1; waited=$((waited + 1)); done
+    [ -S "$sock" ] || die "broker did not create $sock — see ${sock%.sock}.log"
+
+    # Point the plugin at this broker. Written last, so it never advertises a
+    # socket that is not yet listening.
+    cat > "$state/broker.json" <<JSON
+{
+  "endpoint": "unix:$sock",
+  "pidFile": "$pidfile",
+  "logFile": "${sock%.sock}.log",
+  "sessionDir": "$SOCKET_DIR"
+}
+JSON
+    echo "started (pid $(cat "$pidfile")) on $sock"
+    echo "  advertised in $state/broker.json"
+}
+
+cmd_stop() {
+    local root sock pidfile
+    root=$(realpath "${1:?usage: codex-broker stop <workspace-root>}")
+    sock=$(socket_for "$root"); pidfile="${sock%.sock}.pid"
+    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+        # Kill by PID, never `pkill -f app-server-broker` — that pattern also
+        # matches the shell running this script, which will kill your own
+        # session. Learned the hard way.
+        kill "$(cat "$pidfile")" && echo "stopped $(cat "$pidfile")"
+    else
+        echo "not running"
+    fi
+    rm -f "$sock" "$pidfile"
+    rm -f "$(state_dir_for "$root")/broker.json"
+}
+
+cmd_status() {
+    local roots=()
+    if [ $# -gt 0 ]; then roots=("$1"); else
+        shopt -s nullglob
+        for s in "$SOCKET_DIR"/*.sock; do roots+=("$s"); done
+        if [ ${#roots[@]} -eq 0 ]; then echo "no brokers configured"; return 0; fi
+        for s in "${roots[@]}"; do
+            local p="${s%.sock}.pid"
+            printf '  %-40s %s\n' "$s" \
+                "$( [ -f "$p" ] && kill -0 "$(cat "$p")" 2>/dev/null && echo "running (pid $(cat "$p"))" || echo DEAD )"
+        done
+        return 0
+    fi
+    local sock; sock=$(socket_for "${roots[0]}"); local p="${sock%.sock}.pid"
+    printf '  %-40s %s\n' "$sock" \
+        "$( [ -f "$p" ] && kill -0 "$(cat "$p")" 2>/dev/null && echo "running (pid $(cat "$p"))" || echo DEAD )"
+}
+
+case "${1:-}" in
+    start)  shift; cmd_start "$@" ;;
+    stop)   shift; cmd_stop "$@" ;;
+    status) shift; cmd_status "$@" ;;
+    socket) shift; socket_for "${1:?usage: codex-broker socket <workspace-root>}" ;;
+    *)      sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

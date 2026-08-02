@@ -227,3 +227,59 @@ The symlink means Codex picks the update up automatically — no second copy.
 This is a deliberate trade: full reproducibility from git would mean publishing
 the internal sections, so the node is reproducible up to a one-line sync. If you
 skip it, the node still works; it just loses the ticket-creation runbook.
+
+## Codex from Claude — the broker
+
+Claude Code's bash is sandboxed: it cannot read `~/.codex/auth.json`, cannot
+write `~/.codex`, and cannot reach OpenAI. A Codex spawned as a child of that
+bash therefore dies before authenticating, failing to create its sqlite state.
+
+[`linux/codex-broker`](../../linux/codex-broker) resolves that without weakening
+the sandbox. Started outside it and as you, the broker holds the token and does
+the work; Claude only speaks JSON-RPC to it over a unix socket. The grant is one
+socket path, versus the three broad holes the alternative needed:
+
+| | loosen sandbox | broker |
+|---|---|---|
+| read `~/.codex/auth.json` | yes | **no** |
+| write `~/.codex` | yes | **no** |
+| reach OpenAI hosts | yes | **no** |
+| connect one fixed socket | no | yes |
+
+One broker per workspace — `--cwd` is per-broker, so go-monorepo needs its own.
+
+```bash
+loginctl enable-linger arbeitandy          # once; see below
+systemctl --user enable --now "codex-broker@$(systemd-escape ~/src/iden2/go-monorepo).service"
+~/src/public/0x58/linux/codex-broker status
+```
+
+**Lingering is not optional.** Without it `systemd --user` tears down when your
+last session ends, so the broker dies whenever you disconnect — which on a
+headless box is most of the time.
+
+Sockets live at `~/.cache/codex-broker/<slug>.sock` and are listed explicitly in
+[`linux/claude-settings.json`](../../linux/claude-settings.json). A new workspace
+needs its socket added there. The path is pinned deliberately: the plugin's own
+brokers land in random `/tmp/cxc-XXXXXX/` directories, which cannot be
+pre-declared in `allowUnixSockets`.
+
+Confirm Claude is using it — `mode` must be `shared`, not `direct`:
+
+```bash
+CLAUDE_PLUGIN_DATA=~/.claude/plugins/data/codex-openai-codex \
+  node ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs setup --json \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["sessionRuntime"])'
+```
+
+### This will break one day
+
+`broker.json` is an internal plugin format written here by hand, so a plugin
+update can invalidate it silently. The symptom is Codex reverting to
+`mode: direct` and dying on the sqlite write — which looks like a sandbox problem
+rather than a stale contract. Recovery is in CLAUDE.md under "Codex plugin broken
+after a codex CLI upgrade": kill the broker and its app-server child, clear the
+persisted state, re-run `codex-broker start`.
+
+Never clean up with `pkill -f app-server-broker` — that pattern matches the shell
+running the command and kills your own session. `codex-broker stop` kills by PID.
