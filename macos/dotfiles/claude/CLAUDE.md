@@ -23,6 +23,11 @@ User is building muscle memory for these control bytes and asked to be nudged to
 - **`Ctrl+K`** — delete from cursor to end of line.
 - **`Ctrl+O`** — toggle transcript mode (see above).
 
+### tmux navigation to reinforce
+Same spirit as the input-editing keys — nudge opportunistically when the user is switching between projects/contexts or clearly has more than one tmux session running (don't force it).
+
+- **`prefix + (` / `prefix + )`** — switch to the previous / next tmux session (learned 2026-06-27). `prefix + s` opens the interactive session tree to pick one directly.
+
 ## Principles
 ** Think Before Coding
 ** Read Before You Write
@@ -195,9 +200,83 @@ git -C <repo> worktree prune
 git -C <repo> branch -D <feature-branch>     # delete the auto-created local tracking branch
 ```
 
-Codex CLI lives at the mise install (`which codex`; v0.125.0 used here). Key flags: `-s read-only|workspace-write|danger-full-access`, `-C <dir>` working root, `--output-last-message <file>` for the clean final answer, `--json` for JSONL events, prompt from stdin with `-`.
+Codex CLI lives at the mise install (`which codex`; v0.144.1 as of 2026-07-13). Key flags: `-s read-only|workspace-write|danger-full-access`, `-C <dir>` working root, `--output-last-message <file>` for the clean final answer, `--json` for JSONL events, prompt from stdin with `-`.
 
-**Review-content tip:** for webhook-HMAC / signature reviews, the bug-vs-by-design verdict hinges on whether the tests sign against a *real captured provider signature* or *self-sign* — self-signed tests can't prove the provider's true signing input, so make it a confirm-with-author item, never a guess.
+**Posting the verdict — approve (or request-changes) WITH inline comments in one atomic review.** `gh pr review --approve` can only attach a top-level body; it cannot anchor line comments. Use the REST reviews endpoint so the summary + every inline note + the approval land as a *single* review (not a scattered set):
+
+```bash
+HEAD_SHA=$(gh pr view <n> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
+# Write the payload to a file (avoids shell-escaping the bodies). event: APPROVE|REQUEST_CHANGES|COMMENT.
+# Each comment: path + line + side:"RIGHT" + body. commit_id MUST be the head SHA.
+cat > /tmp/review.json <<JSON   # (or Write tool)
+{ "commit_id": "$HEAD_SHA", "event": "APPROVE", "body": "<summary>",
+  "comments": [ { "path": "pkg/foo.go", "line": 111, "side": "RIGHT", "body": "<nit>" } ] }
+JSON
+gh api -X POST /repos/<owner>/<repo>/pulls/<n>/reviews --input /tmp/review.json \
+  --jq '{state,html_url}'
+# Verify anchors landed: gh api /repos/<owner>/<repo>/pulls/<n>/comments \
+#   --jq '.[]|select(.pull_request_review_id==<id>)|"\(.path):\(.line)"'
+```
+
+Gotcha: an inline comment only anchors to a line that is **part of the PR diff** (RIGHT side = added/context line). For a **new file** every line qualifies; for an edited file, target an added/changed line or the POST 422s. Approving/outward-facing → needs explicit user go-ahead first (per the confirm-before-outward-action rule).
+
+### OrbStack — docker.sock missing / VM wedged (external-drive I/O stall)
+
+Symptom: `docker` / `docker compose` fails with `~/.orbstack/run/docker.sock: no such file or directory`, or `orb status`/`docker ps` hang forever. The socket is a **symptom**: it only exists while OrbStack's VM engine is up. Root cause (diagnosed 2026-07-02): OrbStack's VM disk (`data.img.raw`) lives on the external drive (`AchtungAndy` → `OrbStack.dmg.sparseimage` → `/Volumes/OrbStackData/orbstack-data/`); a brief drive stall wedges the guest kernel on block I/O (`virtio-fs failed -22`, hung task in `__swap_writepage → virtio_queue_rq` in `~/.orbstack/log/vmgr.log`). All volumes stay mounted — it is NOT a "disconnected drive" problem; don't remount anything.
+
+```bash
+# 1. Recover: graceful engine restart (worked cleanly, ~17s each)
+orb stop
+orb start
+
+# 2. GOTCHA — `orb start` may exit 1 with "start VM: timed out waiting for VM to start".
+#    That is a FALSE ALARM (CLI gives up waiting on the privileged helper); check vmgr.log —
+#    if the guest kernel booted and containers are starting, the VM is actually fine.
+
+# 3. Verify by probing, never by exit code (docker engine warms up ~30s after boot):
+orb status      # "Running"
+orb list        # machines up
+docker ps       # give it a retry after ~30s
+```
+
+Wrap every `orb`/`docker` probe in a watchdog while diagnosing — a wedged engine makes them hang forever, and macOS has no `timeout` (check `gtimeout`, else bash loop):
+
+```bash
+orb stop & pid=$!
+for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+kill -0 "$pid" 2>/dev/null && kill "$pid"    # still hung → kill, escalate to force-stop
+```
+
+Related but different: testcontainers-based Go integration tests failing with "rootless Docker not found" while the socket EXISTS → that's env vars, not a restart: `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock TESTCONTAINERS_RYUK_DISABLED=true`.
+
+### Codex plugin broken after a codex CLI upgrade (stale broker/app-server)
+
+Symptom: after `mise` upgrades codex (or the model in `~/.codex/config.toml` changes), Claude sessions can't call the codex plugin. Root cause: the plugin persists a **shared per-project broker** in `~/.claude/plugins/data/codex-openai-codex/state/<project-hash>/broker.json`; `ensureBrokerSession` reuses it as long as its socket answers, and the broker's long-lived `codex app-server` child keeps executing the **deleted** old binary image (unlinked file stays alive in memory — mise upgrade doesn't kill it).
+
+```bash
+# 1. Confirm: find broker + app-server, check which binary the app-server actually runs
+ps aux | grep -E 'app-server-broker|codex app-server' | grep -v grep
+lsof -p <app-server-pid> | grep txt          # shows the (possibly deleted) mise install path
+
+# 2. Kill the stale pair (broker + its codex app-server child)
+kill <broker-pid> <app-server-pid>
+
+# 3. Clear persisted broker state so next session spawns fresh (also rm the cxc-* session dirs it points at)
+rm ~/.claude/plugins/data/codex-openai-codex/state/*/broker.json
+
+# 4. Verify: plugin setup check + model smoke test
+node ~/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts/codex-companion.mjs setup --json
+codex exec -s read-only 'Reply with exactly: OK'
+```
+
+Notes: the broker spawns `codex app-server` from PATH at spawn time (no pinned path), so once the stale pair is dead everything self-heals on the next plugin call. `hook: Stop Failed` in `codex exec` output is the plugin's disabled stop-review-gate hook — benign.
+
+**Review-content tip:** for webhook-HMAC / signature reviews, first identify **which layer** the signature belongs to, because it flips the self-signed-test verdict:
+
+- **Gateway / perimeter HMAC** = *your service's own* signing contract with the sender (e.g. an `x-vendor-signature: t=…,v1=…` header signed over `{t}.{raw_body}`). You define the wire format, so **self-signed tests are legitimate** — the test computing the expected digest with `crypto/hmac` independently of the production call site is the correct pattern, not a gap.
+- **Per-vendor / provider in-body scheme** = the *provider's* native signature (e.g. a provider TID, or a provider `X-Signature` header) verified inside the adapter. Here the bug-vs-by-design verdict hinges on whether the test signs against a *real captured provider signature* or *self-signs* — self-signed tests can't prove the provider's true signing input, so make it a confirm-with-author item, never a guess.
+
+When both layers coexist (gateway in front, adapter in-body as defense-in-depth), review them separately; don't apply the "self-signed proves nothing" caution to the gateway layer. Cheap security checks worth confirming on a gateway HMAC: replay-window is an *independent* layer from the MAC (guard against `time.Duration` saturation on a far-future `t` — `-math.MinInt64 == math.MinInt64`, still negative, slips a naive `|skew|>window`), fixed-length check on the hex digest *before* `hex.DecodeString` (no large-alloc DoS), `hmac.Equal` for constant-time compare, and fail-closed wiring (route unmounts unless every auth dep is non-nil).
 
 ---
 

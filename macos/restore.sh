@@ -136,6 +136,26 @@ place_dotfiles() {
     # the sandbox is what stands between an injected agent and those tokens.
     # See linux/sandbox.md for the posture and its deliberate trade-offs.
     if [[ "$PLATFORM" == "linux" ]]; then
+        # Agent instructions. Without these, Claude on a remote box runs generic —
+        # no worktree rule, no commit conventions, none of the Operations Runbook.
+        #
+        # Linux only, and deliberately so: on the Mac ~/.claude is a symlink to the
+        # external drive and IS the source of truth, so writing this copy there
+        # would overwrite live content with a repo snapshot.
+        #
+        # NOTE: the tracked copy is SANITIZED — the iden2-com ticket runbook is
+        # stripped because this repository is public. Push the full version to a
+        # node separately (see dev/nodes/README.md → "Private agent instructions").
+        if [[ -f "$DOTFILES/claude/CLAUDE.md" ]]; then
+            mkdir -p ~/.claude
+            cp -v "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
+            # Codex reads AGENTS.md where Claude reads CLAUDE.md. Symlink rather
+            # than copy so the two can never drift apart on the same machine.
+            mkdir -p ~/.codex
+            ln -sfn ~/.claude/CLAUDE.md ~/.codex/AGENTS.md
+            echo "    linked ~/.codex/AGENTS.md -> ~/.claude/CLAUDE.md"
+        fi
+
         if [[ -f "$LINUX_DIR/claude-settings.json" ]]; then
             mkdir -p ~/.claude
             if [[ -f ~/.claude/settings.json ]]; then
