@@ -6,7 +6,12 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 # MacOS specific aliases
 alias showfiles='defaults write com.apple.finder AppleShowAllFiles YES; killall Finder'
 alias hidefiles='defaults write com.apple.finder AppleShowAllFiles NO; killall Finder'
-alias codex='codex -m gpt-5-codex -c model_reasoning_effort="high"'
+# NOTE: the codex alias deliberately lives in bashrc, not here. This file is
+# sourced from bashrc's OS-specific block, which runs BELOW the alias section —
+# so an alias defined here silently overrides the one there. That is how the
+# retired 'gpt-5-codex' kept winning on macOS long after bashrc had moved on:
+# `type codex` reported the stale model and the bashrc line looked correct.
+# Keep model pinning in one place.
 alias cc='claude'
 
 
