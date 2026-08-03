@@ -363,3 +363,32 @@ provenance than always-signing with a key that lives on a server.
 Mirrors the Mac's attribution, inverted. Personal is the global default here;
 `~/src/iden2/` includes `~/.config/git/work` for the work identity and key.
 Both public keys are already in `allowed_signers`.
+
+## Agent key escrow
+
+The devbox signs with two keys, each registered to a different GitHub account —
+and registration is manual, needing a browser session per account. So a rebuild
+that generated fresh keys would end with two hand registrations every time, which
+is what would make "rebuild in 10 minutes" untrue.
+
+[`devbox-keys`](devbox-keys) escrows them in the macOS Keychain instead:
+
+```bash
+./dev/nodes/devbox-keys status     # what exists where
+./dev/nodes/devbox-keys save       # escrow the current keys
+./dev/nodes/devbox-keys restore    # reinstall onto a rebuilt devbox
+```
+
+`restore` rebuilds the public half from the private one, so fingerprints are
+unchanged and existing GitHub registrations keep working. Verified by round-trip.
+
+**Rebuild order:** `ts-node devbox apply` → `devbox-keys restore` → push CLAUDE.md
+→ enable broker units. Only the last two are manual.
+
+This does not widen exposure much — the private keys already sit unencrypted on
+the devbox, which is the accepted trade for unattended agent signing. What it adds
+is an encrypted backup of material that has none: `backup-devbox.sh` excludes
+`.ssh/` deliberately, so today losing the devbox loses these keys.
+
+The Secure Enclave keys are untouched and non-extractable; this script never sees
+them.
