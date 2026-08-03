@@ -259,6 +259,32 @@ place_dotfiles() {
         if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
             git config --global user.signingkey ~/.ssh/devbox_agent
             echo "    git: signing with on-disk devbox key (path form, no agent needed)"
+
+            # ssh only offers DEFAULT identity names (id_ed25519, id_rsa, ...).
+            # devbox_agent is not one, so without this GitHub answers "Permission
+            # denied (publickey)" while the key is present, valid and registered --
+            # and `git push` fails for something that looks like a key problem but
+            # is really a name problem. IdentitiesOnly stops ssh walking every key
+            # first and tripping MaxAuthTries. Signing does NOT need this; it reads
+            # the file directly. Only auth to github.com does.
+            if ! grep -qs "IdentityFile ~/.ssh/devbox_agent" ~/.ssh/config; then
+                umask 077
+                cat >> ~/.ssh/config <<'SSHCFG'
+
+Host github.com
+    User git
+    IdentityFile ~/.ssh/devbox_agent
+    IdentitiesOnly yes
+SSHCFG
+                chmod 600 ~/.ssh/config
+                echo "    ssh: github.com pinned to the devbox key"
+            fi
+
+            # gh reads config.yml from this directory. The sandbox masks hosts.yml
+            # inside it, and masking a file under a MISSING parent leaves the parent
+            # as a FILE -- after which every gh call dies with "not a directory",
+            # which reads like a corrupt install rather than a sandbox artifact.
+            mkdir -p ~/.config/gh
         elif [[ -f "$DOTFILES/config-git/personal" ]]; then
             git config --global user.signingkey "$(sed -n 's/^[[:space:]]*signingkey = //p' "$DOTFILES/config-git/personal")"
         fi
@@ -288,8 +314,11 @@ place_dotfiles() {
 
         # gh wrapper: selects the fine-grained PAT matching the repo's owner.
         # Installed as ~/.local/bin/gh, which is ahead of the mise shim on PATH.
-        # Works because gh is in excludedCommands and so runs outside the sandbox,
-        # letting it read a credentials file agents cannot.
+        # It reads ~/.config/0x58/credentials.env, which agents can read too. An
+        # earlier version of this comment claimed excludedCommands let gh escape
+        # the sandbox and read a file agents could not -- measured false: the
+        # credentials deny applied anyway and gh could not run at all. Access is
+        # granted explicitly now, and scoping is what bounds the damage.
         if [[ -f "$LINUX_DIR/gh-token-wrapper" ]]; then
             mkdir -p ~/.local/bin
             install -m 755 "$LINUX_DIR/gh-token-wrapper" ~/.local/bin/gh

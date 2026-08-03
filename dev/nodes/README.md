@@ -464,9 +464,23 @@ node has no path to the box holding your source and credentials. Verified.
 
 ## GitHub tokens on the devbox
 
-`gh` runs **outside** the sandbox (`excludedCommands`), so agents can drive the
-whole issue → worktree → commit → PR → CI-status loop. That means they can use a
-GitHub token, so the token has to be the thing that's safe.
+Agents drive the whole issue → worktree → commit → PR → CI-status loop, so they
+use a GitHub token, so the token has to be the thing that's safe.
+
+> **Correction (2026-08-03).** This section previously claimed `gh` escapes the
+> sandbox via `excludedCommands`, and could therefore read a credentials file that
+> agents cannot. That is **false**. It was asserted from the setting being present
+> rather than from running it.
+>
+> Measured inside a real session: `excludedCommands` does *not* exempt a command
+> from `credentials.files` or `denyRead`. `gh` failed with
+> `credentials.env: Permission denied`, and `git commit -S` with
+> `Couldn't load public key`. Agents could not open a PR at all.
+>
+> Access is now granted **explicitly** instead — `credentials.env` removed from the
+> credentials deny list, `~/.ssh` removed from `denyRead`. What that costs, and
+> what stays closed, is in
+> [autonomy and its limits](../../macos/dotfiles/claude/skills/devbox-workflow/patterns/autonomy-and-limits.md).
 
 Two **fine-grained** PATs, because a fine-grained PAT has exactly one resource
 owner and `gh` holds one credential per host:
@@ -485,12 +499,19 @@ code anywhere.
 
 [`gh-token-wrapper`](../../linux/gh-token-wrapper) is installed as
 `~/.local/bin/gh` (ahead of the mise shim) and picks the token from the origin
-remote's owner. It can read `~/.config/0x58/credentials.env` precisely because it
-runs outside the sandbox, while agents cannot read that file directly — the same
-property that lets `git` use a signing key they can't `cat`.
+remote's owner. It reads `~/.config/0x58/credentials.env`, which agents can also
+read — that is now the deliberate arrangement rather than an asymmetry we were
+relying on.
 
-Honest limit: `gh auth token` prints whichever token is selected, so a determined
-agent can still extract one. Scoping bounds the damage; secrecy does not.
+Honest limit: agents can read the tokens, and `gh auth token` prints whichever is
+selected. Scoping is what bounds the damage, and it is doing all of the work here
+— a leaked token reads code the agent already had and can open PRs or comments.
+It cannot put code anywhere, because that needs `Contents: Write`.
+
+`~/.config/gh` must exist as a directory. The sandbox masks `hosts.yml` inside it,
+and masking a file under a missing parent leaves the parent as a *file*, after
+which every `gh` call dies with `not a directory` — which reads like a corrupt
+install rather than a sandbox artifact.
 
 The classic `repo`-scoped token has been removed from `~/.config/gh/hosts.yml`.
 Keep it that way — `repo` grants push over HTTPS and would silently bypass the

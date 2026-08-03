@@ -47,10 +47,31 @@ needs the network.
 
 ## Three deliberate trade-offs
 
-**`git` is excluded from the sandbox.** Agent forwarding puts the SSH agent
-socket at a random path (`/tmp/auth-agentNNNN/listener.sock`), which cannot be
-pre-declared in `allowUnixSockets`. Rather than allow *all* Unix sockets, git
-runs outside the sandbox.
+**Agents can sign, push and use `gh`.** As of 2026-08-03 this is granted
+*explicitly*: `~/.ssh` was removed from `denyRead`, and
+`~/.config/0x58/credentials.env` from the credentials deny list.
+
+It had to be explicit, because `excludedCommands` does **not** do what we assumed.
+`git` and `gh` are both listed there and both were still subject to the deny
+lists — measured inside a real session, `gh` failed with
+`credentials.env: Permission denied` and `git commit -S` with
+`Couldn't load public key`. **Listing a command does not exempt it from
+`credentials.files` or `denyRead`.**
+
+The cost is real and stated plainly: a signature no longer proves a *person*
+authorised the commit — it proves this box produced it. Prompt injection here can
+push signed code to any repository the key reaches, which rotating a token does
+not undo.
+
+What did **not** move: `~/.claude/.credentials.json` and `~/.codex/auth.json` stay
+denied (verified — reads return `Permission denied`), `~/.ssh` stays in
+`denyWrite`, and AF_UNIX stays blocked. That last one is why the forwarded
+**Secure Enclave** agent remains unreachable even though its socket symlink sits
+in a now-readable directory: seccomp blocks the syscall, not the path. The Mac's
+key is still the Mac's.
+
+A caution for anyone probing this: `test -r` on a denied file returns *success*.
+`access(2)` is not intercepted — only the actual read is.
 
 Worth being precise, because it constrains every later decision: on Linux
 `allowUnixSockets` is not merely impractical here, it is **inert**. Its own
