@@ -45,15 +45,46 @@ ROLE_DIR="roles/$ROLE"
 
 export TF_VAR_tailscale_auth_key
 
-# ── Keychain: Linode PAT ────────────────────────────────────────────────────
+# ── The k8s role runs from the DEVBOX, not the Mac ──────────────────────────
+# Its state lives there so the node can be created and destroyed from a phone.
+# Running it from the Mac would build a SECOND, independent state that knows
+# nothing about a node the devbox already made -- terraform would then cheerfully
+# create a duplicate and neither state could clean the other up. Refuse rather
+# than diverge; divergence is silent and expensive, this is neither.
+if [ "$ROLE" = "k8s" ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
+    echo "error: k8s state lives on the devbox — run this there:" >&2
+    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node k8s $CMD'" >&2
+    echo "       (override with TS_NODE_ALLOW_MAC_K8S=1 only if you know why)" >&2
+    exit 1
+fi
+
+# ── Secrets: environment, then a local file, then the macOS Keychain ────────
+# The first two are what let fleet ops run somewhere other than the Mac. The
+# Keychain remains the source of truth where it exists.
+CREDS_FILE="${TS_NODE_CREDS:-$HOME/.config/0x58/credentials.env}"
+if [ -r "$CREDS_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$CREDS_FILE"
+    set +a
+fi
+
+keychain_get() {
+    command -v security >/dev/null 2>&1 || return 1
+    security find-generic-password -s "$1" -a "$USER" -w 2>/dev/null
+}
+
 # Loaded only by the commands that actually talk to Linode, so `ssh` and `ip`
 # never carry the token in their environment at all.
 needs_linode_token() {
-    LINODE_TOKEN=$(security find-generic-password -s linode-pat -a "$USER" -w 2>/dev/null) || {
-        echo "error: keychain item 'linode-pat' not found." >&2
-        echo "       see dev/exit-node/linode/README.md -> Setup -> Step 1" >&2
-        exit 1
-    }
+    if [ -z "${LINODE_TOKEN:-}" ]; then
+        LINODE_TOKEN=$(keychain_get linode-pat) || {
+            echo "error: no Linode token." >&2
+            echo "       set LINODE_TOKEN, or put it in $CREDS_FILE," >&2
+            echo "       or add keychain item 'linode-pat' (see dev/exit-node/linode/README.md)" >&2
+            exit 1
+        }
+    fi
     export LINODE_TOKEN
 }
 
@@ -69,7 +100,8 @@ ts_keychain_item() {
 
 needs_auth_key() {
     local item; item=$(ts_keychain_item "$ROLE")
-    TF_VAR_tailscale_auth_key=$(security find-generic-password -s "$item" -a "$USER" -w 2>/dev/null) || {
+    [ -z "${TF_VAR_tailscale_auth_key:-}" ] || return 0
+    TF_VAR_tailscale_auth_key=$(keychain_get "$item") || {
         echo "error: keychain item '$item' not found." >&2
         echo "       Generate a reusable + pre-approved key tagged tag:$ROLE at" >&2
         echo "       https://login.tailscale.com/admin/settings/keys then:" >&2

@@ -56,6 +56,10 @@
         {
           "path": "~/.git-credentials",
           "mode": "deny"
+        },
+        {
+          "path": "~/.config/0x58/credentials.env",
+          "mode": "deny"
         }
       ],
       "envVars": [
@@ -113,7 +117,8 @@
         "~/.gnupg",
         "~/.config/gcloud",
         "~/.config/gh",
-        "~/.config/git/allowed_signers"
+        "~/.config/git/allowed_signers",
+        "~/.config/0x58"
       ]
     },
     "network": {
