@@ -148,13 +148,35 @@ place_dotfiles() {
         # node separately (see dev/nodes/README.md → "Private agent instructions").
         if [[ -f "$DOTFILES/claude/CLAUDE.md" ]]; then
             mkdir -p ~/.claude
-            cp -v "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
+            # Never clobber a fuller local copy. The tracked file is sanitized, so
+            # a plain cp on a box that already received the full version silently
+            # DOWNGRADES it -- the agent quietly loses the ticket runbook and only
+            # a byte count would show it. Copy when absent; otherwise leave it be.
+            if [[ ! -f ~/.claude/CLAUDE.md ]]; then
+                cp -v "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
+            elif ! cmp -s "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md; then
+                echo "    claude: kept existing CLAUDE.md ($(wc -c < ~/.claude/CLAUDE.md) bytes) — tracked copy is sanitized"
+            fi
             # Codex reads AGENTS.md where Claude reads CLAUDE.md. Symlink rather
             # than copy so the two can never drift apart on the same machine.
             mkdir -p ~/.codex
             ln -sfn ~/.claude/CLAUDE.md ~/.codex/AGENTS.md
             echo "    linked ~/.codex/AGENTS.md -> ~/.claude/CLAUDE.md"
         fi
+
+        # Skills, slash commands and the knowledge book are tracked here and were
+        # simply never placed -- a rebuilt box came back with CLAUDE.md but no
+        # skills at all, which degrades quietly: the agent just never offers them.
+        # ~/.claude/agents is deliberately absent; inventory.sh does not capture it
+        # yet, so there is nothing to restore from (see dev/nodes/README.md).
+        for _d in skills commands knowledge hooks; do
+            if [[ -d "$DOTFILES/claude/$_d" ]]; then
+                mkdir -p ~/.claude/"$_d"
+                rsync -a "$DOTFILES/claude/$_d/" ~/.claude/"$_d"/
+                echo "    claude: $_d ($(find "$DOTFILES/claude/$_d" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ') entries)"
+            fi
+        done
+        unset _d
 
         if [[ -f "$LINUX_DIR/claude-settings.json" ]]; then
             mkdir -p ~/.claude

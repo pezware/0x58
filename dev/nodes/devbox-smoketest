@@ -275,10 +275,17 @@ for t in git gh mise tmux podman; do
         || no "$t on PATH" "missing"
 done
 
+# Look for the shim as well as the command. bashrc returns early in
+# non-interactive shells -- the usual `case $- in *i*)` guard -- so neither the
+# codex wrapper function nor `mise activate` exists here, and codex reports as
+# missing while being installed and runnable. mise activate rewires PATH from an
+# interactive prompt hook; the shim is the thing that is always on disk.
 for t in claude codex; do
-    remote "command -v $t >/dev/null" \
-        && ok "$t on PATH" "installed" \
-        || skip "$t on PATH" "not installed yet — mise install may still be running, then: $t login"
+    if remote "command -v $t >/dev/null 2>&1 || test -x ~/.local/share/mise/shims/$t || test -x ~/.local/bin/$t"; then
+        ok "$t available" "$(remote "$t --version 2>/dev/null || ~/.local/share/mise/shims/$t --version 2>/dev/null" | head -1)"
+    else
+        skip "$t available" "not installed — mise install may still be running, then: $t login"
+    fi
 done
 
 # ── verdict ─────────────────────────────────────────────────────────────────

@@ -115,6 +115,21 @@ cmd_snapshot() {
         echo "    note: some files vanished mid-transfer (rsync 24) — expected on a live box"
     fi
 
+    # Agent memory. Everything else under ~/.claude is reproducible — settings and
+    # skills come from this repo, credentials are re-issued by logging in — but
+    # per-project memory is written ON the box and exists nowhere else. It is not
+    # secret, just unrecoverable, which is exactly what a snapshot is for.
+    #
+    # Failure is non-fatal on purpose: a box that has never run an agent has no
+    # memory directory, and that must not mark an otherwise good snapshot bad.
+    if remote 'test -d ~/.claude/projects' 2>/dev/null; then
+        mkdir -p "$dest/.claude-memory"
+        rsync -a --include='*/' --include='memory/**' --exclude='*' \
+            "${REMOTE_USER}@${HOST}:.claude/projects/" "$dest/.claude-memory/" 2>/dev/null \
+            && echo "    agent memory: $(find "$dest/.claude-memory" -type f 2>/dev/null | wc -l | tr -d ' ') file(s)" \
+            || echo "    agent memory: skipped (nothing to copy)"
+    fi
+
     # A snapshot nobody can date is a snapshot nobody trusts.
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$dest/.snapshot-completed"
     echo "==> Done: $dest"
