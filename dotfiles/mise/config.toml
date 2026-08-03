@@ -82,7 +82,23 @@ pre-commit = "latest"
 
 # === API / docs ===
 "npm:@redocly/cli"                        = "latest"
-"npm:@stoplight/spectral-cli"             = "latest"
+# spectral pulls rollup 2.x transitively, and mise's no-downgrade trust policy
+# blocks it: rollup@2.80.0 was published 2026-02-22, AFTER 4.52.4 (2025-10-03)
+# which carries provenance, yet has no attestation of its own. That ordering is
+# what trips the check, and the shape is worth taking seriously — a fresh release
+# on an EOL major line with no provenance is also what a targeted attack looks
+# like, since stale lockfiles resolve there.
+#
+# Checked the registry before excluding rather than after. It is tagged
+# `backports-2`, rollup's official 2.x backport channel (alongside `backports-3`),
+# published by lukastaegert — the project lead — and carries an npm signature.
+# Current rollup ships from CI via a trusted publisher, which is why 4.x has
+# attestations; the backport lines are cut by hand and do not. Benign.
+#
+# Pinned to the exact version on purpose. A bare "rollup" would exempt every
+# version forever, including a genuinely tampered future one, and this exclusion
+# should expire naturally the moment the resolved version moves.
+"npm:@stoplight/spectral-cli" = { version = "latest", trust_policy_excludes = ["rollup@2.80.0"] }
 "npm:@openapitools/openapi-generator-cli" = "latest"
 
 # === Editors / TUI ===
