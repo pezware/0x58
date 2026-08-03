@@ -223,11 +223,42 @@ place_dotfiles() {
         # ~/.gnupg are in the sandbox's denyRead, so an agent could not read it
         # anyway — and putting one somewhere readable would let any agent-run
         # command exfiltrate it, which destroys the only thing a signature proves.
-        if [[ -f "$DOTFILES/config-git/personal" ]]; then
+        # On Linux the shared value is not merely wrong, it is unusable. The Mac
+        # stores `key::<pubkey>`, which names a key held by an AGENT — correct
+        # there, because Secretive keeps it in the Secure Enclave and there is no
+        # file to point at. The devbox is the mirror image: a key on disk and no
+        # agent. Given `key::` it fails with "Couldn't find key in agent?" no
+        # matter which key is named, so it must point at a PATH instead.
+        #
+        # This supersedes the rejection above: the box now has its own signing
+        # key, registered on GitHub, so it signs without the Mac. ~/.ssh stays in
+        # the sandbox's denyRead, which is what kept the original objection --
+        # that any agent-run command could exfiltrate it -- from applying.
+        if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
+            git config --global user.signingkey ~/.ssh/devbox_agent
+            echo "    git: signing with on-disk devbox key (path form, no agent needed)"
+        elif [[ -f "$DOTFILES/config-git/personal" ]]; then
             git config --global user.signingkey "$(sed -n 's/^[[:space:]]*signingkey = //p' "$DOTFILES/config-git/personal")"
         fi
         git config --global gpg.format ssh
         git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+
+        # allowed_signers governs LOCAL verification only, independently of what
+        # GitHub accepts. sign-push refuses to push unless `git log %G?` reports
+        # G, so a correct signing key with a stale signers file still blocks the
+        # workflow -- and the copied file lists only the Mac's keys.
+        if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent.pub ]]; then
+            mkdir -p ~/.config/git
+            _dk=$(awk '{print $2}' ~/.ssh/devbox_agent.pub)
+            if ! grep -qF "$_dk" ~/.config/git/allowed_signers 2>/dev/null; then
+                for _em in "$(git config --get user.email)" andy@iden2.com; do
+                    [[ -n "$_em" ]] && printf '%s %s\n' "$_em" "$(cat ~/.ssh/devbox_agent.pub)" \
+                        >> ~/.config/git/allowed_signers
+                done
+                echo "    git: devbox key added to allowed_signers"
+            fi
+            unset _dk _em
+        fi
         if [[ -f "$DOTFILES/config-git/work" ]]; then
             cp -v "$DOTFILES/config-git/work" ~/.config/git/work
             git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
@@ -266,14 +297,26 @@ place_dotfiles() {
         # runs from the per-boot tmux session. Lingering must already be on or the
         # socket dies at logout and tests fail only when nobody is attached — see
         # dev/nodes/README.md.
+        # Lingering first, and enabled rather than merely warned about. It lives in
+        # /var/lib/systemd/linger on the ROOT disk, so every rebuild loses it while
+        # ~/src survives on the volume -- the box looks fully restored and the user
+        # manager still exits at logout. Everything user-scoped then dies with it:
+        # podman.socket, and the per-boot tmux session. The symptom is horrible to
+        # chase, because it only appears once nobody is attached.
+        if ! loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes; then
+            if sudo -n true 2>/dev/null || [[ -t 0 ]]; then
+                sudo loginctl enable-linger "$USER" && echo "    systemd: lingering enabled (user units survive logout)"
+            else
+                echo "    systemd: WARNING lingering off and no sudo — run 'sudo loginctl enable-linger $USER'" >&2
+            fi
+        fi
+
         if command -v podman >/dev/null 2>&1; then
             if systemctl --user enable --now podman.socket 2>/dev/null; then
                 echo "    podman: API socket enabled for testcontainers (humans/CI only)"
             else
                 echo "    podman: socket NOT enabled — no user bus; run 'systemctl --user enable --now podman.socket' from a login shell" >&2
             fi
-            loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes \
-                || echo "    podman: WARNING lingering is off — socket will not survive logout ('loginctl enable-linger $USER')" >&2
         fi
     fi
 
@@ -308,6 +351,19 @@ setup_dev_tools() {
     set +u  # bashrc may reference unset vars
     source ~/.bashrc 2>/dev/null || true
     set -u
+
+    # mise trust state lives under ~/.local/state on the ROOT disk, so a rebuild
+    # loses it while the repos themselves survive on the volume. Every mise tool in
+    # an untrusted repo then fails -- not one tool, all of them -- and mise reports
+    # it as "error parsing config file", with the real reason on the NEXT line. The
+    # headline blames TOML syntax for what is actually a trust prompt, which sends
+    # you debugging a file that is perfectly valid.
+    if command -v mise &>/dev/null; then
+        for _cfg in ~/.config/mise/config.toml ~/src/*/*/.mise.toml ~/src/*/*/mise.toml; do
+            [[ -f "$_cfg" ]] && mise trust "$_cfg" &>/dev/null && echo "    mise: trusted ${_cfg/#$HOME/\~}"
+        done
+        unset _cfg
+    fi
 
     # nvim plugins (lazy.nvim auto-bootstraps on first launch)
     echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"

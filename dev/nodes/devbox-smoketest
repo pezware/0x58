@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2088  # tildes below are in human-readable check LABELS,
+# not paths this shell resolves; real paths are $HOME-based or expanded remotely.
+#
+# Post-rebuild smoke test for the devbox.
+#
+#   ./dev/nodes/devbox-smoketest
+#
+# Run it after every `ts-node devbox apply`. A rebuild restores the instance, not
+# the workflow — the 2026-08-03 rehearsal came back with source, dotfiles, podman
+# and the gh wrapper all intact, and still could not sign a commit as the right
+# GitHub account. Nothing looked broken; every file was present.
+#
+# So this checks by DOING, not by inspecting. It makes a real signed commit, asks
+# for a real token, opens a real socket. Config that exists and config that works
+# are different claims, and only one of them is worth knowing.
+#
+# It runs from the Mac because half the loop lives here: the Keychain escrow the
+# box is restored FROM, and the MagicDNS name everything addresses it BY.
+#
+# Every check has a negative control where one is possible. A test that only
+# proves the happy path cannot tell "working" from "absent" — the sandbox probe
+# is the clearest case, since a blocked socket and a missing one look identical
+# from inside.
+set -uo pipefail
+
+HOST="${DEVBOX_HOST:-pezware-devbox}"
+REMOTE_USER="${DEVBOX_USER:-arbeitandy}"
+REMOTE="${REMOTE_USER}@${HOST}"
+
+PASS=0; FAIL=0; SKIP=0
+FAILED_NAMES=()
+
+green() { printf '\033[32m%s\033[0m' "$1"; }
+red()   { printf '\033[31m%s\033[0m' "$1"; }
+amber() { printf '\033[33m%s\033[0m' "$1"; }
+
+# ok <name> <detail>  /  no <name> <detail>  — one line per check, detail always
+# printed. A bare PASS/FAIL teaches nothing when it later regresses.
+ok()   { PASS=$((PASS+1)); printf '  %s %-42s %s\n' "$(green ' ok ')" "$1" "${2:-}"; }
+no()   { FAIL=$((FAIL+1)); FAILED_NAMES+=("$1"); printf '  %s %-42s %s\n' "$(red 'FAIL')" "$1" "${2:-}"; }
+skip() { SKIP=$((SKIP+1)); printf '  %s %-42s %s\n' "$(amber 'skip')" "$1" "${2:-}"; }
+
+section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# Always a LOGIN shell. `ssh host cmd` runs non-interactive and non-login, so it
+# never sources bashrc — mise's shims and ~/.local/bin are absent, and the box
+# reports `gh: command not found` while gh is installed and working. That is a
+# false alarm about the thing being tested, which is the worst kind for a smoke
+# test to raise. printf %q keeps the remote quoting honest.
+remote() { ssh -o ConnectTimeout=15 -o BatchMode=yes "$REMOTE" "bash -lc $(printf '%q' "$*")" 2>/dev/null; }
+
+# ── reachability ────────────────────────────────────────────────────────────
+section "Reachability"
+
+# The name matters as much as the box. Tailscale will not reuse a hostname while
+# a stale record holds it, so a rebuild whose old node was not deleted silently
+# joins as pezware-devbox-1 — and every `ssh devbox`, mosh and backup path that
+# addresses it by name breaks while the box itself is perfectly healthy.
+if remote true; then
+    ok "ssh $HOST" "reachable by MagicDNS name"
+else
+    no "ssh $HOST" "unreachable — stale tailnet record holding the name? check for ${HOST}-1"
+    printf '\n%s\n' "$(red 'Cannot reach the box; remaining checks would all fail for the same reason.')"
+    exit 1
+fi
+
+TS_CLI=$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)
+if [ -x "$TS_CLI" ]; then
+    dupes=$("$TS_CLI" status 2>/dev/null | grep -cE "[[:space:]]${HOST}-[0-9]+[[:space:]]" || true)
+    [ "${dupes:-0}" -eq 0 ] \
+        && ok "no suffixed tailnet duplicate" "nothing named ${HOST}-N" \
+        || no "no suffixed tailnet duplicate" "found ${HOST}-N — delete the stale node"
+else
+    skip "no suffixed tailnet duplicate" "tailscale CLI not found"
+fi
+
+# ── the data that must outlive the instance ─────────────────────────────────
+section "Persistence"
+
+# Source lives on a detachable volume precisely so the instance can be cattle.
+# If this is on the root disk, a rebuild silently ate everything not pushed.
+mnt=$(remote 'findmnt -no SOURCE --target "$HOME/src" 2>/dev/null')
+case "$mnt" in
+    /dev/sd[b-z]*) ok "~/src on its own volume" "$mnt" ;;
+    "")            no "~/src on its own volume" "cannot determine mount" ;;
+    *)             no "~/src on its own volume" "$mnt — looks like the ROOT disk, not the volume" ;;
+esac
+
+repos=$(remote 'ls ~/src 2>/dev/null | grep -vc "^lost+found$"')
+[ "${repos:-0}" -gt 0 ] \
+    && ok "source trees present" "$repos tree(s) under ~/src" \
+    || no "source trees present" "~/src is empty"
+
+# Uncommitted work is the one class no rebuild can recover. Report it as a
+# warning here so it is seen BEFORE the next apply, not after.
+dirty=$(remote 'n=0; while IFS= read -r g; do r=$(dirname "$g"); c=$(git -C "$r" status --porcelain 2>/dev/null | wc -l); n=$((n+c)); done < <(find "$HOME/src" -maxdepth 4 -type d -name .git 2>/dev/null); echo "$n"')
+[ "${dirty:-0}" -eq 0 ] \
+    && ok "no uncommitted work at risk" "working trees clean" \
+    || skip "no uncommitted work at risk" "$dirty modified file(s) — snapshot before the next apply"
+
+# ── restored secrets ────────────────────────────────────────────────────────
+section "Restored secrets"
+
+for k in devbox_agent devbox_agent_personal; do
+    live=$(remote "ssh-keygen -lf ~/.ssh/$k.pub 2>/dev/null | awk '{print \$2}'")
+    esc=$(security find-generic-password -s "devbox-sshkey-$k" -a "$USER" -w 2>/dev/null \
+          | base64 -d 2>/dev/null | ssh-keygen -y -f /dev/stdin 2>/dev/null \
+          | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
+    if [ -z "$live" ]; then
+        no "ssh key $k" "absent — run: ./dev/nodes/devbox-keys restore"
+    elif [ -n "$esc" ] && [ "$live" != "$esc" ]; then
+        no "ssh key $k" "on-box key DIFFERS from Keychain escrow"
+    else
+        ok "ssh key $k" "$live"
+    fi
+done
+
+perm=$(remote 'stat -c %a ~/.ssh/devbox_agent 2>/dev/null')
+[ "$perm" = "600" ] \
+    && ok "private key permissions" "0600" \
+    || no "private key permissions" "${perm:-absent} — ssh refuses anything looser"
+
+n=$(remote 'grep -c . ~/.config/0x58/credentials.env 2>/dev/null')
+empty=$(remote 'grep -cE "=$" ~/.config/0x58/credentials.env 2>/dev/null')
+cperm=$(remote 'stat -c %a ~/.config/0x58/credentials.env 2>/dev/null')
+if [ "${n:-0}" -eq 4 ] && [ "${empty:-1}" -eq 0 ] && [ "$cperm" = "600" ]; then
+    ok "credentials.env" "4 vars, none empty, 0600"
+else
+    no "credentials.env" "vars=${n:-0} empty=${empty:-?} mode=${cperm:-absent} — re-place from Keychain"
+fi
+
+# ── signing: the check the rehearsal was worth running for ──────────────────
+section "Commit signing"
+
+# The rebuilt box restored the MAC's gitconfig, so user.signingkey pointed at the
+# Secure Enclave key — a key this box does not hold, registered to a DIFFERENT
+# GitHub account. Signing would have failed, or worse, succeeded as the wrong
+# person. Comparing the configured key to the one on disk is the cheap check.
+# Two valid forms, and which one is used is not cosmetic. `key::<pubkey>` names a
+# key held by an AGENT — correct on the Mac, where Secretive keeps the key in the
+# Secure Enclave and there is no file to point at. The devbox is the mirror image:
+# a key on disk and no agent, so it must name a PATH. Copying the Mac's gitconfig
+# here fails with "Couldn't find key in agent?" whichever key it names.
+raw=$(remote 'git config --get user.signingkey')
+case "$raw" in
+    key::*) cfg=$(remote "git config --get user.signingkey | sed 's/^key:://' | ssh-keygen -lf - 2>/dev/null | awk '{print \$2}'")
+            form="key:: (needs an agent)" ;;
+    "")     cfg=""; form="unset" ;;
+    *)      cfg=$(remote "ssh-keygen -lf \"\$(git config --get user.signingkey)\" 2>/dev/null | awk '{print \$2}'")
+            form="path (signs without an agent)" ;;
+esac
+own=$(remote "ssh-keygen -lf ~/.ssh/devbox_agent.pub 2>/dev/null | awk '{print \$2}'")
+if [ -n "$cfg" ] && [ "$cfg" = "$own" ]; then
+    ok "signingkey is a key this box holds" "$form"
+else
+    no "signingkey is a key this box holds" "form=$form configured=${cfg:-unresolvable} on-disk=${own:-none}"
+fi
+
+# Local verification is a separate mechanism from GitHub's. sign-push refuses to
+# push unless `git log %G?` reports G, and that depends on allowed_signers — so a
+# correct key with a stale signers file still blocks the workflow.
+if remote 'grep -qF "$(awk "{print \$2}" ~/.ssh/devbox_agent.pub)" ~/.config/git/allowed_signers 2>/dev/null'; then
+    ok "devbox key in allowed_signers" "local verification will resolve"
+else
+    no "devbox key in allowed_signers" "sign-push will report unsigned even after signing"
+fi
+
+# End to end: sign something and verify it. Throwaway repo, so no real history is
+# touched and no network is needed.
+sig=$(remote 'd=$(mktemp -d); cd "$d" || exit 1
+  git init -q . 2>/dev/null
+  git commit -q --allow-empty -S -m smoketest 2>/dev/null
+  git log --format=%G? -1 2>/dev/null
+  cd /; rm -rf "$d"')
+case "$sig" in
+    G) ok "signs and verifies a real commit" "git reports G (good signature)" ;;
+    "") no "signs and verifies a real commit" "signing failed — no agent and no on-disk key?" ;;
+    *) no "signs and verifies a real commit" "git reports '$sig', expected G" ;;
+esac
+
+who=$(remote 'ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/devbox_agent -T git@github.com 2>&1 | head -1')
+case "$who" in
+    *"Hi arbeitandy"*) ok "github ssh auth" "authenticates as arbeitandy" ;;
+    *) no "github ssh auth" "${who:-no response}" ;;
+esac
+
+# ── tokens ──────────────────────────────────────────────────────────────────
+section "GitHub tokens"
+
+# Positive AND negative. Seeing the right token work does not prove selection —
+# only forcing the wrong one and watching it fail does.
+pez=$(remote 'cd ~/src/public/0x58 && gh repo view --json name --jq .name 2>&1 | head -1')
+[ "$pez" = "0x58" ] \
+    && ok "pezware repo via wrapper" "resolved pezware/0x58" \
+    || no "pezware repo via wrapper" "$pez"
+
+if remote 'test -d ~/src/iden2/go-monorepo'; then
+    id2=$(remote 'cd ~/src/iden2/go-monorepo && gh repo view --json name --jq .name 2>&1 | head -1')
+    [ "$id2" = "go-monorepo" ] \
+        && ok "iden2 repo via wrapper" "resolved iden2-com/go-monorepo" \
+        || no "iden2 repo via wrapper" "$id2"
+
+    wrong=$(remote 'cd ~/src/iden2/go-monorepo && GH_TOKEN="$(grep ^GH_TOKEN_PEZWARE= ~/.config/0x58/credentials.env | cut -d= -f2-)" \
+            command gh repo view --json name --jq .name 2>&1 | head -1')
+    case "$wrong" in
+        *"Could not resolve"*|*"not found"*|*404*) ok "wrong token is rejected" "pezware token cannot see iden2 repo" ;;
+        go-monorepo) no "wrong token is rejected" "pezware token READ an iden2 repo — scoping is wrong" ;;
+        *) skip "wrong token is rejected" "inconclusive: $wrong" ;;
+    esac
+else
+    skip "iden2 repo via wrapper" "go-monorepo not cloned"
+fi
+
+# Contents:Read is what forces every push through the signing key. If a token
+# ever gains write, the whole gate is silently gone.
+push=$(remote 'cd ~/src/public/0x58 && GIT_TERMINAL_PROMPT=0 \
+       git push "https://x-access-token:$(grep ^GH_TOKEN_PEZWARE= ~/.config/0x58/credentials.env | cut -d= -f2-)@github.com/pezware/0x58.git" \
+       HEAD:refs/heads/smoketest-must-fail 2>&1 | grep -cE "denied|403"')
+[ "${push:-0}" -gt 0 ] \
+    && ok "token cannot push (Contents:Read)" "HTTPS push refused, as designed" \
+    || no "token cannot push (Contents:Read)" "a token GAINED write — push no longer requires the signing key"
+
+# ── sandbox boundary ────────────────────────────────────────────────────────
+section "Agent sandbox"
+
+for b in bwrap socat; do
+    remote "command -v $b >/dev/null" \
+        && ok "$b present" "sandbox dependency" \
+        || no "$b present" "failIfUnavailable makes this a hard startup failure"
+done
+
+remote 'python3 -m json.tool ~/.claude/settings.json >/dev/null 2>&1' \
+    && ok "claude settings parse" "valid JSON" \
+    || no "claude settings parse" "malformed — sandbox config may not apply"
+
+remote 'grep -q "allowAllUnixSockets" ~/.claude/settings.json 2>/dev/null' \
+    && no "AF_UNIX blocking still on" "allowAllUnixSockets present — agents can reach the SSH agent" \
+    || ok "AF_UNIX blocking still on" "no allowAllUnixSockets override"
+
+# ── containers ──────────────────────────────────────────────────────────────
+section "Containers"
+
+if remote 'command -v podman >/dev/null'; then
+    remote 'systemctl --user is-active podman.socket >/dev/null 2>&1' \
+        && ok "podman.socket active" "testcontainers can reach the API" \
+        || no "podman.socket active" "systemctl --user enable --now podman.socket"
+
+    remote 'loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes' \
+        && ok "lingering enabled" "socket survives logout" \
+        || no "lingering enabled" "socket dies when you detach — tests fail only when unattended"
+else
+    skip "podman.socket active" "podman not installed"
+fi
+
+# ── toolchain ───────────────────────────────────────────────────────────────
+section "Toolchain"
+
+# mise trust state lives on the root disk, so a rebuild loses it — and mise
+# reports an untrusted config as "error parsing config file", which reads like
+# broken TOML. It breaks EVERY mise tool in that repo, not one.
+for r in src/public/0x58 src/iden2/go-monorepo; do
+    if remote "test -e ~/$r/.mise.toml"; then
+        out=$(remote "cd ~/$r && mise ls --current 2>&1 | head -2")
+        case "$out" in
+            *"error parsing config"*|*"not trusted"*) no "mise trusted in $(basename "$r")" "run: mise trust ~/$r/.mise.toml" ;;
+            *) ok "mise trusted in $(basename "$r")" "config loads" ;;
+        esac
+    fi
+done
+
+for t in git gh mise tmux podman; do
+    remote "command -v $t >/dev/null" \
+        && ok "$t on PATH" "$(remote "command -v $t")" \
+        || no "$t on PATH" "missing"
+done
+
+for t in claude codex; do
+    remote "command -v $t >/dev/null" \
+        && ok "$t on PATH" "installed" \
+        || skip "$t on PATH" "not installed yet — mise install may still be running, then: $t login"
+done
+
+# ── verdict ─────────────────────────────────────────────────────────────────
+printf '\n\033[1mResult\033[0m  %s passed, %s failed, %s skipped\n' \
+    "$(green "$PASS")" "$( [ "$FAIL" -gt 0 ] && red "$FAIL" || echo 0 )" "$SKIP"
+
+if [ "$FAIL" -gt 0 ]; then
+    printf '\nFailed:\n'
+    printf '  - %s\n' "${FAILED_NAMES[@]}"
+    exit 1
+fi
+printf '\nThe full loop works: signed commits as the right identity, scoped tokens\nthat cannot push, an intact sandbox boundary.\n'
