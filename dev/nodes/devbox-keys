@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Escrow the devbox agent signing keys in the macOS Keychain.
+#
+#   devbox-keys init      generate on the devbox, escrow, print pubkeys to register
+#   devbox-keys save      escrow whatever is currently on the devbox
+#   devbox-keys restore   reinstall from Keychain onto a rebuilt devbox
+#   devbox-keys status    what exists where
+#
+# Runs ON THE MAC. Same direction and trust store as ts-node and backup-devbox.sh.
+#
+# WHY THIS EXISTS
+#
+# The devbox signs commits with keys registered to two different GitHub accounts
+# (see dev/nodes/README.md). Registration is manual and cannot be scripted -- it
+# needs a browser session per account. So if a rebuild generated fresh keys, every
+# rebuild would end with two manual GitHub registrations, which is precisely the
+# kind of step that makes "rebuild in 10 minutes" a fiction.
+#
+# Escrowing the keys keeps the existing registrations valid across rebuilds.
+#
+# ON EXPOSURE
+#
+# This does not meaningfully widen it: the private keys already sit unencrypted on
+# the devbox, which is the accepted trade for unattended agent signing. What it
+# adds is an encrypted BACKUP of material that currently has none -- backup-devbox.sh
+# excludes .ssh/ deliberately, so today losing the devbox loses these keys and
+# forces re-registration.
+#
+# These keys are signing/auth identities, NOT the Secure Enclave keys. Those remain
+# non-extractable and are never touched by this script.
+# Remote commands interpolate $k locally on purpose (it is the key name), while ~
+# stays literal inside double quotes and expands on the devbox. Both intended.
+# shellcheck disable=SC2029
+set -euo pipefail
+
+REMOTE="${DEVBOX_HOST:-devbox}"
+KEYS=(devbox_agent devbox_agent_personal)
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+item_for() { printf 'devbox-sshkey-%s' "$1"; }
+
+require_mac() {
+    [ "$(uname -s)" = "Darwin" ] || die "runs on the Mac (the Keychain lives here)"
+}
+
+remote_has() { ssh -o ConnectTimeout=15 "$REMOTE" "test -f ~/.ssh/$1" 2>/dev/null; }
+
+cmd_save() {
+    require_mac
+    local k b64
+    for k in "${KEYS[@]}"; do
+        remote_has "$k" || { echo "  $k: not on devbox, skipping"; continue; }
+        # base64 so the Keychain holds a single-line printable value, matching the
+        # gpg-archive-b64 pattern already used for GPG cold storage.
+        b64=$(ssh "$REMOTE" "base64 -w0 < ~/.ssh/$k" 2>/dev/null)
+        [ -n "$b64" ] || die "$k: read back empty, refusing to store"
+        security add-generic-password -U -s "$(item_for "$k")" -a "$USER" \
+            -j "devbox agent ssh key, base64 -- reinstall with dev/nodes/devbox-keys restore" \
+            -w "$b64"
+        echo "  $k: escrowed ($(printf %s "$b64" | wc -c | tr -d ' ') b64 chars)"
+    done
+}
+
+cmd_restore() {
+    require_mac
+    local k b64
+    for k in "${KEYS[@]}"; do
+        b64=$(security find-generic-password -s "$(item_for "$k")" -a "$USER" -w 2>/dev/null) \
+            || { echo "  $k: not in Keychain, skipping"; continue; }
+        # Written via stdin, never as an argument, so the key does not appear in
+        # the remote process list.
+        printf '%s' "$b64" | ssh "$REMOTE" "bash -c '
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            base64 -d > ~/.ssh/$k
+            chmod 600 ~/.ssh/$k
+            ssh-keygen -y -f ~/.ssh/$k > ~/.ssh/$k.pub
+            chmod 644 ~/.ssh/$k.pub
+        '"
+        echo "  $k: restored ($(ssh "$REMOTE" "ssh-keygen -lf ~/.ssh/$k.pub | awk '{print \$2}'" 2>/dev/null))"
+    done
+    echo
+    echo "  Public keys are regenerated from the private half, so GitHub"
+    echo "  registrations remain valid. Nothing to re-register."
+}
+
+cmd_init() {
+    require_mac
+    local k
+    for k in "${KEYS[@]}"; do
+        if remote_has "$k"; then
+            echo "  $k: already exists on devbox"
+        else
+            ssh "$REMOTE" "ssh-keygen -t ed25519 -f ~/.ssh/$k -N '' -C '${k}@pezware-devbox' >/dev/null 2>&1 && chmod 600 ~/.ssh/$k"
+            echo "  $k: generated"
+        fi
+    done
+    cmd_save
+    echo
+    echo "==> Register these, then they survive every rebuild:"
+    echo "    devbox_agent          -> arbeitandy   (Authentication AND Signing)"
+    echo "    devbox_agent_personal -> achtungandy  (Signing only)"
+    echo
+    for k in "${KEYS[@]}"; do
+        printf '  %s:\n    ' "$k"
+        ssh "$REMOTE" "cat ~/.ssh/$k.pub" 2>/dev/null
+    done
+}
+
+cmd_status() {
+    local k
+    printf '  %-24s %-14s %s\n' KEY KEYCHAIN DEVBOX
+    for k in "${KEYS[@]}"; do
+        printf '  %-24s %-14s %s\n' "$k" \
+            "$(security find-generic-password -s "$(item_for "$k")" -a "$USER" >/dev/null 2>&1 && echo present || echo MISSING)" \
+            "$(remote_has "$k" && echo present || echo MISSING)"
+    done
+}
+
+case "${1:-status}" in
+    init)    cmd_init ;;
+    save)    cmd_save ;;
+    restore) cmd_restore ;;
+    status)  cmd_status ;;
+    *)       sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
