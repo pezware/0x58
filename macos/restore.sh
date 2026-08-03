@@ -254,6 +254,27 @@ place_dotfiles() {
             cp -v "$LINUX_DIR/codex-broker@.service" ~/.config/systemd/user/
             systemctl --user daemon-reload 2>/dev/null || true
         fi
+
+        # Rootless podman's Docker-compatible API socket, for testcontainers.
+        #
+        # Enabled here, unlike the broker above, because it is not per-repo: it is
+        # either wanted on this box or podman is not installed. Ships with podman,
+        # so no unit file of ours to copy.
+        #
+        # --now needs a user bus, which a non-login shell does not have; the
+        # XDG_RUNTIME_DIR fallback in bashrc is what makes this work when restore.sh
+        # runs from the per-boot tmux session. Lingering must already be on or the
+        # socket dies at logout and tests fail only when nobody is attached — see
+        # dev/nodes/README.md.
+        if command -v podman >/dev/null 2>&1; then
+            if systemctl --user enable --now podman.socket 2>/dev/null; then
+                echo "    podman: API socket enabled for testcontainers (humans/CI only)"
+            else
+                echo "    podman: socket NOT enabled — no user bus; run 'systemctl --user enable --now podman.socket' from a login shell" >&2
+            fi
+            loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes \
+                || echo "    podman: WARNING lingering is off — socket will not survive logout ('loginctl enable-linger $USER')" >&2
+        fi
     fi
 
     # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)

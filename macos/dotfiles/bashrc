@@ -132,6 +132,25 @@ else
     if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
         export XDG_RUNTIME_DIR="/run/user/$(id -u)"
     fi
+    # Rootless podman speaks the Docker API on a socket under the user runtime
+    # dir, which is what testcontainers-go probes for via DOCKER_HOST. Ryuk, its
+    # reaper sidecar, wants to watch the engine from a privileged container that
+    # rootless podman will not grant, so turn it off and let podman reap.
+    #
+    # Set only when the socket is actually there. Exporting DOCKER_HOST to a
+    # path that does not exist is worse than leaving it unset: testcontainers
+    # then reports a connection failure to a specific socket instead of its far
+    # clearer "could not find a valid Docker environment".
+    #
+    # This serves YOUR shell and CI, never agents. The sandbox's seccomp filter
+    # blocks AF_UNIX wholesale, so a sandboxed `go test -tags=e2e` cannot reach
+    # this socket whatever DOCKER_HOST says — verified, curl exits 7 inside the
+    # sandbox and 0 outside it. That is the same filter that keeps agents off
+    # the forwarded SSH agent, so it is load-bearing, not incidental.
+    if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock" ]; then
+        export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        export TESTCONTAINERS_RYUK_DISABLED=true
+    fi
     # DO_NOT_TRACK disables the feature-flag evaluation Claude Code's Remote
     # Control depends on, so it is 0 here and only here. Scoped to Linux
     # deliberately: the phone path lives on the devbox, and the Mac's privacy

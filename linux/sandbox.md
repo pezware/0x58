@@ -45,12 +45,22 @@ of both token files, `~/.npmrc`, `~/.config/gh/hosts.yml`, and unsets
 further with `network_access = false`; it escalates to a human when a command
 needs the network.
 
-## Two deliberate trade-offs
+## Three deliberate trade-offs
 
 **`git` is excluded from the sandbox.** Agent forwarding puts the SSH agent
 socket at a random path (`/tmp/auth-agentNNNN/listener.sock`), which cannot be
 pre-declared in `allowUnixSockets`. Rather than allow *all* Unix sockets, git
 runs outside the sandbox.
+
+Worth being precise, because it constrains every later decision: on Linux
+`allowUnixSockets` is not merely impractical here, it is **inert**. Its own
+schema reads *"macOS only: Unix socket paths to allow. Ignored on Linux (seccomp
+cannot filter by path)."* Blocking is a seccomp filter on `socket()`, and seccomp
+sees register values, not the path behind the `connect()` pointer — dereferencing
+that in-kernel would be a TOCTOU hazard. macOS Seatbelt resolves paths, so it can
+allow one socket; Linux gets exactly one switch, `allowAllUnixSockets`, and it is
+all-or-nothing. Any future "just allow this one socket" on this box is not a
+config change, it is a decision to allow every socket including the SSH agent.
 
 This is less alarming than it sounds, and arguably stronger: git operations
 authenticate through the **forwarded Secure Enclave key**, so every push and
@@ -63,6 +73,25 @@ sandbox gating for exactly the command that has it.
 workflow passes `-s read-only` per invocation. Tightening the shared file would
 change Mac behaviour as a side effect of hardening Linux. The devbox alias in
 `bashrc` adds `-p devbox` on Linux only.
+
+**Container tests run outside agents, not inside them.** Rootless podman is
+installed and exposes a Docker-compatible socket, and `bashrc` points
+`DOCKER_HOST` at it on Linux. Agents cannot reach it. `go test -tags=e2e` inside
+a sandbox fails to connect no matter how `DOCKER_HOST` is set, because the
+seccomp filter above blocks AF_UNIX outright — and loopback TCP, podman's usual
+fallback, is blocked too.
+
+Turning that off would cost the property the whole design rests on. Agents could
+then reach the forwarded SSH agent, sign commits, and push over SSH — walking
+around the `Contents: Read` tokens from
+[the devbox token setup](../dev/nodes/README.md#github-tokens-on-the-devbox),
+whose entire purpose is that a token holder *cannot* push. A signature would stop
+meaning a person touched a Secure Enclave.
+
+The trade is cheap, which is why it is easy to hold: **28 of 746** test files in
+the go monorepo need containers, and they already sit behind `//go:build e2e` or
+`integration` tags that a plain `go test ./...` skips. Agents run the other ~96%
+sandboxed; container tiers belong to you or to CI, like `sign-push`.
 
 ## Verify it is actually on
 
@@ -90,6 +119,18 @@ arbitrary one should not:
 curl -sS -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org
 curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
 ```
+
+And confirm the container boundary still holds. Run the same probe in both
+places — a blocked socket and an absent one look identical from inside, so the
+control run is what makes the result mean anything:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" http://d/_ping
+```
+
+Outside a sandbox that prints `200`. Inside a Claude session it must fail to
+connect (curl exit 7). If it ever returns `200` inside, `allowAllUnixSockets` has
+been switched on somewhere and agents can reach the SSH agent again.
 
 ## What this does NOT protect against
 
