@@ -29,7 +29,7 @@ duration of one command.
 | Role | Plan | Cost | Lifetime | Swap |
 |---|---|---|---|---|
 | `devbox` | g6-standard-2 · 4 GB | $24/mo | permanent | 4 GB — safe, never runs kubelet |
-| `k8s` | g6-standard-2 · 4 GB | ~$0.036/hr (~$3 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
+| `k8s` | g6-standard-4 · 8 GB | ~$0.072/hr (~$6.50 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
 | `minimal` | g6-nanode-1 · 1 GB | $5/mo | fall-back | 0 |
 
 Typical steady state is `devbox` alone at $12/mo, plus `k8s` for the hours you
