@@ -49,6 +49,23 @@ socat
 btop
 ncdu
 
+# === Containers — for your shell and CI, NOT for agents ===
+# Rootless podman provides the Docker-compatible API socket testcontainers-go looks
+# for. It is deliberately unreachable from inside an agent sandbox, and that is not
+# an oversight to be fixed later: Claude Code blocks AF_UNIX with a seccomp filter,
+# and seccomp cannot allow a single socket by path — `allowUnixSockets` says
+# "macOS only ... ignored on Linux" in its own schema. The only switch that works
+# here is `allowAllUnixSockets`, which also exposes the forwarded SSH agent and
+# would let an agent sign and push with no Touch ID tap. Read linux/sandbox.md
+# before changing this.
+#
+# The trade costs little: 28 of 746 test files in the go monorepo need containers,
+# and they already sit behind //go:build e2e|integration tags that a plain
+# `go test ./...` skips. Agents run the other ~96% inside the sandbox.
+podman
+uidmap         # newuidmap/newgidmap — rootless podman cannot map subuids without it
+passt          # pasta: podman 5's default rootless network backend
+
 # === Optional — uncomment per box, not by default ===
 # Deliberately off: this is a 2-4 GB laptop and the point is to stay minimal.
 #
