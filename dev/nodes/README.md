@@ -392,3 +392,37 @@ is an encrypted backup of material that has none: `backup-devbox.sh` excludes
 
 The Secure Enclave keys are untouched and non-extractable; this script never sees
 them.
+
+## Where each role is driven from
+
+| role | state lives | run it from | why |
+|---|---|---|---|
+| `devbox` | Mac | Mac | it cannot destroy itself mid-apply |
+| `k8s` | devbox | devbox (so: phone) | the on-demand node you want without a laptop |
+| `minimal` | Mac | Mac | fallback tier, rarely touched |
+
+`ts-node` **refuses** the `k8s` role on macOS. Running it there would build a
+second, independent state that knows nothing about a node the devbox already
+created — terraform would then cheerfully make a duplicate, and neither state
+could clean up the other. State divergence is silent and expensive; this refusal
+is neither. Override with `TS_NODE_ALLOW_MAC_K8S=1` only if you know why.
+
+### Secrets
+
+Resolution order is environment → `~/.config/0x58/credentials.env` → macOS
+Keychain. The first two are what let fleet ops run off the Mac; the Keychain
+stays the source of truth where it exists.
+
+On the devbox, put a **separate, narrowly-scoped** Linode PAT in that file —
+Linodes + Volumes read/write, Events read-only, and nothing else. The Mac's token
+is full-access, and an injected agent with it could delete the entire account.
+The file is in the sandbox's `credentials.files` deny list, so agents cannot read
+it; it exists for you, driving the fleet from a phone.
+
+```bash
+install -m 600 /dev/null ~/.config/0x58/credentials.env
+cat > ~/.config/0x58/credentials.env <<'ENV'
+LINODE_TOKEN=<scoped-pat>
+TF_VAR_tailscale_auth_key=<reusable key tagged tag:k8s>
+ENV
+```
