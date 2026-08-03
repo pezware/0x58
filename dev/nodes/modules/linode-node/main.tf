@@ -32,7 +32,17 @@ resource "linode_instance" "node" {
     # templatefile() cannot see path.module from inside the template, so the
     # scripts are read here and passed as vars — same gotcha documented in
     # dev/exit-node/README.md.
-    user_data = base64encode(templatefile("${path.module}/cloud-init.yaml", {
+    # base64gzip, not base64encode. Linode caps user_data at 16 KB DECODED, and
+    # the embedded common.sh plus a role bootstrap crossed it: the k8s role failed
+    # outright at 17.2 KB, and devbox sat 66 bytes under the limit -- one more
+    # comment line from breaking its rebuild silently.
+    #
+    # cloud-init detects gzip by magic bytes and decompresses, so the decoded
+    # payload Linode measures is the compressed one: ~6.6 KB instead of ~17 KB.
+    # The alternatives were worse. Stripping comments destroys the reasoning
+    # these scripts exist to carry, and fetching them at boot adds a network
+    # dependency to the one path that has to work when things are already broken.
+    user_data = base64gzip(templatefile("${path.module}/cloud-init.yaml", {
       hostname           = var.label
       tailscale_auth_key = var.tailscale_auth_key
       common_script      = file("${path.module}/common.sh")
