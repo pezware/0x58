@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# gh wrapper: pick the fine-grained PAT that matches the repository's owner.
+#
+# Installed as ~/.local/bin/gh, which is first on PATH.
+#
+# WHY
+#
+# A fine-grained PAT has exactly ONE resource owner, and gh holds one credential
+# per host — so a single token cannot cover both pezware/* and iden2-com/*. This
+# selects by the origin remote's owner instead.
+#
+# It works because `gh` is in the sandbox's excludedCommands and therefore runs
+# OUTSIDE it: the wrapper can read a credentials file that sandboxed commands
+# cannot. Same property that lets git use a signing key agents can't cat.
+#
+# Both tokens are deliberately Contents:READ. An agent holding one cannot push
+# over HTTPS — verified, GitHub returns 403 — so every push must go through the
+# SSH signing key. That is the gate; the token is not.
+#
+# Honest limit: `gh auth token` prints whatever is selected, so a determined
+# agent can still extract it. Scoping is what bounds the damage, not secrecy.
+set -euo pipefail
+
+CREDS="${TS_NODE_CREDS:-$HOME/.config/0x58/credentials.env}"
+
+# Resolve the real gh: the first one on PATH that is not this script. Comparing
+# resolved paths matters — a bare name check would re-enter the wrapper forever.
+real_gh() {
+    local self c
+    self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        [ "$(readlink -f "$c" 2>/dev/null)" = "$self" ] && continue
+        printf '%s' "$c"; return 0
+    done < <(type -aP gh 2>/dev/null)
+    # Fixed paths, deliberately. `mise which gh` was tried first and is the wrong
+    # tool: mise is CONTEXT-SENSITIVE — it reads the project's .mise.toml and
+    # refuses untrusted config, so it failed in one repo and succeeded in another
+    # with identical PATH, making it look like gh did not exist.
+    for c in "$HOME/.local/share/mise/shims/gh" "/usr/local/bin/gh" "/usr/bin/gh"; do
+        [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    # Last resort: ask mise, tolerating its context sensitivity.
+    c=$(mise which gh 2>/dev/null) && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    return 1
+}
+
+GH=$(real_gh) || { echo "gh-wrapper: cannot find the real gh on PATH" >&2; exit 127; }
+
+# Owner of the origin remote, from either ssh or https form. Falls through
+# silently when not in a repo — `gh auth status` and friends still work.
+owner=$(git config --get remote.origin.url 2>/dev/null \
+        | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*$#\2#' || true)
+
+if [ -z "${GH_TOKEN:-}" ] && [ -r "$CREDS" ]; then
+    # shellcheck disable=SC1090
+    . "$CREDS"
+    case "$owner" in
+        iden2-com) [ -n "${GH_TOKEN_IDEN2:-}" ]   && export GH_TOKEN="$GH_TOKEN_IDEN2" ;;
+        pezware)   [ -n "${GH_TOKEN_PEZWARE:-}" ] && export GH_TOKEN="$GH_TOKEN_PEZWARE" ;;
+    esac
+    # Never leak the other org's token into the child process.
+    unset GH_TOKEN_IDEN2 GH_TOKEN_PEZWARE LINODE_TOKEN TF_VAR_tailscale_auth_key
+fi
+
+exec "$GH" "$@"

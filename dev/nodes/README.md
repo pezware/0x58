@@ -457,3 +457,44 @@ not covered by `autogroup:member`:
 
 Deliberately one-directional. Nothing grants k8s → devbox, so a throwaway cluster
 node has no path to the box holding your source and credentials. Verified.
+
+## GitHub tokens on the devbox
+
+`gh` runs **outside** the sandbox (`excludedCommands`), so agents can drive the
+whole issue → worktree → commit → PR → CI-status loop. That means they can use a
+GitHub token, so the token has to be the thing that's safe.
+
+Two **fine-grained** PATs, because a fine-grained PAT has exactly one resource
+owner and `gh` holds one credential per host:
+
+| token | owner | repos | expires |
+|---|---|---|---|
+| `gh-pat-devbox-pezware` | pezware | all | 2027-08-03 |
+| `gh-pat-devbox-iden2` | iden2-com | go-monorepo, platform-apis | 2026-11-01 |
+
+Both: Metadata R · **Contents R** · Issues RW · Pull requests RW · Actions R.
+
+**`Contents: Read` is the point.** Without write, a token holder cannot push over
+HTTPS — verified, GitHub returns `403 Permission denied` — so every push must go
+through the SSH signing key. The token can open PRs and read CI; it cannot put
+code anywhere.
+
+[`gh-token-wrapper`](../../linux/gh-token-wrapper) is installed as
+`~/.local/bin/gh` (ahead of the mise shim) and picks the token from the origin
+remote's owner. It can read `~/.config/0x58/credentials.env` precisely because it
+runs outside the sandbox, while agents cannot read that file directly — the same
+property that lets `git` use a signing key they can't `cat`.
+
+Honest limit: `gh auth token` prints whichever token is selected, so a determined
+agent can still extract one. Scoping bounds the damage; secrecy does not.
+
+The classic `repo`-scoped token has been removed from `~/.config/gh/hosts.yml`.
+Keep it that way — `repo` grants push over HTTPS and would silently bypass the
+signing-key gate.
+
+### Gotcha: mise config trust
+
+`mise` refuses untrusted `.mise.toml`, and reports it as *"error parsing config
+file"* with the real reason on the following line. An untrusted repo therefore
+breaks **every** mise-provided tool there, not just one. `mise trust <path>` fixes
+it; a fresh clone or a rebuild needs it again.

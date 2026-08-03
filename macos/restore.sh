@@ -233,6 +233,16 @@ place_dotfiles() {
             git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
         fi
 
+        # gh wrapper: selects the fine-grained PAT matching the repo's owner.
+        # Installed as ~/.local/bin/gh, which is ahead of the mise shim on PATH.
+        # Works because gh is in excludedCommands and so runs outside the sandbox,
+        # letting it read a credentials file agents cannot.
+        if [[ -f "$LINUX_DIR/gh-token-wrapper" ]]; then
+            mkdir -p ~/.local/bin
+            install -m 755 "$LINUX_DIR/gh-token-wrapper" ~/.local/bin/gh
+            echo "    gh: token-selecting wrapper installed to ~/.local/bin/gh"
+        fi
+
         # systemd user unit for the Codex broker.
         #
         # Installed but NOT enabled: which workspaces get a broker is a per-machine
