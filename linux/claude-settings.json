@@ -25,27 +25,68 @@
   },
   "sandbox": {
     "enabled": true,
-    "enabledPlatforms": ["linux"],
+    "enabledPlatforms": [
+      "linux"
+    ],
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,
     "autoAllowBashIfSandboxed": true,
-    "excludedCommands": ["git"],
+    "excludedCommands": [
+      "git",
+      "gh"
+    ],
     "credentials": {
       "files": [
-        { "path": "~/.claude/.credentials.json", "mode": "deny" },
-        { "path": "~/.codex/auth.json", "mode": "deny" },
-        { "path": "~/.npmrc", "mode": "deny" },
-        { "path": "~/.config/gh/hosts.yml", "mode": "deny" },
-        { "path": "~/.git-credentials", "mode": "deny" }
+        {
+          "path": "~/.claude/.credentials.json",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.codex/auth.json",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.npmrc",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.config/gh/hosts.yml",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.git-credentials",
+          "mode": "deny"
+        }
       ],
       "envVars": [
-        { "name": "ANTHROPIC_API_KEY", "mode": "deny" },
-        { "name": "OPENAI_API_KEY", "mode": "deny" },
-        { "name": "GH_TOKEN", "mode": "deny" },
-        { "name": "GITHUB_TOKEN", "mode": "deny" },
-        { "name": "LINODE_TOKEN", "mode": "deny" },
-        { "name": "TF_VAR_tailscale_auth_key", "mode": "deny" },
-        { "name": "NPM_TOKEN", "mode": "deny" }
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "GH_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GITHUB_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "LINODE_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "TF_VAR_tailscale_auth_key",
+          "mode": "deny"
+        },
+        {
+          "name": "NPM_TOKEN",
+          "mode": "deny"
+        }
       ]
     },
     "filesystem": {
@@ -59,7 +100,21 @@
         "/var/lib/tailscale",
         "/etc/0x58-node.env"
       ],
-      "allowWrite": ["~/src", "/tmp"]
+      "allowWrite": [
+        "~",
+        "/tmp"
+      ],
+      "denyWrite": [
+        "~/.claude/settings.json",
+        "~/.claude/.credentials.json",
+        "~/.codex/auth.json",
+        "~/.codex/config.toml",
+        "~/.ssh",
+        "~/.gnupg",
+        "~/.config/gcloud",
+        "~/.config/gh",
+        "~/.config/git/allowed_signers"
+      ]
     },
     "network": {
       "allowLocalBinding": true,
