@@ -498,3 +498,59 @@ signing-key gate.
 file"* with the real reason on the following line. An untrusted repo therefore
 breaks **every** mise-provided tool there, not just one. `mise trust <path>` fixes
 it; a fresh clone or a rebuild needs it again.
+
+## Rebuilding the devbox
+
+`user_data` changes force instance replacement, so applying config drift *is* a
+rebuild. That is safe by design — `~/src` lives on a detachable volume, and the
+instance is cattle — but the root disk is gone, and with it everything that was
+never captured in this repo.
+
+```bash
+./dev/nodes/backup-devbox.sh snapshot     # 1. source lives on the volume, but be sure
+./dev/nodes/ts-node devbox apply          # 2. destroys and recreates the instance
+#    3. delete the OLD node in the Tailscale admin console  <-- do not skip
+./dev/nodes/devbox-keys restore           # 4. SSH keys back from Keychain escrow
+#    5. re-place ~/.config/0x58/credentials.env (below)
+./dev/nodes/devbox-smoketest              # 6. prove the loop actually works
+```
+
+**Step 3 is not optional.** Tailscale will not reuse a hostname while a stale
+record holds it, so the new node joins as `pezware-devbox-1`. The box is then
+perfectly healthy and completely unreachable by the name every script uses.
+`devbox-smoketest` checks for the suffix explicitly.
+
+**Step 5** has no automated path, because the file holds four secrets that
+deliberately never enter this repo or a backup:
+
+```bash
+kc() { security find-generic-password -s "$1" -a "$USER" -w; }
+{ printf 'GH_TOKEN_PEZWARE=%s\n'          "$(kc gh-pat-devbox-pezware)"
+  printf 'GH_TOKEN_IDEN2=%s\n'            "$(kc gh-pat-devbox-iden2)"
+  printf 'LINODE_TOKEN=%s\n'              "$(kc linode-pat-devbox)"
+  printf 'TF_VAR_tailscale_auth_key=%s\n' "$(kc tailscale-devbox-authkey)"
+} | ssh devbox 'umask 077; mkdir -p ~/.config/0x58 && cat > ~/.config/0x58/credentials.env'
+```
+
+Piped over stdin on purpose — a value passed as an argument would be visible in
+`ps` on the way through.
+
+Then `claude login` and `codex login`, which are interactive OAuth and cannot be
+scripted. `restore.sh` runs automatically from cloud-init and handles the rest:
+dotfiles, packages, the gh wrapper, podman, lingering, mise trust, and pointing
+`user.signingkey` at the on-disk key.
+
+### What the 2026-08-03 rehearsal found
+
+The box came back with source, dotfiles, podman and the gh wrapper all present —
+and could not sign a commit as the right account. Nothing looked broken. The
+lesson is that presence is not function, which is why `devbox-smoketest` makes a
+real signed commit, requests a real token, and opens a real socket rather than
+inspecting configuration.
+
+| gap | why it was invisible |
+|---|---|
+| signing key was the Mac's `key::` form | file present and well-formed; `key::` names an **agent-held** key, and the devbox has no agent — fails with *"Couldn't find key in agent?"* whichever key it names |
+| lingering lost | lives on the root disk; user units die at logout, so it only breaks when nobody is attached |
+| mise trust lost | reported as *"error parsing config file"*, which blames TOML syntax; breaks every mise tool in the repo at once |
+| stale tailnet record | new node silently renamed, box healthy but unreachable by name |
