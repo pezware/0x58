@@ -8,7 +8,7 @@ dev/nodes/
 ├── ts-node                     # ./ts-node <role> <command>
 ├── modules/linode-node/        # instance + firewall + cloud-init + common.sh
 └── roles/
-    ├── devbox/                 # 2 GB, always on  — repos, agents, kubectl
+    ├── devbox/                 # 4 GB, always on  — repos, agents, kubectl
     ├── k8s/                    # 4 GB, on demand  — docker + kind, disposable
     └── minimal/                # 1 GB             — exit node only, fall-back tier
 ```
@@ -28,7 +28,7 @@ duration of one command.
 
 | Role | Plan | Cost | Lifetime | Swap |
 |---|---|---|---|---|
-| `devbox` | g6-standard-1 · 2 GB | $12/mo | permanent | 4 GB — safe, never runs kubelet |
+| `devbox` | g6-standard-2 · 4 GB | $24/mo | permanent | 4 GB — safe, never runs kubelet |
 | `k8s` | g6-standard-2 · 4 GB | ~$0.036/hr (~$3 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
 | `minimal` | g6-nanode-1 · 1 GB | $5/mo | fall-back | 0 |
 
