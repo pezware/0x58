@@ -56,10 +56,6 @@
         {
           "path": "~/.git-credentials",
           "mode": "deny"
-        },
-        {
-          "path": "~/.config/0x58/credentials.env",
-          "mode": "deny"
         }
       ],
       "envVars": [
@@ -95,7 +91,6 @@
     },
     "filesystem": {
       "denyRead": [
-        "~/.ssh",
         "~/.gnupg",
         "~/.config/gcloud",
         "~/.kube",
