@@ -3,6 +3,10 @@
 Role-based Linode nodes on the tailnet. One shared Terraform module, one
 dispatcher, three roles you can scale up and down independently.
 
+> **How this was built, and what each decision cost:**
+> [devbox-build.md](devbox-build.md) — the security, sync, cost and feasibility
+> trade-offs, including the ones that turned out to be wrong.
+
 ```
 dev/nodes/
 ├── ts-node                     # ./ts-node <role> <command>
