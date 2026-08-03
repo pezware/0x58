@@ -19,9 +19,17 @@ module "node" {
   label = "pezware-k8s"
   role  = "k8s"
 
-  # g6-standard-2: 2 vCPU / 4 GB / 80 GB / $24 mo, but billed hourly at
-  # ~$0.036 — the point of this role is that it exists only while in use.
-  type = "g6-standard-2"
+  # g6-standard-4: 4 vCPU / 8 GB / 160 GB, billed hourly at ~$0.072 — the point
+  # of this role is that it exists only while in use, so a 3-hour session is
+  # about $0.22 and cost is not the binding constraint.
+  #
+  # 8 GB, not 4. The earlier "4 GB comfortably fits one node" was true of an
+  # EMPTY kind cluster and misleading for anything real: the iden2 stack needs
+  # eight local image builds plus Traefik, Vault, Redis, Postgres, Keycloak,
+  # three walt.id services and five iden2 services. For full CI parity the
+  # target is g6-standard-6 (6 vCPU / 16 GB), matching GitHub's 4 vCPU / 16 GB
+  # ubuntu-latest — worth revisiting when the runner work happens.
+  type = "g6-standard-4"
 
   tailscale_auth_key = var.tailscale_auth_key
   tailscale_tag      = "tag:k8s"
