@@ -426,3 +426,34 @@ LINODE_TOKEN=<scoped-pat>
 TF_VAR_tailscale_auth_key=<reusable key tagged tag:k8s>
 ENV
 ```
+
+### Using the cluster from the devbox
+
+```bash
+ts-node k8s apply                    # ~4 min: node, kind, cluster
+kube-setup-kind-remote               # defaults to pezware-k8s / cluster "dev"
+kube-use kind-dev
+kubectl get nodes
+ts-node k8s destroy                  # only this stops the billing
+```
+
+`kube-setup-kind-remote` runs `kind get kubeconfig` **on the node** — kind and a
+docker socket exist there, not on the devbox — and drops the result into the
+existing `kubectl-context.bash` layout.
+
+The kubeconfig already points at the node's tailnet address, because
+`roles/k8s/bootstrap.sh` sets `apiServerAddress` at cluster-creation time. That
+cannot be retrofitted: the API server bakes its SANs into the serving cert, so a
+cluster created without it is unreachable from the devbox no matter what you edit
+afterwards.
+
+Requires two tailnet ACL rules, since the devbox is a *tagged device* and so is
+not covered by `autogroup:member`:
+
+```jsonc
+"acls": [{ "action": "accept", "src": ["tag:devbox"], "dst": ["tag:k8s:6443,22"] }],
+"ssh":  [{ "action": "accept", "src": ["tag:devbox"], "dst": ["tag:k8s"], "users": ["arbeitandy"] }]
+```
+
+Deliberately one-directional. Nothing grants k8s → devbox, so a throwaway cluster
+node has no path to the box holding your source and credentials. Verified.
