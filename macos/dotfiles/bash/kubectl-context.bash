@@ -164,6 +164,39 @@ kube-setup-gke() {
 }
 
 # --- Setup: Kind (OrbStack-managed or standalone) ---
+# --- Setup: Kind on a REMOTE node (the on-demand k8s box) ---
+# The cluster lives on a separate Linode, so `kind get kubeconfig` has to run
+# there -- it needs kind and a docker socket, neither of which exist locally.
+# `kind get kubeconfig` prints to stdout, so the whole import is one hop.
+#
+# The kubeconfig it emits already points at the node's TAILNET address, because
+# roles/k8s/bootstrap.sh sets apiServerAddress at cluster-creation time. That
+# cannot be retrofitted -- the API server bakes its SANs into the serving cert --
+# so a cluster built without it is unreachable from here no matter what you edit.
+kube-setup-kind-remote() {
+  local host=${1:-pezware-k8s} name=${2:-dev}
+  local config_dir="$KUBECONFIG_DIR/kind-$name"
+  mkdir -p "$config_dir"
+
+  if ! ssh -o ConnectTimeout=15 "$host" "kind get kubeconfig --name '$name'" > "$config_dir/config" 2>/dev/null; then
+    echo "Error: could not fetch kubeconfig for '$name' from $host"
+    echo "  is the node up?   ts-node k8s status"
+    echo "  tailnet ACL must allow tag:devbox -> tag:k8s over ssh and :6443"
+    rm -f "$config_dir/config"
+    return 1
+  fi
+  # An empty file here means the ssh hop was refused rather than kind failing --
+  # a distinction worth making, because the two look identical downstream.
+  if [[ ! -s "$config_dir/config" ]]; then
+    echo "Error: empty kubeconfig — the ssh hop to $host probably failed"
+    rm -f "$config_dir/config"
+    return 1
+  fi
+
+  echo "Kind $name @ $host -> $config_dir/config ($(grep -m1 'server:' "$config_dir/config" | tr -d ' '))"
+  kube-refresh
+}
+
 kube-setup-kind() {
   local name=$1
   if [[ -z "$name" ]]; then

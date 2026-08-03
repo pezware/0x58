@@ -94,3 +94,23 @@ variable "volume_mount" {
   type        = string
   default     = "/home/arbeitandy/src"
 }
+
+variable "linode_swap_mb" {
+  description = <<-EOT
+    Linode's own swap PARTITION, distinct from swap_mb which controls a swapfile
+    we create ourselves. Linode defaults to 512 MB, so a node can end up with
+    swap even when swap_mb is 0 -- observed on the first k8s node, which reported
+    495 MB despite the config claiming none.
+
+    kind tolerates it (its kubelet sets failSwapOn: false), but a native kubelet
+    would refuse to start, and a config that claims no swap while there is some
+    is worse than either.
+  EOT
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = var.linode_swap_mb >= 0 && floor(var.linode_swap_mb) == var.linode_swap_mb
+    error_message = "linode_swap_mb must be a non-negative whole number of megabytes."
+  }
+}

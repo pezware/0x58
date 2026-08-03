@@ -25,6 +25,7 @@ resource "linode_instance" "node" {
   type      = var.type
   image     = var.image
   root_pass = random_password.root.result
+  swap_size = var.linode_swap_mb
 
   tags = concat(["tailscale", var.role], var.extra_tags)
 

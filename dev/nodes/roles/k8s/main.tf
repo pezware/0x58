@@ -38,6 +38,11 @@ module "node" {
   # node containers run a real kubelet.
   swap_mb = 0
 
+  # And Linode's own 512 MB swap partition, which swap_mb does not control. The
+  # first k8s node came up with 495 MB of swap despite swap_mb = 0. kind tolerated
+  # it, but the config was claiming something untrue.
+  linode_swap_mb = 0
+
   bootstrap_script = file("${path.module}/bootstrap.sh")
   extra_tags       = ["ephemeral"]
 }
