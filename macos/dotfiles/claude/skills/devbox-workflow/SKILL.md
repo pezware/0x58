@@ -28,8 +28,15 @@ run it **inside the repo**. Outside a repo it has no token and fails confusingly
 
 ```bash
 cd ~/src/<org>/<repo>
-gh issue view <n> --json title,body,labels,milestone
+~/.local/bin/gh issue view <n> --json title,body,labels,milestone
 ```
+
+**`gh` is the one tool that must not come from the mise shim.** `~/.local/bin/gh`
+is the wrapper that selects the token; `~/.local/share/mise/shims/gh` is raw gh
+with no credential at all, and answers `please run gh auth login`. The
+"use the shim" advice below applies to `go`, `kubectl` and friends — never to `gh`.
+An interactive shell resolves plain `gh` correctly because `~/.local/bin` precedes
+the shims on PATH; a non-interactive one may not.
 
 **2 — Worktree off `main`.** Never work on the primary checkout.
 
@@ -110,7 +117,8 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | symptom | actual cause |
 |---|---|
 | `error parsing config file: .mise.toml` | config is **untrusted**, not malformed → `mise trust` |
-| `gh: command not found`, `go: command not found` | non-interactive shell; `mise activate` only runs from an interactive prompt → use `~/.local/share/mise/shims/<tool>` |
+| `go: command not found`, `kubectl: command not found` | non-interactive shell; `mise activate` only runs from an interactive prompt → use `~/.local/share/mise/shims/<tool>` |
+| `gh` says `please run gh auth login` | you invoked the **mise shim**. `gh` is the ONE tool that must NOT come from the shim → use `~/.local/bin/gh` |
 | `Permission denied (publickey)` on push | ssh is not offering the key; `~/.ssh/config` must pin `IdentityFile ~/.ssh/devbox_agent` |
 | `Couldn't find key in agent?` when signing | `user.signingkey` is in `key::` form, which needs an agent → use the **path** form |
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
