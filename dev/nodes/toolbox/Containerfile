@@ -1,0 +1,88 @@
+# 0x58 toolbox — the container an agent drives a kind cluster from.
+#
+# WHY THIS EXISTS: loopback TCP is blocked inside an agent sandbox, and kind's
+# API server listens on a loopback port. So cluster work happens from a container
+# attached to the `kind` network rather than from the host shell. Until now that
+# container was `debian:13-slim` plus an `apt-get install` of socat, kubectl,
+# helm, git, jq and psql on EVERY run.
+#
+# The saving, MEASURED rather than assumed, because the note that prompted this
+# called it "the single biggest speed win" and that turns out to depend entirely
+# on how the container is used:
+#
+#     full install path (apt + kubectl + helm)   12.3 s
+#     this image, tools ready                     0.5 s
+#
+# So ~12 s per container START, roughly 26x. That is decisive in the pattern an
+# agent naturally falls into — a fresh one-shot container per command, where 100
+# invocations is 20 minutes — and nearly worthless if the session keeps one
+# long-lived container instead. If a run is slow, check which pattern it is using
+# before assuming this image fixed it. Keeping one container alive is the larger
+# win; this image just makes both patterns cheap.
+#
+# What it is NOT is a memory fix. That was a separate misdiagnosis: the box has
+# 4.5 GB of swap sitting at 0 B used.
+#
+# A trap already sprung once and worth restating: installing these on the HOST
+# does nothing for the container. A fresh container starts from nothing.
+#
+# Build with dev/nodes/toolbox/build (on the devbox — it needs the network).
+FROM debian:13-slim
+
+# Tags rather than digests, deliberately. A digest would be stronger, but this
+# image is built and consumed entirely on one box, is never pushed, and a stale
+# pinned digest silently misses Debian's security updates — which matters more
+# here than registry-substitution, given the base is only ever pulled over TLS
+# from docker.io during a build the human initiated.
+ARG KUBECTL_VERSION=v1.36.3
+ARG HELM_VERSION=v4.2.3
+
+# kubectl matches the HOST's mise pin (kubectl = "1.36"), not the cluster's
+# kindest/node:v1.35.0. That is inside kubernetes' +/-1 minor skew policy, and
+# matching the host means a command behaves identically whether you run it here
+# or in your own shell — which is worth more than matching the server exactly.
+#
+# helm tracks mise's `helm = "latest"`, which currently resolves to v4.2.3.
+# Pinned explicitly here so a rebuild is reproducible; expect it to drift from
+# the host and bump it deliberately rather than chasing latest.
+
+# jq comes from apt here, which is the OPPOSITE of the rule in linux/packages.txt.
+# That rule exists because mise owns jq on the host and an apt build would shadow
+# the shim. There is no mise in this image, so apt is simply the only source.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        postgresql-client \
+        socat \
+    && rm -rf /var/lib/apt/lists/*
+
+# Checksums are fetched from the same origin as the binaries, so they defend
+# against a truncated or corrupted download, NOT against a compromised upstream.
+# Said plainly because a checksum line tends to read as more assurance than it is.
+RUN set -eux; \
+    curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+    curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"; \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -; \
+    install -m 0755 kubectl /usr/local/bin/kubectl; \
+    rm -f kubectl kubectl.sha256
+
+RUN set -eux; \
+    curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"; \
+    curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"; \
+    sha256sum -c "helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"; \
+    tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz"; \
+    install -m 0755 linux-amd64/helm /usr/local/bin/helm; \
+    rm -rf linux-amd64 "helm-${HELM_VERSION}-linux-amd64.tar.gz"*
+
+# Fail the BUILD if a tool is missing, rather than a 30-minute e2e run failing on
+# `helm: not found` at minute 28. Cheap, and it has to be checked somewhere.
+RUN kubectl version --client=true >/dev/null \
+    && helm version --short >/dev/null \
+    && command -v socat git jq psql >/dev/null \
+    && echo "toolbox: all tools present"
+
+WORKDIR /work
+CMD ["/bin/bash"]

@@ -343,6 +343,23 @@ if remote 'command -v podman >/dev/null'; then
     remote 'loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes' \
         && ok "lingering enabled" "socket survives logout" \
         || no "lingering enabled" "socket dies when you detach — tests fail only when unattended"
+
+    # Rootless podman cannot bind below 1024, which is what actually blocked the
+    # compose tier — Caddy wants 80 and 443. Misfiled as a memory problem for a
+    # while; it never was one. Devbox-only on purpose: the k8s node is where
+    # hostile code is meant to run, and low ports there means port 53 there.
+    remote '[ "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" = "0" ]' \
+        && ok "unprivileged low ports" "rootless containers can bind 80/443" \
+        || no "unprivileged low ports" "compose tier blocked — Caddy cannot bind 80/443"
+
+    # Absence is not fatal, just slow: every cluster command falls back to
+    # apt-installing its tools again, measured at 12.3s per container start
+    # against 0.5s with the image. Warn rather than fail.
+    if remote 'podman image exists localhost/0x58-toolbox:latest'; then
+        ok "toolbox image baked" "cluster work starts in ~0.5s, not ~12s"
+    else
+        skip "toolbox image baked" "run dev/nodes/toolbox/build — each container start costs ~12s without it"
+    fi
 else
     skip "podman.socket active" "podman not installed"
 fi

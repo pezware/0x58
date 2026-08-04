@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Build the 0x58 toolbox image. Run ON the devbox — it needs network and podman.
+#
+#   ./dev/nodes/toolbox/build            # build if missing
+#   ./dev/nodes/toolbox/build --force    # rebuild even if present
+#
+# The image is local-only and never pushed. ghcr is not an option here and that
+# is a GitHub platform gap rather than a misconfiguration: fine-grained PATs have
+# no packages permission and ghcr accepts only classic PATs, so `podman login`
+# SUCCEEDS while the manifest read still 403s. Do not read a successful login as
+# access.
+set -euo pipefail
+
+IMAGE="localhost/0x58-toolbox:latest"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "build: run this on the devbox, not the Mac (got $(uname -s))" >&2
+    exit 1
+fi
+
+if [[ "${1:-}" != "--force" ]] && podman image exists "$IMAGE" 2>/dev/null; then
+    echo "==> $IMAGE already present — nothing to do (--force to rebuild)"
+    podman images --format '    {{.Repository}}:{{.Tag}}  {{.Size}}  created {{.CreatedSince}}' \
+        --filter reference="$IMAGE"
+    exit 0
+fi
+
+echo "==> building $IMAGE (first build pulls debian:13-slim and ~2 tool downloads)"
+podman build --tag "$IMAGE" --file "$HERE/Containerfile" "$HERE"
+
+echo ""
+echo "==> built"
+podman images --format '    {{.Repository}}:{{.Tag}}  {{.Size}}' --filter reference="$IMAGE"
+cat <<'USAGE'
+
+    Drive a kind cluster from it — note --network kind, which is the whole point:
+    the API server is on a loopback port the agent sandbox cannot reach.
+
+      podman run --rm -it --network kind \
+        -v "$HOME/src:/work:z" \
+        -v "$HOME/.kube:/root/.kube:ro,z" \
+        localhost/0x58-toolbox:latest
+
+    Rebuild after bumping KUBECTL_VERSION or HELM_VERSION:  build --force
+USAGE
