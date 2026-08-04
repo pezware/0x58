@@ -249,9 +249,66 @@ remote 'python3 -m json.tool ~/.claude/settings.json >/dev/null 2>&1' \
     && ok "claude settings parse" "valid JSON" \
     || no "claude settings parse" "malformed — sandbox config may not apply"
 
+# This assertion INVERTED on 2026-08-04. It used to demand that
+# allowAllUnixSockets be absent; enabling it is now deliberate, so that agents can
+# run the container-backed test tiers in-session. A silent revert would strand the
+# integration and e2e tiers again, which is why the switch is asserted present
+# rather than merely tolerated.
 remote 'grep -q "allowAllUnixSockets" ~/.claude/settings.json 2>/dev/null' \
-    && no "AF_UNIX blocking still on" "allowAllUnixSockets present — agents can reach the SSH agent" \
-    || ok "AF_UNIX blocking still on" "no allowAllUnixSockets override"
+    && ok "unix sockets reachable in-session" "allowAllUnixSockets on — container tiers can run" \
+    || no "unix sockets reachable in-session" "allowAllUnixSockets absent — integration/e2e tiers cannot run"
+
+# With AF_UNIX open, these denials are the whole boundary around the two
+# subscription refresh tokens — nothing else stands between an agent and them.
+# Both must sit in sandbox.credentials.files with mode deny; denyWrite is not
+# enough, and ~/.codex/auth.json was listed ONLY under denyWrite until 2026-08-04
+# while the docs claimed it was denied outright.
+#
+# Unlike its neighbours this check inspects rather than does. The honest in-session
+# control needs a live Claude session, and an agent may decline to run a
+# credential probe at all — correct of it, but a smoke test must not depend on a
+# judgement call landing one way. Run the probe in linux/sandbox.md by hand.
+for cred in claude/.credentials.json codex/auth.json; do
+    remote "grep -A1 -e path.*${cred##*/} ~/.claude/settings.json | grep -q mode.*deny" \
+        && ok "~/.${cred%%/*}/${cred#*/} denied to agents" "in credentials.files as deny" \
+        || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
+done
+
+# ── supply-chain cooldown ───────────────────────────────────────────────────
+# A publish-then-yank attack is caught by waiting, not by scanning. Both gates
+# below fail OPEN when absent — an install just proceeds — so nothing surfaces
+# them except a check like this one.
+section "Supply-chain cooldown"
+
+# pnpm: minutes. 10080 = 7 days. The floor matters as much as its presence,
+# because `minimumReleaseAge: 7` looks configured and buys seven minutes.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get minimumReleaseAge 2>/dev/null)" -ge 10080' \
+    && ok "pnpm cooldown >= 7 days" "~/.config/pnpm/config.yaml — readable by agents" \
+    || no "pnpm cooldown >= 7 days" "unset or too low — fresh malicious publishes are installable"
+
+# pnpm 11 ships a 1440 default that is NON-strict: it degrades rather than fails.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get minimumReleaseAgeStrict 2>/dev/null)" = true' \
+    && ok "pnpm cooldown is strict" "an unsatisfiable floor fails loudly" \
+    || no "pnpm cooldown is strict" "non-strict — pnpm may resolve something younger instead"
+
+# npm needs >= 11.10 for the key to do anything. Below that it is stored,
+# echoed back by `npm config get`, and ignored — so assert npm's own config
+# list KNOWS the key rather than that the file contains it.
+remote '~/.local/share/mise/shims/npm config ls -l 2>/dev/null | grep -q "^; min-release-age\|^min-release-age"' \
+    && ok "npm knows min-release-age" "npm >= 11.10; the .npmrc line is enforced" \
+    || no "npm knows min-release-age" "npm too old — ~/.npmrc says 7 days and nothing honours it"
+
+# Install scripts are the execution vector: a malicious version does not need to
+# be imported, only installed. npm runs them by default; pnpm has not since v10.
+remote 'test "$(~/.local/share/mise/shims/npm config get ignore-scripts)" = true' \
+    && ok "npm install scripts disabled" "ignore-scripts=true" \
+    || no "npm install scripts disabled" "dependency postinstall runs on install"
+
+# pnpm's protection is default-deny plus an allowlist. The failure mode is not
+# an unset flag, it is someone reaching for the documented override.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get dangerouslyAllowAllBuilds)" != true' \
+    && ok "pnpm builds not blanket-allowed" "default-deny intact; allowlist via onlyBuiltDependencies" \
+    || no "pnpm builds not blanket-allowed" "dangerouslyAllowAllBuilds=true — every dependency build runs"
 
 # ── containers ──────────────────────────────────────────────────────────────
 section "Containers"

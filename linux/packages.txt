@@ -49,22 +49,33 @@ socat
 btop
 ncdu
 
-# === Containers — for your shell and CI, NOT for agents ===
+# === Containers — for your shell, CI, AND agents ===
 # Rootless podman provides the Docker-compatible API socket testcontainers-go looks
-# for. It is deliberately unreachable from inside an agent sandbox, and that is not
-# an oversight to be fixed later: Claude Code blocks AF_UNIX with a seccomp filter,
-# and seccomp cannot allow a single socket by path — `allowUnixSockets` says
-# "macOS only ... ignored on Linux" in its own schema. The only switch that works
-# here is `allowAllUnixSockets`, which also exposes the forwarded SSH agent and
-# would let an agent sign and push with no Touch ID tap. Read linux/sandbox.md
-# before changing this.
+# for. Until 2026-08-04 it was deliberately unreachable from inside an agent
+# sandbox; `allowAllUnixSockets` is now on, so agents run the container-backed
+# tiers themselves. That switch is all-or-nothing on Linux — seccomp cannot filter
+# a socket by path, and `allowUnixSockets` says "macOS only ... ignored on Linux"
+# in its own schema.
 #
-# The trade costs little: 28 of 746 test files in the go monorepo need containers,
-# and they already sit behind //go:build e2e|integration tags that a plain
-# `go test ./...` skips. Agents run the other ~96% inside the sandbox.
+# What it costs is NOT mainly the SSH agent, which is what this comment used to
+# warn about: signing and pushing already use an on-disk key, so no Touch ID tap
+# was being protected. The real cost is that the runtime executes OUTSIDE the
+# sandbox, so image pulls ignore the egress allowlist and bind mounts reach denied
+# paths. Read linux/sandbox.md before changing this.
 podman
 uidmap         # newuidmap/newgidmap — rootless podman cannot map subuids without it
 passt          # pasta: podman 5's default rootless network backend
+podman-remote  # `podman --remote`; also what a toolbox container needs to drive
+               # the host socket when loopback TCP is blocked in-session
+
+# === Agent-driven cluster/database work ===
+# Installed by hand inside a throwaway container the first time an agent needed
+# them, which is a bad place for them to live — a fresh container starts from
+# nothing and the apt install is repeated every run.
+procps            # ps/free; Priority:important so already present, listed to pin it
+postgresql-client # psql against a service in kind or a compose stack
+# NOTE: jq is deliberately NOT here. mise owns it (see the header) and an apt jq
+# would shadow the shim with an older build.
 
 # === Optional — uncomment per box, not by default ===
 # Deliberately off: this is a 2-4 GB laptop and the point is to stay minimal.

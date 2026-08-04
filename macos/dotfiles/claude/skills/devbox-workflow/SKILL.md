@@ -95,17 +95,19 @@ gh pr create --title "..." --body "..."
 Body formatting is fragile in shell — see the `gh pr create` note in your global
 instructions (plain double-quoted string, not a heredoc).
 
-**6 — Test.** This is where the sandbox actually constrains you:
+**6 — Test.** All tiers run in-session as of 2026-08-04:
 
 ```bash
-go test ./...                       # works — ~96% of the suite
-go test -tags=integration ./...     # FAILS in-session: needs containers
+go test ./...                       # ~96% of the suite
+go test -tags=integration ./...     # works — needs the docker shim first
 ```
 
-Container-backed tests cannot run inside an agent session at all. Do not debug
-that failure — it is a boundary, not a bug. See
-[containers and the k8s tier](patterns/containers-and-k8s.md) for what to do
-instead, including the on-demand cluster and its hourly cost.
+Container-backed tests used to be impossible here. They are not any more:
+`allowAllUnixSockets` is on and the podman socket answers from inside the
+sandbox. You still need a `docker` shim and a ghcr login before anything pulls —
+both are in [containers and the k8s tier](patterns/containers-and-k8s.md), along
+with what that open socket costs. Read it before your first container command;
+skipping it turns a five-minute setup into an hour of misattributed errors.
 
 **7 — Comment on the issue or PR.** Report what actually happened, including
 failures and skipped steps.
@@ -114,6 +116,30 @@ failures and skipped steps.
 gh pr comment <n> --body "..."
 gh issue comment <n> --body "..."
 ```
+
+**7a — Tear down anything you brought up. Not optional, and not the human's
+job.** If you created a kind cluster, a toolbox container, or images that existed
+only for this run, destroy them once the tests are done *and* the PR or issue has
+been updated — in that order, because review feedback often needs one more run
+against the same cluster.
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+kind delete cluster --name <cluster>
+podman rm -f <helper containers>
+podman image prune -f && podman volume prune -f
+free -m | head -2; df -h / | tail -1     # report what came back
+```
+
+This box has 4 GB and **no swap**. A cluster left running held 1.6 GB of RAM and
+8 GB of disk on 2026-08-04 — enough that the *next* session fails in ways that
+look nothing like "someone forgot to clean up". Keep the gitignored artifacts the
+next run reuses (`dev/kind/.kubeconfig`, `dev/caddy/certs/`, the mkcert CA), and
+name anything you leave behind on purpose. Details and the keep/remove split:
+[containers and the k8s tier](patterns/containers-and-k8s.md).
+
+Report the before/after numbers rather than the word "cleaned up" — a delete that
+half-failed looks identical to one that worked until someone checks.
 
 **7b — Optional: get an independent review from Codex.** Worth doing before you
 ask a human to look, because self-review misses what you already believed.
@@ -159,7 +185,10 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `Couldn't find key in agent?` when signing | `user.signingkey` is in `key::` form, which needs an agent → use the **path** form |
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
-| container test cannot reach Docker | sandbox blocks AF_UNIX **and** loopback TCP → not fixable in-session |
+| container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
+| ghcr pull 403s **after a successful login** | fine-grained PATs cannot access ghcr at all — a GitHub gap, not your setup. Use the upstream fallback the Dockerfile documents and report it |
+| `kubectl` cannot reach a kind cluster | loopback TCP is still blocked (separate from AF_UNIX) → drive the cluster from a toolbox container on the `kind` network, not by fixing the kubeconfig |
+| `pnpm install` refuses a fresh version | the 7-day supply-chain cooldown, working as intended → add a dated `minimumReleaseAgeExclude` entry, never lower the floor |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
 | `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
 | `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |
@@ -174,7 +203,11 @@ Full detail, with the mechanism behind each:
   a batch; you sign as you go.
 - **Do not** try to read `~/.claude/.credentials.json` or `~/.codex/auth.json`.
   They are denied, deliberately, and nothing you are doing needs them.
-- **Do not** enable `allowAllUnixSockets` to make container tests work. It also
-  exposes the forwarded Secure Enclave agent. The trade was measured and refused —
-  see `~/src/public/0x58/linux/sandbox.md`.
+- **Do not** treat the sandbox as containment for anything you hand to the
+  container runtime. It runs outside the sandbox, so image pulls ignore the egress
+  allowlist and bind mounts reach denied paths. Hostile code belongs on the
+  disposable k8s node — see `~/src/public/0x58/linux/sandbox.md`.
 - **Do not** leave a k8s node running. It bills hourly.
+- **Do not** leave a local kind cluster or toolbox container running either. It
+  bills in the next session's RAM instead of dollars, which is harder to trace.
+  Tearing down is step 7a, and finishing without it is finishing the task badly.
