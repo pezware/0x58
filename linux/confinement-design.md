@@ -36,10 +36,36 @@ decayed silently and the same class of decay is the actual risk.
 | `podman run -v <root-owned 0600>` | `Permission denied` | a rootless container **cannot** read root-owned files |
 | same, user-owned 0600 (negative control) | contents printed | proves the above is about ownership, not a broken mount |
 | container `id` | `uid=0(root)` | container-root is counterfeit — it maps to `arbeitandy` on the host |
+| `sudo -n id` **inside a Claude session** | exit 1: `no new privileges` **and** `/etc/sudo.conf is owned by uid 65534` | in-sandbox escalation is blocked twice over |
+| `wc -c < ~/.claude/.credentials.json`, same session (liveness control) | `Permission denied` | proves the sandbox was actually engaged for the above |
+| `/run/podman/podman.sock`; system `podman.socket` | absent; `inactive` | **no rootful socket** — the agent cannot request a privileged runtime |
+| `touch ~/.0x58-write-probe` in-session | exit 0 | **`allowWrite` is `~`, not `~/src`** |
+| `touch ~/.ssh/...` (negative control) | `EROFS: Read-only file system` | denial is a read-only remount, **not `EACCES`** |
 
-The last three are the foundation of everything below. Without the negative
-control the first of them would have been unfalsifiable: a blocked read and a
+The middle group is the foundation of everything below. Without the negative
+control the container result would have been unfalsifiable: a blocked read and a
 broken mount look identical from inside.
+
+**The last two are the most serious finding of the session, and they contradict
+this repo's own documentation.** `sandbox.md` states "Writes limited to `~/src`
+and `/tmp`." The live setting is `allowWrite: ["~", "/tmp"]` with a `denyWrite`
+list that does **not** include `~/.bashrc`, `~/.profile`, `~/.config/systemd/user`,
+`~/.local/bin`, or `~/.claude/settings.local.json`. Combined with
+`arbeitandy ALL=(ALL) NOPASSWD:ALL`, that is a working escalation path:
+
+> An injected agent cannot become root itself — `no_new_privs` stops it, measured.
+> It does not need to. It writes a shell profile, a systemd user unit, or a
+> `settings.local.json` hook, and waits for **you** to log in. Your session is
+> unsandboxed and holds passwordless root.
+
+Note that `~/.claude/settings.json` is denied while `settings.local.json` is not,
+and that planting agent hooks is exactly the persistence technique used by the
+2026-08-04 npm worm in [`supply-chain-triage.md`](supply-chain-triage.md).
+
+An operational aside worth keeping: the denial surfaced as `EROFS`, not `EACCES`.
+The sandbox masks paths by remounting read-only rather than through Unix
+permissions, so any tooling that branches on `errno == EACCES` will misclassify
+this boundary.
 
 ## Why not SELinux
 
@@ -93,10 +119,19 @@ netns and, depending on how the nftables rules are keyed, may sidestep them. Tha
 is not a reason to skip this — it is a reason the socket proxy below is the
 partner control, not an alternative to it.
 
-## The control that does the most work: a runner uid
+## The control that does the most work: principal separation
 
-The measured facts point at an option that is cheaper than SELinux and stronger
-than either proxy, and it follows from one line of reasoning:
+Cross-checked with Codex this session, which pushed back usefully on an earlier
+draft that proposed only a single `runner` uid. Its objection — that moving podman
+to another uid is cosmetic while the agent's own uid holds passwordless root — was
+**correct in conclusion and wrong in mechanism**, and the difference matters.
+
+Codex asserted injected code could "simply become root, or launch rootful podman."
+Both were measured shut: `sudo` fails in-sandbox under `no_new_privs`, and there is
+no rootful socket. The path that is actually open is the profile-write above. So
+the objection stands, but the thing to fix first is the **write scope**, not sudo.
+
+The design follows from one line of reasoning:
 
 - The agent **must** be able to read its own token, or it cannot authenticate.
 - Therefore any process running as the agent's uid can read it.
@@ -104,24 +139,41 @@ than either proxy, and it follows from one line of reasoning:
 - ⇒ File permissions alone **cannot** both authenticate the agent and deny its
   containers the token. That is not a configuration gap; it is arithmetic.
 
-There are only two ways out, and they compose well:
+What that argument does **not** say is that nothing helps. It says one credential
+cannot be hidden from its own client. Every *other* secret on the box is still
+protectable, and today a single injected agent reaches all of them.
 
-**1. Stop the containers from running as the agent's uid.** Give podman its own
-unprivileged account — call it `runner` — with its own subuid range and a
-lingering user socket. The agent talks to `runner`'s socket instead of its own.
-Containers then execute as a uid that cannot read `arbeitandy`'s `0600` files at
-all, which the probe above shows is a genuine kernel-enforced boundary rather than
-a policy hope. `~/src` stays reachable by granting `runner` group access to it
-specifically, which is exactly the scope that ought to be shareable.
+**Split the principals.** Four accounts instead of one:
 
-**2. Filter what the API will accept.** A socket proxy in front of the podman
-API that rejects `HostConfig.Binds` outside an allowlist and refuses
-`Privileged: true`, `--network=host`, and `--pid=host`. This is the layer where
-"which mount is legitimate" is actually decidable, which is precisely what MAC
-could not do.
+| uid | holds | runs |
+|---|---|---|
+| `arbeitandy` | sudo, signing key, Linode + GitHub tokens | human administration only — **never an agent** |
+| `claude-agent` | only Claude's own OAuth token | Claude Code |
+| `codex-agent` | only Codex's own OAuth token | Codex |
+| `runner` | nothing | rootless podman, owns the socket |
 
-Together these close both measured bypasses. Neither requires relocating a single
-credential.
+The honest claim: this **cannot** protect Claude's refresh token from a compromise
+of Claude itself. It **does** stop Claude injection reaching Codex's token, the
+GitHub token, the Linode token, the signing key, or your sudo. That is most of the
+blast radius, and today all of it sits behind one uid.
+
+Two implementation notes, both from Codex and both easy to get wrong:
+
+- **Remove the local podman engine from the agent uids entirely**, leaving only
+  `podman-remote` (Debian packages it as a remote-only binary, and it is already
+  in `packages.txt`). Merely *configuring* a remote default is not enforcement —
+  an agent can select local mode and start its own engine.
+- **Bind mounts resolve on the runner's side**, so `runner` cannot mount an agent
+  home even if asked. Shared work must live somewhere deliberate — `/srv/workspaces`
+  rather than any agent's `~`. Expect container-created files to be runner-owned;
+  plan for a shared group with setgid directories.
+
+**Then filter what the API will accept.** A socket proxy rejecting
+`HostConfig.Binds` outside an allowlist and refusing `Privileged`, `--network=host`
+and `--pid=host`. This is the layer where "which mount is legitimate" is decidable,
+which is precisely what MAC could not do. Anyone holding a podman socket has code
+execution as its owner — acceptable here only because `runner` is credential-free
+by construction.
 
 ## On the Debian keychain question
 
@@ -149,34 +201,74 @@ Its limits, stated plainly rather than discovered later:
   alone, so a disk image or host-root compromise defeats it. Against an injected
   agent that is fine; against Linode control-plane compromise it is not — and
   `sandbox.md` already scopes that out.
-- **`arbeitandy` has `NOPASSWD:ALL`.** Root-only protection means nothing to
-  anyone who can `sudo cat`. Whether a *sandboxed* agent can invoke sudo — bwrap
-  sets `PR_SET_NO_NEW_PRIVS`, which should defeat setuid — is **unverified and
-  load-bearing**. See the open probes.
+- **`arbeitandy` has `NOPASSWD:ALL`** — but a sandboxed agent cannot use it.
+  Measured this session: `sudo -n id` fails under `no_new_privs`, and again on
+  `/etc/sudo.conf is owned by uid 65534` (bwrap maps outside-root to `nobody`).
+  So root ownership **is** a genuine boundary against the agent's own execution
+  and against its rootless containers. Codex's blanket "root ownership is not a
+  boundary" overstates it. The caveat that survives is narrower and still
+  decisive: root ownership does not defend against an agent that persists into
+  *your* unsandboxed, sudo-capable login. Fix the write scope and this holds.
 - **Claude Code reads `~/.claude/.credentials.json` directly.** There is no
   credential-helper hook for subscription OAuth (`apiKeyHelper` covers API keys, a
   different auth path). So `systemd-creds` cannot be dropped in; it needs a
   wrapper that materialises the file into a mount namespace private to the agent's
   process tree. That is real work for a partial win.
 
-**Recommendation: do not start here.** The runner uid delivers most of the same
-protection, because it makes the credential unreachable from the container
-without moving it. Revisit `systemd-creds` only if the threat model widens to
-include a compromised agent binary rather than an injected prompt.
+**Recommendation: do not start here.** Treat `systemd-creds` as deployment
+hygiene — no plaintext in units, command lines or backups — rather than as a
+boundary against this threat. Principal separation delivers more, because it makes
+the credential unreachable from a *different* principal without moving it at all.
+
+### The option that actually removes secrets
+
+Raised by Codex and worth more than everything above for the **non-OAuth**
+credentials, because it deletes the long-lived secret rather than hiding it:
+
+- **GitHub** — a GitHub App whose private key lives on another host, minting
+  repo- and permission-scoped installation tokens that expire in an hour. Better
+  still, have the broker perform the operation and never return a token.
+- **Linode** — keep the PAT on the broker; expose allowlisted operations. Failing
+  that, hand back a 2-hour OAuth access token instead of a permanent PAT.
+- **SSH signing** — a remote signer or non-exporting agent. The private key
+  becomes unexfiltratable; the residual risk changes shape into a *signing oracle*
+  that malicious code can invoke while authorised. Add policy or human approval if
+  arbitrary signing is unacceptable. This is the honest trade, not a free win.
+
+Two rules for any such broker: it must expose **narrow actions with quotas and an
+audit log**, never an endpoint returning the underlying secret; and Tailscale
+identity alone is not authentication, because it trusts every process on the box.
+
+The subscription OAuth tokens are the irreducible residue. With no
+credential-helper interface, only an auth-terminating proxy could remove them, and
+that is unsupported and fragile unless the clients bless it. Say so plainly rather
+than engineering around it.
 
 ## Suggested order
 
 Cheapest and most certain first; nothing here depends on spending money.
 
+0. **Close the write scope. Do this before anything else.** Set `allowWrite` to
+   `["~/src", "/tmp"]` as `sandbox.md` already claims, and add `~/.bashrc`,
+   `~/.profile`, `~/.bash_profile`, `~/.config/systemd/user`, `~/.local/bin` and
+   `~/.claude/settings.local.json` to `denyWrite`. Until this lands, every control
+   below is cosmetic — persist-and-wait defeats all of them. This is the empirical
+   form of Codex's objection, and it is a live gap, not a design question.
 1. **`ip_unprivileged_port_start = 0`** in `common_sysctl`. One line, unblocks the
    compose tier, no security cost worth the name on a box with no inbound.
 2. **Bake the toolbox image.** Measured: zero images cached, so every run
    re-installs socat/kubectl/helm/git/jq/psql from `debian:13-slim`. This is the
    speed win, and it is unrelated to RAM. **Drop zram** — the swapfile is at 0 B.
-3. **Runner uid.** Highest security value per unit of effort.
+3. **Principal separation.** Highest security value per unit of effort. Start with
+   `runner` (mechanical, no credential migration), then split the agent uids.
 4. **Podman socket proxy.** Pairs with 3; without it `--network=host` stays open.
-5. **Egress proxy + nftables enforcement.** Most moving parts, most likely to
+5. **Broker the non-OAuth secrets.** GitHub App first — it has the clearest
+   supported path and the largest blast-radius reduction.
+6. **Egress proxy + nftables enforcement.** Most moving parts, most likely to
    generate confusing failures, so last.
+
+Also correct `sandbox.md` as part of step 0. A document that overstates a control
+is worse than one that omits it, because it stops anyone looking.
 
 ## Open probes — settle these before building
 
@@ -184,9 +276,10 @@ Written as commands, because this repo keeps relearning that a property describe
 in prose decays silently while the same claim written as a probe fails loudly.
 
 ```bash
-# 1. LOAD-BEARING. Can a sandboxed agent escalate? Run INSIDE a Claude session.
-#    If sudo succeeds, every root-owned protection above is decorative.
-sudo -n id
+# 1. ANSWERED 2026-08-04 — kept for regression. Inside a Claude session, expect
+#    BOTH to fail. If sudo ever succeeds, the root-owned boundary is gone.
+sudo -n id                                    # want: no_new_privs refusal
+touch ~/.bashrc.probe                         # want: EROFS, after step 0 lands
 
 # 2. Does kind's serving cert carry the container-name SAN? If yes, socat goes away.
 openssl s_client -connect iden2-dev-control-plane:6443 </dev/null 2>/dev/null \
