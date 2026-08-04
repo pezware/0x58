@@ -42,9 +42,22 @@ the shims on PATH; a non-interactive one may not.
 
 ```bash
 git -C ~/src/<org>/<repo> fetch origin main
-git -C ~/src/<org>/<repo> worktree add -b <task-slug> ../<repo>-<task-slug> origin/main
+git -C ~/src/<org>/<repo> worktree add --no-track -b <task-slug> \
+    ../<repo>-<task-slug> origin/main
 cd ~/src/<org>/<repo>-<task-slug>
 mise trust .        # a fresh worktree is untrusted; skipping this breaks EVERY mise tool
+```
+
+**`--no-track` is required.** Without it git writes upstream tracking into
+`.git/config`, which the sandbox makes unwritable, and the command fails. The trap
+is that it **creates the branch before failing**, so the obvious retry then dies
+with `a branch named '<slug>' already exists` — pointing at a branch you appear to
+have made twice rather than at the config write that actually failed. If you are
+already in that state, attach to the existing branch instead of inventing a new
+name:
+
+```bash
+git -C ~/src/<org>/<repo> worktree add ../<repo>-<task-slug> <task-slug>
 ```
 
 **3 — Work, then commit signed.** Signing works with no agent and no tap, because
@@ -125,6 +138,8 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
 | container test cannot reach Docker | sandbox blocks AF_UNIX **and** loopback TCP → not fixable in-session |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
+| `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
+| `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |
 | `could not lock config file .git/config` | **not** a stale lock — the sandbox masks it; the operation that needed it is unavailable, the rest of the command usually succeeded |
 
 Full detail, with the mechanism behind each:

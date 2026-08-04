@@ -131,3 +131,29 @@ What breaks, and what does not:
 The pattern to recognise: the *command* reports an error while its *primary
 effect* succeeded. Check the actual result — `git ls-remote`, `git log` — before
 concluding anything failed.
+
+## The work include overrides the global signing key
+
+Signing works everywhere **except** `~/src/iden2/`, where it fails with
+`Couldn't find key in agent?`.
+
+`~/.config/git/work` is pulled in by `includeIf gitdir:~/src/iden2/`, and **an
+include overrides the global**. The tracked work file carries the Mac's `key::`
+value, so the global path form set for this box never reaches iden2 repos. Same
+key, same email — only the *form* differs, which is why it looks like a key
+problem and is really a config-precedence problem.
+
+`restore.sh` re-points it on Linux. If you meet it on a box that has not been
+restored since, override per-commit rather than editing global config (which the
+sandbox blocks anyway):
+
+```bash
+git -c user.signingkey=~/.ssh/devbox_agent commit -S -m "..."
+```
+
+The devbox key is already in `allowed_signers` under `andy@iden2.com`, so local
+verification resolves and GitHub attributes the commit to `arbeitandy`.
+
+Found by an agent taking a real ticket. The smoke test missed it because it signs
+in a throwaway repo under `/tmp`, which never matches the `gitdir:` condition — a
+reminder that a test in an artificial location can only prove artificial things.

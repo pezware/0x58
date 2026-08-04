@@ -310,6 +310,20 @@ SSHCFG
         if [[ -f "$DOTFILES/config-git/work" ]]; then
             cp -v "$DOTFILES/config-git/work" ~/.config/git/work
             git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
+
+            # An include OVERRIDES the global, so setting user.signingkey globally
+            # above does not reach ~/src/iden2/ -- the tracked work file carries the
+            # Mac's `key::` value and silently wins there. Every iden2 commit then
+            # fails with "Couldn't find key in agent?" while signing works fine
+            # everywhere else, which is a maddening thing to debug.
+            #
+            # Found by an agent taking a real ticket, not by the smoke test: that
+            # signs in a throwaway repo under /tmp, which never matches this
+            # gitdir: condition. Same key, same email, only the form changes.
+            if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
+                git config --file ~/.config/git/work user.signingkey ~/.ssh/devbox_agent
+                echo "    git: iden2 include re-pointed at the on-disk key (path form)"
+            fi
         fi
 
         # gh wrapper: selects the fine-grained PAT matching the repo's owner.
