@@ -5,29 +5,63 @@ Applied by `restore.sh` on Linux only:
 [`codex-devbox.config.toml`](codex-devbox.config.toml).
 
 This file describes the *intended* posture. Where the box has been measured to
-disagree with it, the gap is tracked in
-[`sandbox-findings.md`](sandbox-findings.md) — read that first, as of 2026-08-04
-it contradicts two claims below.
+disagree, the gap is tracked in
+[`sandbox-findings.md`](sandbox-findings.md); read that alongside this one.
+
+## What the devbox is for
+
+State the goal first, because every trade-off below is only legible against it.
+
+The devbox is where the work happens. Claude and Codex should be able to work the
+whole of `iden2` and `pezware` there **comfortably** — build and test, `git` and
+`gh`, kind and podman when a change needs them, and the ordinary Linux tooling to
+debug the stack. They should be able to search documentation and references
+without asking. Neither *lacking* access nor *excessive* access is acceptable,
+and of the two, lacking access is the failure this box has actually suffered:
+twice now a control has stranded work it was never meant to stop.
+
+The Mac is headquarters, not a second workplace. It manages the devbox lifecycle
+and is where deeper debugging, auditing and review happen when they are needed.
+A mobile device connects occasionally, and that path is proven.
+
+The network rule that follows is narrow, and worth stating exactly:
+
+> Egress that Claude or Codex initiate — for search, for packages, for debugging —
+> **is the point of the box.** Beyond that, nothing in and nothing out.
 
 ## The threat this addresses
 
-Tailscale and the Linode Cloud Firewall handle *inbound* risk well — the box has
-no public listener and OpenSSH is disabled. That is not the exposure that
-matters here.
+Note what the goal does *not* say. Agents are relatively trusted here, and the
+question is not whether Claude or Codex might misbehave. The answer to that is
+bounded by two things that already hold: work of consequence lands in source
+control and on GitHub, where it is reviewable and revertible, and the devbox
+rebuild has been exercised rather than assumed. A bad session costs a rebuild.
 
-The devbox holds, in plaintext on disk:
+So the exposure that matters is not the agent doing its job. It is everything
+that is *not* that: an unattended listener, a background process dialing out, a
+credential reachable by something with no business asking.
+
+The devbox does hold, in plaintext on disk:
 
 - `~/.claude/.credentials.json` — Claude subscription OAuth, mode 0600
 - `~/.codex/auth.json` — ChatGPT subscription OAuth
 
 Both contain **refresh tokens**, which mint new access tokens indefinitely until
 revoked. Linux has no Keychain equivalent, so this is an accepted exception
-rather than a solved problem.
+rather than a solved problem. They are not worth the same: the Claude refresh
+token buys the account, the ChatGPT one buys a review subscription. That
+asymmetry is why they are not always treated alike.
 
-The realistic attack is therefore not someone reaching the box. It is **prompt
-injection persuading an agent already running on it** to read one of those files
-and send it somewhere — and the Linode firewall's `outbound_policy` is `ACCEPT`,
-so it will not stop that. Egress control inside the sandbox is what does.
+Tailscale and the Linode Cloud Firewall handle *inbound* well — the box has no
+public listener and OpenSSH is disabled. Outbound they do not handle at all
+(`outbound_policy` is `ACCEPT`). A domain allowlist inside the sandbox is the
+wrong instrument for that gap, because it cannot tell agent-initiated traffic
+from anything else — and the traffic it would block most reliably is the
+reference search the box exists to do. What *can* tell them apart is the
+sandbox's network shape: the session netns has loopback only, so every packet an
+agent sends traverses the proxy. **That boundary, not the list of domains, is the
+control.** See [`sandbox-findings.md`](sandbox-findings.md) §1 for the
+measurement that forced this correction.
 
 ## What is configured
 
@@ -68,9 +102,14 @@ Be honest about what that leaves: a denylist cannot cover unknown-unknowns, and
 but denying it would break `mise install`. `devbox-smoketest` probes the
 denylist, so a regression fails loudly instead of silently.
 
-**Egress allowlisted.** Package registries and source hosts only. Codex goes
-further with `network_access = false`; it escalates to a human when a command
-needs the network.
+**Egress proxied, and the allowlist is advisory.** `allowedDomains` lists package
+registries and source hosts, and as of 2026-08-04 it is a **record of what the box
+routinely needs, not a containment boundary** — it was measured unenforced, and
+enforcing it as written would block the documentation search the goal above
+requires. Nothing rests on it; do not cite it as a control. What is load-bearing
+is the shape underneath: loopback-only netns, and the `socat` listeners on
+`:3128`/`:1080` as the sole route out. Codex is stricter by profile —
+`network_access = false` escalates to a human when a command needs the network.
 
 ## Three deliberate trade-offs
 
@@ -91,11 +130,24 @@ push signed code to any repository the key reaches, which rotating a token does
 not undo.
 
 What did **not** move: `~/.claude/.credentials.json` and `~/.codex/auth.json` stay
-denied (verified — reads return `Permission denied`), `~/.ssh` stays in
-`denyWrite`, and AF_UNIX stays blocked. That last one is why the forwarded
-**Secure Enclave** agent remains unreachable even though its socket symlink sits
-in a now-readable directory: seccomp blocks the syscall, not the path. The Mac's
-key is still the Mac's.
+denied (verified — reads return `Permission denied`), and `~/.ssh` stays in
+`denyWrite`.
+
+**AF_UNIX no longer stays blocked, and this paragraph used to say it did.**
+`allowAllUnixSockets` went on in `070e22b` for container tests, and a
+bind/listen/connect round-trip was measured succeeding in-session on 2026-08-04.
+The sentence that stood here — that the forwarded **Secure Enclave** agent is
+unreachable because "seccomp blocks the syscall, not the path" — was false from
+that commit onward, and it contradicted the container-tests paragraph seventy
+lines below in this same file.
+
+The Mac's key is still the Mac's, for a different reason: `94f29f4` set
+`ForwardAgent no` for both `devbox` and `k8s`, having found ~620 stale
+`/tmp/auth-agent*/` sockets on the box with live ones still answering. **The
+socket is not blocked; it is not forwarded.** Prefer the weaker-sounding sentence
+— it is the true one, and it names the thing that can be undone by habit rather
+than by a config change. `sign-push` still asks for `ssh -A` by design; for the
+length of that session the keys are reachable to anything on the box.
 
 A caution for anyone probing this: `test -r` on a denied file returns *success*.
 `access(2)` is not intercepted — only the actual read is.
@@ -143,20 +195,23 @@ config above: they were already pushing with an on-disk key. What the switch
 actually costs is different, and larger:
 
 **The container runtime executes outside the sandbox, so anything delegated to it
-escapes both controls.** Measured, not inferred:
+leaves the sandbox's view entirely.** Measured, not inferred:
 
-| delegated through podman | sandbox control it bypasses |
+| delegated through podman | what it escapes |
 |---|---|
-| `docker pull docker.io/library/alpine:3.20` succeeded in-session | egress allowlist (`docker.io` is not in `allowedDomains`) |
-| `-v $HOME:/m` reads paths a direct `cat` cannot | `filesystem.denyRead` |
+| `docker pull docker.io/library/alpine:3.20` succeeded in-session | the proxy path — the pull originates outside the session netns |
+| `-v $HOME:/m` reads paths a direct `cat` cannot | `filesystem.denyRead` — a real bypass of a control that still counts |
 
-The egress allowlist is named above as the one thing that stops an injected agent
-exfiltrating a refresh token, since the Linode firewall's `outbound_policy` is
-`ACCEPT`. A reachable container runtime routes around it. The credential
-deny-list still blocks a *direct* read — both token files return
-`Permission denied`, and `~/.codex/auth.json` was added to
-`sandbox.credentials.files` on 2026-08-04 after it turned out to be listed only
-under `denyWrite` while this document claimed it was denied outright.
+This paragraph used to argue that the container runtime routes around the egress
+allowlist, which named that list as the last line against exfiltrating a refresh
+token. The allowlist is no longer a control (see above), so the `docker.io` row
+now records something milder: the runtime does not honour the proxy path either,
+which is a fact about where traffic originates, not a breach of a boundary.
+
+The `-v $HOME:/m` row is the one that still bites. The credential deny-list
+blocks a *direct* read — both token files return `Permission denied` — but a bind
+mount reaches what `cat` cannot, and that is a genuine hole in the only control
+here that the goal above actually leans on.
 
 So the honest statement of the posture is: the sandbox constrains the agent's own
 syscalls, and stops being a containment boundary the moment work is handed to the
@@ -224,13 +279,26 @@ read the token file — it should fail, not print contents:
 cat ~/.claude/.credentials.json
 ```
 
-And confirm egress is filtered — an allowlisted host should work while an
-arbitrary one should not:
+And confirm egress works and is *routed*. This expectation **inverted** on
+2026-08-04: it used to demand that an arbitrary host fail. Both of these must now
+succeed, because reaching documentation is a capability the box owes an agent,
+not a leak:
 
 ```
 curl -sS -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org
 curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
 ```
+
+The control that replaced the allowlist is the route, so probe that instead —
+there must be no way out that skips the proxy, and no interface but loopback:
+
+```bash
+curl --noproxy '*' -sS https://example.com   # must FAIL: could not resolve host
+ip -o addr show                              # must show loopback only
+```
+
+A success on the first line is the real finding: it means a path exists that the
+sandbox never sees.
 
 And confirm the container socket is reachable — this expectation **inverted** on
 2026-08-04. Run it in both places: a blocked socket and an absent one look
@@ -257,7 +325,16 @@ fallback is the whole reason this probe is trustworthy.
 - `git`, by the deliberate exclusion above.
 - Kernel or bubblewrap escape.
 - Reading source. Every repo on the box is readable by design — the sandbox
-  protects credentials and constrains egress, it does not make the source secret.
+  protects credentials and shapes the network path, it does not make the source
+  secret.
+- **Where an agent chooses to send traffic.** This is not a gap, it is the goal:
+  agent-initiated egress is unrestricted on purpose. What the posture asserts is
+  that nothing *else* is talking.
 
 For genuinely hostile code, use the disposable k8s node or a throwaway VM. Do not
 run it on the box holding all source and both subscription credentials.
+
+And keep the recovery path exercised. It is doing more load-bearing work in this
+posture than any single control listed above: the reason a trusted-agent model is
+affordable here is that a bad session costs a rebuild, and that only stays true
+while the rebuild is something recently done rather than recently described.
