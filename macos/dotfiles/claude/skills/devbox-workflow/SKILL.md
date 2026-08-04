@@ -33,10 +33,29 @@ cd ~/src/<org>/<repo>
 
 **`gh` is the one tool that must not come from the mise shim.** `~/.local/bin/gh`
 is the wrapper that selects the token; `~/.local/share/mise/shims/gh` is raw gh
-with no credential at all, and answers `please run gh auth login`. The
-"use the shim" advice below applies to `go`, `kubectl` and friends — never to `gh`.
-An interactive shell resolves plain `gh` correctly because `~/.local/bin` precedes
-the shims on PATH; a non-interactive one may not.
+with no credential at all, and answers `please run gh auth login` — an error that
+reads like a broken install rather than a shadowed binary.
+
+**Set PATH once, at the start of the session, with `~/.local/bin` in front.**
+Your shell is non-interactive, so it starts with no mise tools *and* no `~/.local/bin`
+— which is why reaching for `go` or `kubectl` pushes you to prepend the shims, and
+why doing that naively shadows `gh`:
+
+```bash
+export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+command -v gh      # MUST print /home/arbeitandy/.local/bin/gh — if not, fix PATH
+```
+
+Order is the whole point: shims first would give you raw `gh`. With this line you
+can use plain `gh`, `go` and `kubectl` for the rest of the session and stop
+thinking about it. If a `gh` command ever answers `please run gh auth login`, do
+**not** run `gh auth login` and do **not** reach for a token — re-run
+`command -v gh` and fix the ordering.
+
+Two things that look like breakage and are not: `~/.config/gh/` is empty, and
+`$GH_TOKEN` is unset in your shell. The wrapper injects the token into gh's own
+process at exec time, so both are *always* empty here even when gh works
+perfectly. Probe with a real command rather than inspecting config.
 
 **2 — Worktree off `main`.** Never work on the primary checkout.
 
