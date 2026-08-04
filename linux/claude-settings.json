@@ -45,10 +45,6 @@
           "mode": "deny"
         },
         {
-          "path": "~/.codex/auth.json",
-          "mode": "deny"
-        },
-        {
           "path": "~/.npmrc",
           "mode": "deny"
         },
@@ -145,7 +141,9 @@
         "security.debian.org",
         "mise.jdx.dev",
         "crates.io",
-        "static.crates.io"
+        "static.crates.io",
+        "chatgpt.com",
+        "api.openai.com"
       ]
     }
   }

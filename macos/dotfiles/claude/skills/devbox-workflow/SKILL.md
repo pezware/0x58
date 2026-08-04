@@ -115,6 +115,29 @@ gh pr comment <n> --body "..."
 gh issue comment <n> --body "..."
 ```
 
+**7b — Optional: get an independent review from Codex.** Worth doing before you
+ask a human to look, because self-review misses what you already believed.
+
+```bash
+~/.local/share/mise/shims/codex exec -s read-only \
+    -C ~/src/<org>/<repo>-<task-slug> \
+    --output-last-message /tmp/codex-<slug>.md \
+    - < /tmp/codex-prompt-<slug>.md
+```
+
+Use the **shim path** — `mise activate` has not run in a non-interactive shell,
+so plain `codex` is `command not found`. Prompt via stdin (`-`) to avoid shell
+escaping. `hook: Stop Failed` in the output is a disabled plugin hook; benign.
+
+Tell Codex which checks are already green and ask it to focus on static analysis —
+the Go build cache lives outside the workspace, so it cannot usefully run tests.
+Ask it to judge your PR body's claims too, not just the diff; overclaiming is the
+easiest thing to miss about your own work.
+
+Then **judge the report** rather than applying it. Say which findings you accept,
+which you think are wrong and why. A review you agree with unconditionally was not
+worth requesting.
+
 **8 — Review a PR.** Post the summary, every inline note and the verdict as a
 **single** review via the REST reviews endpoint — `gh pr review --approve` cannot
 anchor line comments. The exact recipe is in your global instructions under
