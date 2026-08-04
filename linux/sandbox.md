@@ -162,6 +162,44 @@ the go monorepo need containers, and they already sit behind `//go:build e2e` or
 `integration` tags that a plain `go test ./...` skips. Agents run the other ~96%
 sandboxed; container tiers belong to you or to CI, like `sign-push`.
 
+## How this file reaches the box — and why it drifts
+
+[`claude-settings.json`](claude-settings.json) here is the source of truth. It
+reaches the devbox through `git` and `restore.sh`, never by copying a file onto
+the box. That is not fastidiousness; it is the specific failure this repo keeps
+hitting. On 2026-08-04 the devbox was found running a skill file **144 lines
+shorter** than the committed one, having simply never been re-restored — and the
+stale copy told agents that container tests were impossible, which by then was
+false. Nothing drifted maliciously. It drifted because a copy existed that no
+commit governed.
+
+There is a deliberate wrinkle worth knowing before it surprises you.
+`restore.sh` will **not** overwrite an existing `~/.claude/settings.json`; it
+lands the file beside it as `settings.0x58-sandbox.json` and tells you to merge.
+That guard exists so a restore cannot silently drop hooks or permissions — but it
+also means **settings changes never auto-apply**, and that is exactly the gap
+through which the live file and this repo diverge.
+
+So the honest workflow is: edit here, commit, pull on the box, restore, then
+merge the sandbox block by hand and diff to confirm.
+
+```bash
+# on the devbox, after the change is merged to main
+git -C ~/src/public/0x58 pull
+python3 - <<'PY'   # compare the part that matters, ignoring key order and UI prefs
+import json, os
+a = json.load(open(os.path.expanduser('~/src/public/0x58/linux/claude-settings.json')))
+b = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+print('sandbox block in sync:', a['sandbox'] == b['sandbox'])
+PY
+```
+
+Compare **semantically, not byte-for-byte**. Claude Code rewrites the file with
+its own key order and adds runtime UI preferences of its own
+(`inputNeededNotifEnabled`, `agentPushNotifEnabled`); a `diff` reports those as
+drift when nothing meaningful has changed, which trains you to ignore a signal
+worth reading.
+
 ## Verify it is actually on
 
 Configuration that silently does nothing is worse than none, because it creates
