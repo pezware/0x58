@@ -168,6 +168,77 @@ Two implementation notes, both from Codex and both easy to get wrong:
   rather than any agent's `~`. Expect container-created files to be runner-owned;
   plan for a shared group with setgid directories.
 
+### Concrete plan for the runner uid
+
+Written out because "give podman its own uid" hides three problems that only
+appear when you try it. Measured prerequisites first:
+
+| fact | value | consequence |
+|---|---|---|
+| `/home/arbeitandy` | `drwx------` (0700) | **`runner` cannot traverse into it at all** — it cannot reach `~/src` |
+| `arbeitandy` subuid | `100000:65536` | `runner`'s range must not overlap → start at `200000` |
+| `/run/user/<uid>` | `0700`, systemd-managed | the default podman socket is unreachable across uids |
+
+The first is the one that bites. Do **not** solve it by relaxing `~` to 0750 —
+that weakens the exact boundary this is meant to build. Bind-mount instead, which
+moves no data because `~/src` is already the `/dev/sdb` volume:
+
+```bash
+# 1. The account. No sudo, no password, shell only because systemd --user wants one.
+sudo useradd -m -s /bin/bash runner
+sudo usermod -aG runner arbeitandy          # so the agent can reach the socket
+
+# 2. Subuid range that does NOT overlap arbeitandy's 100000:65536.
+echo 'runner:200000:65536' | sudo tee -a /etc/subuid /etc/subgid
+
+# 3. The user manager must survive logout, or the socket dies with the session.
+sudo loginctl enable-linger runner
+
+# 4. Workspace reachable by BOTH uids without opening ~ .
+sudo mkdir -p /srv/workspaces
+sudo mount --bind /home/arbeitandy/src /srv/workspaces
+echo '/home/arbeitandy/src /srv/workspaces none bind,nofail 0 0' | sudo tee -a /etc/fstab
+
+# 5. Socket on a shared path — /run/user/<runner> is 0700 and unreachable.
+#    A drop-in overriding podman.socket's ListenStream, with group access.
+sudo -u runner mkdir -p ~runner/.config/systemd/user/podman.socket.d
+# ListenStream=/srv/podman/runner.sock  SocketMode=0660  SocketGroup=runner
+sudo -u runner XDG_RUNTIME_DIR=/run/user/$(id -u runner) systemctl --user enable --now podman.socket
+```
+
+**What breaks — expect all of these, none are surprises after the fact:**
+
+- **Images, volumes, networks and build cache are per-user.** `runner` starts
+  empty; the toolbox image must be rebuilt under it. Budget one rebuild, not a
+  migration.
+- **Bind mounts resolve on the runner's side**, so `-v $HOME/src:...` silently
+  refers to *runner's* home. Every path becomes `/srv/workspaces/...`.
+- **Container-created files come back owned by `runner`**, not you. Needs a shared
+  group with setgid directories, or you will be chowning after every run.
+- **`DOCKER_HOST` and the podman shim both change** to the new socket path. The
+  shim in the devbox-workflow skill hardcodes
+  `unix:///run/user/1000/podman/podman.sock` and must be updated in the same
+  change, or every cluster command breaks at once.
+- **kind clusters are per-socket.** An existing cluster under `arbeitandy` is
+  invisible to `runner` — tear it down before cutting over, not after.
+
+**Verification, with the control that makes it mean anything.** The whole claim is
+that a runner-owned container cannot read the agent's credentials:
+
+```bash
+# Expect: Permission denied. This is the point of the exercise.
+podman --remote --url unix:///srv/podman/runner.sock run --rm \
+  -v /home/arbeitandy:/m:ro alpine:3.20 cat /m/.claude/.credentials.json
+
+# CONTROL — expect success. Without it, the failure above could just be a bad mount.
+podman --remote --url unix:///srv/podman/runner.sock run --rm \
+  -v /srv/workspaces:/m:ro alpine:3.20 ls /m
+```
+
+Note the second command is also the acceptance test for the bind mount: if the
+workspace is unreachable the runner is useless, and that failure looks identical
+to the success we want on the first command.
+
 **Then filter what the API will accept.** A socket proxy rejecting
 `HostConfig.Binds` outside an allowlist and refusing `Privileged`, `--network=host`
 and `--pid=host`. This is the layer where "which mount is legitimate" is decidable,
