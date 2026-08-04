@@ -37,9 +37,31 @@ of both token files, `~/.npmrc`, `~/.config/gh/hosts.yml`, and unsets
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, `LINODE_TOKEN`, and
 `TF_VAR_tailscale_auth_key` for sandboxed commands.
 
-**Filesystem.** Reads denied for `~/.ssh`, `~/.gnupg`, `~/.config/gcloud`,
-`~/.kube`, `~/.aws`, and the Tailscale state directories. Writes limited to
-`~/src` and `/tmp`.
+**Filesystem.** Reads denied for `~/.gnupg`, `~/.config/gcloud`, `~/.kube`,
+`~/.aws`, the Tailscale state directories and `/etc/0x58-node.env`. Note that
+`~/.ssh` is **not** among them — it was removed deliberately on 2026-08-03 so
+agents could sign and push; see the trade-offs below.
+
+**Writes are a denylist over `~`, not an allowlist of `~/src`.** This paragraph
+claimed the latter until 2026-08-04, when a probe showed `allowWrite` is
+`["~", "/tmp"]`. The claim was not merely stale, it was **exploitable**:
+`~/.bashrc` was writable and `arbeitandy` has `NOPASSWD:ALL`, so an injected
+agent never needed to escalate itself — it could write a shell profile and wait
+for the human's next unsandboxed login. `~/.claude/settings.local.json` was
+writable too while `settings.json` was denied, which is exactly the persistence
+technique of the 2026-08-04 npm worm.
+
+The allowlist the text described would be stronger, and it was rejected on
+measurement rather than principle: `~/.cache` holds 3.3 GB of Go build cache and
+`~/go` 1.7 GB of module cache, so confining writes to `~/src` breaks every Go
+build on the box. What landed instead is a bounded denylist of the surfaces that
+**execute on login or shadow a command** — shell profiles, `~/.config/systemd`,
+`~/.local/bin`, agent hook config, and git config including `core.hooksPath`.
+
+Be honest about what that leaves: a denylist cannot cover unknown-unknowns, and
+`~/.local/share/mise` is knowingly still writable because its shims are on `PATH`
+but denying it would break `mise install`. `devbox-smoketest` probes the
+denylist, so a regression fails loudly instead of silently.
 
 **Egress allowlisted.** Package registries and source hosts only. Codex goes
 further with `network_access = false`; it escalates to a human when a command
@@ -139,6 +161,44 @@ The trade is cheap, which is why it is easy to hold: **28 of 746** test files in
 the go monorepo need containers, and they already sit behind `//go:build e2e` or
 `integration` tags that a plain `go test ./...` skips. Agents run the other ~96%
 sandboxed; container tiers belong to you or to CI, like `sign-push`.
+
+## How this file reaches the box — and why it drifts
+
+[`claude-settings.json`](claude-settings.json) here is the source of truth. It
+reaches the devbox through `git` and `restore.sh`, never by copying a file onto
+the box. That is not fastidiousness; it is the specific failure this repo keeps
+hitting. On 2026-08-04 the devbox was found running a skill file **144 lines
+shorter** than the committed one, having simply never been re-restored — and the
+stale copy told agents that container tests were impossible, which by then was
+false. Nothing drifted maliciously. It drifted because a copy existed that no
+commit governed.
+
+There is a deliberate wrinkle worth knowing before it surprises you.
+`restore.sh` will **not** overwrite an existing `~/.claude/settings.json`; it
+lands the file beside it as `settings.0x58-sandbox.json` and tells you to merge.
+That guard exists so a restore cannot silently drop hooks or permissions — but it
+also means **settings changes never auto-apply**, and that is exactly the gap
+through which the live file and this repo diverge.
+
+So the honest workflow is: edit here, commit, pull on the box, restore, then
+merge the sandbox block by hand and diff to confirm.
+
+```bash
+# on the devbox, after the change is merged to main
+git -C ~/src/public/0x58 pull
+python3 - <<'PY'   # compare the part that matters, ignoring key order and UI prefs
+import json, os
+a = json.load(open(os.path.expanduser('~/src/public/0x58/linux/claude-settings.json')))
+b = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+print('sandbox block in sync:', a['sandbox'] == b['sandbox'])
+PY
+```
+
+Compare **semantically, not byte-for-byte**. Claude Code rewrites the file with
+its own key order and adds runtime UI preferences of its own
+(`inputNeededNotifEnabled`, `agentPushNotifEnabled`); a `diff` reports those as
+drift when nothing meaningful has changed, which trains you to ignore a signal
+worth reading.
 
 ## Verify it is actually on
 

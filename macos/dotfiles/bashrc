@@ -167,3 +167,21 @@ export GPG_TTY=$(tty)
 export MEMPAL_HOME="~/src/.mempal"
 export GOOGLE_CLOUD_QUOTA_PROJECT=""
 eval "$(mise activate bash)"
+
+# ~/.local/bin must WIN, and this has to come after `mise activate` to do it.
+#
+# The one that matters is `gh`. ~/.local/bin/gh is the wrapper that selects a
+# fine-grained PAT by the repo's owner; ~/.local/share/mise/shims/gh is raw gh
+# with no credential, and answers "please run gh auth login" — an error that
+# reads like a broken install rather than a shadowed binary. On 2026-08-04 that
+# cost a session real time.
+#
+# Unconditional, unlike the earlier guard near the top of this file. That one is
+# `if PATH does not already contain ~/.local/bin`, which silently does nothing
+# when the directory is present but LAST — exactly the case that needs fixing.
+# Filter it out first, then prepend, so re-sourcing cannot grow PATH without
+# bound either.
+if [ -d "$HOME/.local/bin" ]; then
+    PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$HOME/.local/bin" | paste -sd: -)
+    export PATH="$HOME/.local/bin:$PATH"
+fi

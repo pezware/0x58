@@ -274,6 +274,28 @@ for cred in claude/.credentials.json codex/auth.json; do
         || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
 done
 
+# ── login-execution surfaces ────────────────────────────────────────────────
+# Added 2026-08-04 after a probe found allowWrite was "~", not "~/src" as
+# sandbox.md claimed. That gap did not need privilege escalation to matter: an
+# agent cannot sudo (no_new_privs, measured in-session), but it could write
+# ~/.bashrc and wait for the human's next login — unsandboxed, NOPASSWD:ALL.
+#
+# Asserted one path at a time rather than as a count, because a count passes
+# happily while the single entry that mattered is the one removed.
+# ~/.claude/settings.local.json is called out specifically: settings.json was
+# already denied while the .local override was not, and planting agent hooks is
+# precisely how the 2026-08-04 npm worm persisted.
+for p in '~/.bashrc' '~/.bash_profile' '~/.profile' '~/.config/systemd' \
+         '~/.local/bin' '~/.claude/settings.local.json' '~/.gitconfig'; do
+    remote "python3 -c \"
+import json, os, sys
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+w = d.get('sandbox', {}).get('filesystem', {}).get('denyWrite', [])
+sys.exit(0 if '$p' in w else 1)\"" \
+        && ok "$p write-denied" "cannot persist into a privileged login" \
+        || no "$p write-denied" "an agent can plant code that runs in YOUR next session"
+done
+
 # ── supply-chain cooldown ───────────────────────────────────────────────────
 # A publish-then-yank attack is caught by waiting, not by scanning. Both gates
 # below fail OPEN when absent — an install just proceeds — so nothing surfaces
@@ -321,6 +343,23 @@ if remote 'command -v podman >/dev/null'; then
     remote 'loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -q yes' \
         && ok "lingering enabled" "socket survives logout" \
         || no "lingering enabled" "socket dies when you detach — tests fail only when unattended"
+
+    # Rootless podman cannot bind below 1024, which is what actually blocked the
+    # compose tier — Caddy wants 80 and 443. Misfiled as a memory problem for a
+    # while; it never was one. Devbox-only on purpose: the k8s node is where
+    # hostile code is meant to run, and low ports there means port 53 there.
+    remote '[ "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" = "0" ]' \
+        && ok "unprivileged low ports" "rootless containers can bind 80/443" \
+        || no "unprivileged low ports" "compose tier blocked — Caddy cannot bind 80/443"
+
+    # Absence is not fatal, just slow: every cluster command falls back to
+    # apt-installing its tools again, measured at 12.3s per container start
+    # against 0.5s with the image. Warn rather than fail.
+    if remote 'podman image exists localhost/0x58-toolbox:latest'; then
+        ok "toolbox image baked" "cluster work starts in ~0.5s, not ~12s"
+    else
+        skip "toolbox image baked" "run dev/nodes/toolbox/build — each container start costs ~12s without it"
+    fi
 else
     skip "podman.socket active" "podman not installed"
 fi
@@ -346,6 +385,23 @@ for t in git gh mise tmux podman; do
         && ok "$t on PATH" "$(remote "command -v $t")" \
         || no "$t on PATH" "missing"
 done
+
+# `gh` must resolve to the WRAPPER even once mise is on PATH. Two different gh
+# binaries exist: ~/.local/bin/gh selects a fine-grained PAT by the repo's owner,
+# while ~/.local/share/mise/shims/gh is raw gh with no credential and answers
+# "please run gh auth login" — an error that reads like a broken install rather
+# than a shadowed binary, and cost a session real time on 2026-08-04.
+#
+# Checked in a LOGIN INTERACTIVE shell on purpose: that is the only kind that
+# runs `mise activate`, so it is the only place the ordering can regress. bashrc
+# re-prepends ~/.local/bin after activation specifically to win this race.
+gh_resolved=$(remote 'bash -lic "command -v gh" 2>/dev/null' | tr -d '\r')
+case "$gh_resolved" in
+    */.local/bin/gh) ok "gh resolves to the wrapper" "mise on PATH does not shadow it" ;;
+    */shims/gh)      no "gh resolves to the wrapper" "got the mise shim — raw gh, no token" ;;
+    "")              no "gh resolves to the wrapper" "gh not found in a login shell at all" ;;
+    *)               no "gh resolves to the wrapper" "unexpected: $gh_resolved" ;;
+esac
 
 # Look for the shim as well as the command. bashrc returns early in
 # non-interactive shells -- the usual `case $- in *i*)` guard -- so neither the

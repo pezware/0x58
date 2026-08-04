@@ -54,6 +54,30 @@ if first_boot; then
     fi
 fi
 
+# ── Let rootless containers bind 80/443 (EVERY boot) ────────────────────────
+# Rootless podman cannot bind below 1024, which is what actually blocked the
+# compose tier — Caddy wants 80 and 443. It was misfiled as a memory problem for
+# a while; it never was one.
+#
+# Deliberately NOT in common_sysctl, even though it is one line and every role
+# would work with it. The k8s node is the box where hostile code is *supposed* to
+# run, and handing unprivileged processes there the ability to bind low ports
+# hands them port 53 too — a DNS-spoofing position against everything else on
+# that node. The devbox earns the relaxation because nothing untrusted should be
+# running on it and it has no inbound path: Tailscale-only, OpenSSH disabled,
+# Cloud Firewall dropping the rest.
+#
+# Written as a drop-in so systemd-sysctl reapplies it at boot; the `sysctl -p` is
+# only to take effect now, without waiting for a reboot.
+if [ "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null)" != "0" ]; then
+    log "allowing unprivileged binds below 1024 (rootless podman needs 80/443)"
+    cat > /etc/sysctl.d/99-0x58-devbox.conf <<'SYSCTL'
+# 0x58 devbox only — rootless podman must bind 80/443 for the compose tier.
+net.ipv4.ip_unprivileged_port_start = 0
+SYSCTL
+    sysctl -p /etc/sysctl.d/99-0x58-devbox.conf >/dev/null || log "sysctl apply failed (non-fatal)"
+fi
+
 # ── A tmux session waiting to be attached (EVERY boot) ──────────────────────
 # So `mosh devbox -- tmux attach -t main` works on the first connection from a
 # phone rather than erroring with "no server running" — and, because tmux dies

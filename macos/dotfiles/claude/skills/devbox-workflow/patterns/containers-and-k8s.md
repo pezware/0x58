@@ -38,6 +38,17 @@ export PATH="$SHIM:$PATH"
 docker version --format '{{.Server.Version}}'   # expect a podman version, e.g. 5.4.2
 ```
 
+**Do not skip the `XDG_RUNTIME_DIR` line in that shim.** Left unset — which is its
+state in every agent session — podman derives `/run/user/$(id -u)`, which is not
+writable in the sandbox, and fails with `chmod /run/user/1000/libpod: read-only
+file system` or, once past that, `newuidmap: write to uid_map failed: Operation
+not permitted`. Both read like a fundamental privilege wall and are not one; they
+are simply the wrong runtime directory. Pointing it at `/tmp` fixes both, and
+`--remote` alone does **not** — podman initialises local runtime state regardless
+of where the API calls go. Verified 2026-08-04, after this exact detour cost a
+session real time and produced a confidently wrong "the CLI cannot work
+in-session" conclusion.
+
 Verify with a control, because a blocked socket and an absent one are
 indistinguishable from inside:
 
@@ -96,9 +107,19 @@ kind needs the podman provider explicitly, on top of the shim above:
 export KIND_EXPERIMENTAL_PROVIDER=podman
 ```
 
-Rootless podman cannot bind privileged host ports, so a cluster config mapping
-80/443 needs unprivileged ports instead. Copy the config out and edit the copy
-rather than mutating the repo's.
+Rootless podman could not bind privileged host ports until **2026-08-04**, when
+`net.ipv4.ip_unprivileged_port_start = 0` was applied to the devbox — so a
+cluster config mapping 80/443 now works as written. Verify rather than assume,
+since this is devbox-only and deliberately NOT set on the k8s node (low ports
+there would also mean port 53, a DNS-spoofing position on the box that runs
+untrusted work):
+
+```bash
+cat /proc/sys/net/ipv4/ip_unprivileged_port_start    # 0 = low ports allowed
+```
+
+If it reads `1024`, fall back to unprivileged ports — and copy the config out and
+edit the copy rather than mutating the repo's.
 
 ## Reaching the cluster: loopback TCP is still blocked
 
@@ -126,12 +147,26 @@ container. Prefer pointing the kubeconfig `server` straight at
 kind's serving cert carries that SAN. **Verify the SAN before assuming**; falling
 back to socat is fine and is what worked on 2026-08-04.
 
-**Build the toolbox from an image that already has the tools.** `socat`,
-`kubectl`, `helm`, `git`, `jq` and `psql` are all present on the *host* — none of
-them are in a bare `debian:13-slim`, and `apt-get install`-ing them on every run
-burned a large share of a 37-minute session. Host packages do not help a
-container. If you find yourself apt-installing the same list twice, stop and bake
-an image instead.
+**The toolbox image now exists — use it, do not rebuild it.** As of 2026-08-04
+`localhost/0x58-toolbox:latest` carries `socat`, `kubectl`, `helm`, `git`, `jq`
+and `psql`, with the tools verified at build time so a missing `helm` fails the
+build rather than minute 28 of an e2e run.
+
+```bash
+~/src/public/0x58/dev/nodes/toolbox/build           # build if missing
+~/src/public/0x58/dev/nodes/toolbox/build --force   # after a version bump
+```
+
+Measured: **12.3s** for the old install-every-time path against **0.5s** ready,
+about 26x — but that is per container **start**. It is decisive in the one-shot
+pattern an agent falls into naturally (100 invocations is 20 minutes) and nearly
+worthless if you keep one container alive. **Keeping one alive is the larger
+win**; the image just makes both patterns cheap.
+
+Host packages do not help a container — a fresh container starts from nothing,
+and that trap has sprung more than once. If you catch yourself `apt-get
+install`-ing this list, the image is missing: build it rather than working
+around it.
 
 ## Tear down when the work is done — this is your job, not the human's
 
@@ -141,9 +176,13 @@ rebuilding it costs far more than keeping it for another ten minutes. Once the
 report is posted, destroy it without being asked.
 
 A cluster left running is not free on this box. Measured on 2026-08-04, teardown
-returned **1.6 GB of RAM and 8 GB of disk** — on a 4 GB machine with **no swap**,
-that is the difference between the next session working and being OOM-killed for
-reasons that will look unrelated.
+returned **1.6 GB of RAM and 8 GB of disk** on a 4 GB machine — worth reclaiming
+on its own terms.
+
+Correcting this paragraph's original claim of "no swap": the box carries **4.5 GB**
+(a 496 MB Linode partition plus a 4 GB swapfile), and on 2026-08-04 the swapfile
+was at **0 B used**. So OOM is not the live risk it was written up as, and if
+something is slow, memory is the wrong place to look first.
 
 ```bash
 export KIND_EXPERIMENTAL_PROVIDER=podman
