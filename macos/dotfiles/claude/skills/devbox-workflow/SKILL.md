@@ -117,6 +117,30 @@ gh pr comment <n> --body "..."
 gh issue comment <n> --body "..."
 ```
 
+**7a — Tear down anything you brought up. Not optional, and not the human's
+job.** If you created a kind cluster, a toolbox container, or images that existed
+only for this run, destroy them once the tests are done *and* the PR or issue has
+been updated — in that order, because review feedback often needs one more run
+against the same cluster.
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+kind delete cluster --name <cluster>
+podman rm -f <helper containers>
+podman image prune -f && podman volume prune -f
+free -m | head -2; df -h / | tail -1     # report what came back
+```
+
+This box has 4 GB and **no swap**. A cluster left running held 1.6 GB of RAM and
+8 GB of disk on 2026-08-04 — enough that the *next* session fails in ways that
+look nothing like "someone forgot to clean up". Keep the gitignored artifacts the
+next run reuses (`dev/kind/.kubeconfig`, `dev/caddy/certs/`, the mkcert CA), and
+name anything you leave behind on purpose. Details and the keep/remove split:
+[containers and the k8s tier](patterns/containers-and-k8s.md).
+
+Report the before/after numbers rather than the word "cleaned up" — a delete that
+half-failed looks identical to one that worked until someone checks.
+
 **7b — Optional: get an independent review from Codex.** Worth doing before you
 ask a human to look, because self-review misses what you already believed.
 
@@ -184,3 +208,6 @@ Full detail, with the mechanism behind each:
   allowlist and bind mounts reach denied paths. Hostile code belongs on the
   disposable k8s node — see `~/src/public/0x58/linux/sandbox.md`.
 - **Do not** leave a k8s node running. It bills hourly.
+- **Do not** leave a local kind cluster or toolbox container running either. It
+  bills in the next session's RAM instead of dollars, which is harder to trace.
+  Tearing down is step 7a, and finishing without it is finishing the task badly.

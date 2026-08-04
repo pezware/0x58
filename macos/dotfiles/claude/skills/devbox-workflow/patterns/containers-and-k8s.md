@@ -133,6 +133,36 @@ burned a large share of a 37-minute session. Host packages do not help a
 container. If you find yourself apt-installing the same list twice, stop and bake
 an image instead.
 
+## Tear down when the work is done — this is your job, not the human's
+
+**Order matters: tests green → PR/issue updated → then tear down.** Not before.
+Review feedback routinely needs one more run against the same cluster, and
+rebuilding it costs far more than keeping it for another ten minutes. Once the
+report is posted, destroy it without being asked.
+
+A cluster left running is not free on this box. Measured on 2026-08-04, teardown
+returned **1.6 GB of RAM and 8 GB of disk** — on a 4 GB machine with **no swap**,
+that is the difference between the next session working and being OOM-killed for
+reasons that will look unrelated.
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+kind delete cluster --name iden2-dev
+podman rm -f iden2-ctl kind-cache kind-cache-quay 2>/dev/null
+podman image prune -f && podman volume prune -f
+free -m | head -2; df -h / | tail -1        # report what actually came back
+```
+
+Be surgical, not scorched-earth. **Keep** the artifacts the next run reuses —
+`dev/kind/.kubeconfig`, `dev/caddy/certs/`, `dev/keycloak/.env`, the mkcert CA in
+`~/.local/share/mkcert/`. They are gitignored, cheap, and regenerating them is
+slow. **Remove** only what this run created, and name anything you deliberately
+left behind so the next session is not guessing.
+
+Report the reclaimed numbers. "Tore down the cluster" is unfalsifiable; "memory
+2482 → 897 MB, disk 24 → 16 GB, podman reports 0 images" is checkable, and it is
+how you would notice a delete that silently half-failed.
+
 ## What the open socket costs — read before running anything untrusted
 
 The container runtime runs **outside** the sandbox, so work handed to it is not
