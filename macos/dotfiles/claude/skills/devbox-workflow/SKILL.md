@@ -95,17 +95,19 @@ gh pr create --title "..." --body "..."
 Body formatting is fragile in shell — see the `gh pr create` note in your global
 instructions (plain double-quoted string, not a heredoc).
 
-**6 — Test.** This is where the sandbox actually constrains you:
+**6 — Test.** All tiers run in-session as of 2026-08-04:
 
 ```bash
-go test ./...                       # works — ~96% of the suite
-go test -tags=integration ./...     # FAILS in-session: needs containers
+go test ./...                       # ~96% of the suite
+go test -tags=integration ./...     # works — needs the docker shim first
 ```
 
-Container-backed tests cannot run inside an agent session at all. Do not debug
-that failure — it is a boundary, not a bug. See
-[containers and the k8s tier](patterns/containers-and-k8s.md) for what to do
-instead, including the on-demand cluster and its hourly cost.
+Container-backed tests used to be impossible here. They are not any more:
+`allowAllUnixSockets` is on and the podman socket answers from inside the
+sandbox. You still need a `docker` shim and a ghcr login before anything pulls —
+both are in [containers and the k8s tier](patterns/containers-and-k8s.md), along
+with what that open socket costs. Read it before your first container command;
+skipping it turns a five-minute setup into an hour of misattributed errors.
 
 **7 — Comment on the issue or PR.** Report what actually happened, including
 failures and skipped steps.
@@ -159,7 +161,8 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `Couldn't find key in agent?` when signing | `user.signingkey` is in `key::` form, which needs an agent → use the **path** form |
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
-| container test cannot reach Docker | sandbox blocks AF_UNIX **and** loopback TCP → not fixable in-session |
+| container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
+| image pull fails or is rate-limited | not logged in to ghcr → `gh auth token \| podman login ghcr.io -u arbeitandy --password-stdin`, from inside the repo |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
 | `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
 | `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |
@@ -174,7 +177,8 @@ Full detail, with the mechanism behind each:
   a batch; you sign as you go.
 - **Do not** try to read `~/.claude/.credentials.json` or `~/.codex/auth.json`.
   They are denied, deliberately, and nothing you are doing needs them.
-- **Do not** enable `allowAllUnixSockets` to make container tests work. It also
-  exposes the forwarded Secure Enclave agent. The trade was measured and refused —
-  see `~/src/public/0x58/linux/sandbox.md`.
+- **Do not** treat the sandbox as containment for anything you hand to the
+  container runtime. It runs outside the sandbox, so image pulls ignore the egress
+  allowlist and bind mounts reach denied paths. Hostile code belongs on the
+  disposable k8s node — see `~/src/public/0x58/linux/sandbox.md`.
 - **Do not** leave a k8s node running. It bills hourly.

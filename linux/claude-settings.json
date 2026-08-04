@@ -45,6 +45,10 @@
           "mode": "deny"
         },
         {
+          "path": "~/.codex/auth.json",
+          "mode": "deny"
+        },
+        {
           "path": "~/.npmrc",
           "mode": "deny"
         },
@@ -117,6 +121,7 @@
     },
     "network": {
       "allowLocalBinding": true,
+      "allowAllUnixSockets": true,
       "allowUnixSockets": [
         "/tmp/codex-broker/0x58.sock",
         "/tmp/codex-broker/go-monorepo.sock",

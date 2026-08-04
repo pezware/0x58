@@ -83,11 +83,22 @@ allow one socket; Linux gets exactly one switch, `allowAllUnixSockets`, and it i
 all-or-nothing. Any future "just allow this one socket" on this box is not a
 config change, it is a decision to allow every socket including the SSH agent.
 
-This is less alarming than it sounds, and arguably stronger: git operations
-authenticate through the **forwarded Secure Enclave key**, so every push and
-every signature requires a physical Touch ID tap on the Mac. An injected agent
-cannot push silently — it needs a human fingerprint. Hardware gating replaces
-sandbox gating for exactly the command that has it.
+This paragraph used to claim that git operations authenticate through the
+**forwarded Secure Enclave key**, so every push and signature needed a Touch ID
+tap and an injected agent could not push silently. **That was already false when
+it was written.** The same 2026-08-03 change that let agents sign and push set
+`user.signingkey` to an on-disk *path* (`~/.ssh/devbox_agent`) and pinned
+`IdentityFile` to the same key for github.com. Verify rather than trust it:
+
+```bash
+git config --get user.signingkey          # a path ⇒ signs with no agent, no tap
+grep -A1 'Host github.com' ~/.ssh/config  # IdentityFile ⇒ pushes with no tap
+```
+
+The devbox has been signing and pushing unattended ever since — that is the
+documented success of the loop, not a regression. The lesson is the one this repo
+keeps relearning: a security property described in prose decays silently, while
+the same claim written as a probe fails loudly.
 
 **Codex hardening is a profile, not the shared config.**
 `macos/dotfiles/codex/config.toml` is copied to both machines, and the Mac's
@@ -95,19 +106,34 @@ workflow passes `-s read-only` per invocation. Tightening the shared file would
 change Mac behaviour as a side effect of hardening Linux. The devbox alias in
 `bashrc` adds `-p devbox` on Linux only.
 
-**Container tests run outside agents, not inside them.** Rootless podman is
-installed and exposes a Docker-compatible socket, and `bashrc` points
-`DOCKER_HOST` at it on Linux. Agents cannot reach it. `go test -tags=e2e` inside
-a sandbox fails to connect no matter how `DOCKER_HOST` is set, because the
-seccomp filter above blocks AF_UNIX outright — and loopback TCP, podman's usual
-fallback, is blocked too.
+**Container tests now run inside agents (2026-08-04).** `allowAllUnixSockets` is
+on, so rootless podman's Docker-compatible socket answers from a sandboxed Bash
+call and agents run the `integration` and `e2e` tiers themselves.
 
-Turning that off would cost the property the whole design rests on. Agents could
-then reach the forwarded SSH agent, sign commits, and push over SSH — walking
-around the `Contents: Read` tokens from
-[the devbox token setup](../dev/nodes/README.md#github-tokens-on-the-devbox),
-whose entire purpose is that a token holder *cannot* push. A signature would stop
-meaning a person touched a Secure Enclave.
+The reason this was refused for so long — that agents would reach the forwarded
+SSH agent and push without a Touch ID tap — did not survive contact with the
+config above: they were already pushing with an on-disk key. What the switch
+actually costs is different, and larger:
+
+**The container runtime executes outside the sandbox, so anything delegated to it
+escapes both controls.** Measured, not inferred:
+
+| delegated through podman | sandbox control it bypasses |
+|---|---|
+| `docker pull docker.io/library/alpine:3.20` succeeded in-session | egress allowlist (`docker.io` is not in `allowedDomains`) |
+| `-v $HOME:/m` reads paths a direct `cat` cannot | `filesystem.denyRead` |
+
+The egress allowlist is named above as the one thing that stops an injected agent
+exfiltrating a refresh token, since the Linode firewall's `outbound_policy` is
+`ACCEPT`. A reachable container runtime routes around it. The credential
+deny-list still blocks a *direct* read — both token files return
+`Permission denied`, and `~/.codex/auth.json` was added to
+`sandbox.credentials.files` on 2026-08-04 after it turned out to be listed only
+under `denyWrite` while this document claimed it was denied outright.
+
+So the honest statement of the posture is: the sandbox constrains the agent's own
+syscalls, and stops being a containment boundary the moment work is handed to the
+runtime. Hostile code belongs on the disposable k8s node, as it always did.
 
 The trade is cheap, which is why it is easy to hold: **28 of 746** test files in
 the go monorepo need containers, and they already sit behind `//go:build e2e` or
@@ -141,17 +167,23 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org
 curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
 ```
 
-And confirm the container boundary still holds. Run the same probe in both
-places — a blocked socket and an absent one look identical from inside, so the
-control run is what makes the result mean anything:
+And confirm the container socket is reachable — this expectation **inverted** on
+2026-08-04. Run it in both places: a blocked socket and an absent one look
+identical from inside, so the control run is what makes the result mean anything.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" http://d/_ping
+curl -s -o /dev/null -w '%{http_code}\n' \
+  --unix-socket "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock" http://d/_ping
 ```
 
-Outside a sandbox that prints `200`. Inside a Claude session it must fail to
-connect (curl exit 7). If it ever returns `200` inside, `allowAllUnixSockets` has
-been switched on somewhere and agents can reach the SSH agent again.
+Both outside and inside a Claude session this must print `200`. If it fails
+inside, `allowAllUnixSockets` has been lost and the container tiers are stranded.
+
+Keep the `${XDG_RUNTIME_DIR:-...}` fallback. That variable is **unset** in a
+non-interactive shell and inside an agent session, so the bare form resolves to
+`/podman/podman.sock` and fails with curl exit 7 — indistinguishable from the
+sandbox blocking it. That false negative cost real time on 2026-08-04; the
+fallback is the whole reason this probe is trustworthy.
 
 ## What this does NOT protect against
 

@@ -249,9 +249,30 @@ remote 'python3 -m json.tool ~/.claude/settings.json >/dev/null 2>&1' \
     && ok "claude settings parse" "valid JSON" \
     || no "claude settings parse" "malformed — sandbox config may not apply"
 
+# This assertion INVERTED on 2026-08-04. It used to demand that
+# allowAllUnixSockets be absent; enabling it is now deliberate, so that agents can
+# run the container-backed test tiers in-session. A silent revert would strand the
+# integration and e2e tiers again, which is why the switch is asserted present
+# rather than merely tolerated.
 remote 'grep -q "allowAllUnixSockets" ~/.claude/settings.json 2>/dev/null' \
-    && no "AF_UNIX blocking still on" "allowAllUnixSockets present — agents can reach the SSH agent" \
-    || ok "AF_UNIX blocking still on" "no allowAllUnixSockets override"
+    && ok "unix sockets reachable in-session" "allowAllUnixSockets on — container tiers can run" \
+    || no "unix sockets reachable in-session" "allowAllUnixSockets absent — integration/e2e tiers cannot run"
+
+# With AF_UNIX open, these denials are the whole boundary around the two
+# subscription refresh tokens — nothing else stands between an agent and them.
+# Both must sit in sandbox.credentials.files with mode deny; denyWrite is not
+# enough, and ~/.codex/auth.json was listed ONLY under denyWrite until 2026-08-04
+# while the docs claimed it was denied outright.
+#
+# Unlike its neighbours this check inspects rather than does. The honest in-session
+# control needs a live Claude session, and an agent may decline to run a
+# credential probe at all — correct of it, but a smoke test must not depend on a
+# judgement call landing one way. Run the probe in linux/sandbox.md by hand.
+for cred in claude/.credentials.json codex/auth.json; do
+    remote "grep -A1 -e path.*${cred##*/} ~/.claude/settings.json | grep -q mode.*deny" \
+        && ok "~/.${cred%%/*}/${cred#*/} denied to agents" "in credentials.files as deny" \
+        || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
+done
 
 # ── containers ──────────────────────────────────────────────────────────────
 section "Containers"
