@@ -137,6 +137,8 @@
         "files.pythonhosted.org",
         "github.com",
         "*.github.com",
+        "ghcr.io",
+        "pkg-containers.githubusercontent.com",
         "codeload.github.com",
         "objects.githubusercontent.com",
         "raw.githubusercontent.com",

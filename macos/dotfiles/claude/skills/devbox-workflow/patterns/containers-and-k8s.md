@@ -46,26 +46,47 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   --unix-socket /run/user/1000/podman/podman.sock http://d/_ping   # expect 200
 ```
 
-## Pull from the ghcr mirror, and log in first
+## ghcr mirrors — currently UNREACHABLE from this box, and not your fault
 
-Every image we depend on is mirrored into **ghcr.io**. Prefer it over docker.io
-and other upstream registries — it avoids Docker Hub rate limits and keeps you on
-images we control.
+Every image we depend on is mirrored into **ghcr.io**, and that is where we would
+rather pull from: no Docker Hub rate limits, and images we control.
 
-ghcr needs authentication even for our mirrors. Run this **from inside the repo**,
-so the `gh` wrapper selects the token matching the origin owner:
+**It does not work here, and no amount of retrying will fix it.** Measured
+2026-08-04, same token, back to back:
+
+| request | result |
+|---|---|
+| `GET /repos/iden2-com/go-monorepo/contents/README.md` | 200 |
+| `GET /orgs/iden2-com/packages?package_type=container` | **403** |
+| ghcr manifest read for `mirror/vault:1.20.4` | **403** |
+
+The cause is a GitHub platform gap, not a misconfiguration: **fine-grained PATs
+have no packages permission at all** — the permission simply does not exist in
+the token UI — and ghcr accepts only *classic* PATs. Package visibility set to
+"inherit from repo access" governs which **users** may pull; a token is a separate
+principal and can never carry a scope GitHub never implemented for it.
+
+So `gh auth token | podman login ghcr.io` **succeeds at login and still 403s on
+the manifest**. That split is the confusing part: do not read a successful login
+as proof of access.
+
+**What to do meanwhile:** fall back to the upstream image, and say so in your
+report. Many Dockerfiles here already document the fallback — e.g. the did-sync
+init container takes `BASE_IMAGE=hashicorp/vault:1.20.4`. Prefer a documented
+fallback over inventing one.
+
+Do **not** propose minting a classic PAT to work around this. It is a long-lived
+credential on disk, the exact thing this box's design avoids, and the intended
+fix is making the `iden2-com/mirror/*` packages public — they mirror public
+upstream images, so there is nothing to protect.
+
+Re-test before assuming it is still broken; this is expected to change:
 
 ```bash
-~/.local/bin/gh auth token | podman login ghcr.io -u arbeitandy --password-stdin
+cd ~/src/iden2/<repo> && TOK=$(~/.local/bin/gh auth token)
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOK" \
+  "https://api.github.com/orgs/iden2-com/packages?package_type=container"   # 200 = fixed
 ```
-
-Do this **before** `kind create cluster` or any `task` target that pulls — a
-mid-pull auth failure surfaces as an opaque image-pull error much later, usually
-blamed on the cluster rather than the registry.
-
-If login fails on permissions, the PAT likely lacks `read:packages`. Report that
-rather than quietly falling back to upstream: the token scope is the fix, and a
-silent fallback hides it.
 
 ## kind
 
@@ -78,6 +99,39 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 Rootless podman cannot bind privileged host ports, so a cluster config mapping
 80/443 needs unprivileged ports instead. Copy the config out and edit the copy
 rather than mutating the repo's.
+
+## Reaching the cluster: loopback TCP is still blocked
+
+`allowAllUnixSockets` opened AF_UNIX. **It did not open loopback TCP**, and those
+are separate restrictions — the sandbox has its own network namespace with only
+`lo`, so host-published ports do not exist inside it. kind publishes its API
+server on `127.0.0.1:<port>`, which is therefore unreachable however correct your
+kubeconfig is. Do not debug the kubeconfig; it is not the problem.
+
+The way through is a **toolbox container joined to the `kind` network**, driving
+the cluster from inside podman's namespace:
+
+```bash
+docker run -d --name iden2-ctl --network kind \
+  -v /run/user/1000/podman/podman.sock:/run/podman.sock \
+  -v "$HOME/src:$HOME/src" \
+  -v "$HOME/.local/share/mise/installs:$HOME/.local/share/mise/installs:ro" \
+  -w <repo> <toolbox-image> sleep infinity
+```
+
+If the repo's own kubeconfig must work unmodified (it points at `127.0.0.1`), add
+a `socat TCP-LISTEN:<port>,fork TCP:iden2-dev-control-plane:6443` inside that
+container. Prefer pointing the kubeconfig `server` straight at
+`iden2-dev-control-plane:6443` when you can — one less moving part, provided
+kind's serving cert carries that SAN. **Verify the SAN before assuming**; falling
+back to socat is fine and is what worked on 2026-08-04.
+
+**Build the toolbox from an image that already has the tools.** `socat`,
+`kubectl`, `helm`, `git`, `jq` and `psql` are all present on the *host* — none of
+them are in a bare `debian:13-slim`, and `apt-get install`-ing them on every run
+burned a large share of a 37-minute session. Host packages do not help a
+container. If you find yourself apt-installing the same list twice, stop and bake
+an image instead.
 
 ## What the open socket costs — read before running anything untrusted
 

@@ -162,7 +162,9 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
 | container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
-| image pull fails or is rate-limited | not logged in to ghcr → `gh auth token \| podman login ghcr.io -u arbeitandy --password-stdin`, from inside the repo |
+| ghcr pull 403s **after a successful login** | fine-grained PATs cannot access ghcr at all — a GitHub gap, not your setup. Use the upstream fallback the Dockerfile documents and report it |
+| `kubectl` cannot reach a kind cluster | loopback TCP is still blocked (separate from AF_UNIX) → drive the cluster from a toolbox container on the `kind` network, not by fixing the kubeconfig |
+| `pnpm install` refuses a fresh version | the 7-day supply-chain cooldown, working as intended → add a dated `minimumReleaseAgeExclude` entry, never lower the floor |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
 | `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
 | `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |

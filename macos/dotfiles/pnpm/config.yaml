@@ -1,0 +1,53 @@
+# pnpm global settings — supply-chain cooldown.
+#
+# Placed at ~/.config/pnpm/config.yaml by restore.sh.
+#
+# WHY THIS FILE AND NOT ~/.npmrc
+#
+# pnpm 11 splits its config: auth still comes from ~/.npmrc, everything else
+# lives here. That split is what makes this work on the devbox, because
+# ~/.npmrc is on the agent sandbox's credentials deny list (linux/sandbox.md).
+# A cooldown written into ~/.npmrc would be unreadable by exactly the actor it
+# exists to constrain — an agent running `pnpm install` would silently get no
+# gate at all. This file is not denied, so the gate applies to agents too.
+#
+# UNITS: MINUTES. 1440 = 1 day, 10080 = 7 days. Getting this wrong is quiet:
+# `minimumReleaseAge: 7` means seven MINUTES of protection, which looks
+# configured and defends against nothing.
+
+# Wait a week before any newly published version is installable, transitive
+# dependencies included. Most malicious-publish incidents are caught and yanked
+# well inside this window; the cost is only that genuinely fresh patches need
+# the documented per-package exception rather than arriving silently.
+minimumReleaseAge: 10080
+
+# pnpm 11 already defaults to 1440, but NON-STRICT for compatibility — it
+# degrades rather than fails. Strict makes an install that cannot satisfy the
+# floor stop loudly instead of quietly resolving something younger.
+minimumReleaseAgeStrict: true
+
+# Exceptions go here, dated, never by lowering the floor above:
+#   minimumReleaseAgeExclude:
+#     - <pkg>            # TODO: remove after YYYY-MM-DD (<CVE>)
+# See the dependabot-fix skill for the workflow and why the floor stays put.
+
+# INSTALL SCRIPTS — deliberately NOT set to ignoreScripts: true.
+#
+# pnpm already refuses to run dependency lifecycle scripts by default since v10;
+# a package must be named in `onlyBuiltDependencies` before its build runs. That
+# is default-deny with a surgical allowlist, which is stronger than a blanket
+# switch, so the hole npm has here does not exist in pnpm. (npm's default is the
+# opposite — see ~/.npmrc, where ignore-scripts=true closes it.)
+#
+# Setting `ignoreScripts: true` globally would be a downgrade, not an upgrade:
+# it overrides the allowlist too, so packages that legitimately need a native
+# build (esbuild, sharp, better-sqlite3) fail in ways that look like broken
+# tooling. The documented escape from that is `dangerouslyAllowAllBuilds`, which
+# is how a blunt global setting ends up talking someone into allowing everything.
+#
+# Allowlist per project instead, in the repo's own pnpm-workspace.yaml:
+#   onlyBuiltDependencies:
+#     - esbuild
+#
+# Verify the default is still default-deny after a pnpm major upgrade:
+#   pnpm config get dangerouslyAllowAllBuilds   # must NOT be true

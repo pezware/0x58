@@ -274,6 +274,42 @@ for cred in claude/.credentials.json codex/auth.json; do
         || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
 done
 
+# ── supply-chain cooldown ───────────────────────────────────────────────────
+# A publish-then-yank attack is caught by waiting, not by scanning. Both gates
+# below fail OPEN when absent — an install just proceeds — so nothing surfaces
+# them except a check like this one.
+section "Supply-chain cooldown"
+
+# pnpm: minutes. 10080 = 7 days. The floor matters as much as its presence,
+# because `minimumReleaseAge: 7` looks configured and buys seven minutes.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get minimumReleaseAge 2>/dev/null)" -ge 10080' \
+    && ok "pnpm cooldown >= 7 days" "~/.config/pnpm/config.yaml — readable by agents" \
+    || no "pnpm cooldown >= 7 days" "unset or too low — fresh malicious publishes are installable"
+
+# pnpm 11 ships a 1440 default that is NON-strict: it degrades rather than fails.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get minimumReleaseAgeStrict 2>/dev/null)" = true' \
+    && ok "pnpm cooldown is strict" "an unsatisfiable floor fails loudly" \
+    || no "pnpm cooldown is strict" "non-strict — pnpm may resolve something younger instead"
+
+# npm needs >= 11.10 for the key to do anything. Below that it is stored,
+# echoed back by `npm config get`, and ignored — so assert npm's own config
+# list KNOWS the key rather than that the file contains it.
+remote '~/.local/share/mise/shims/npm config ls -l 2>/dev/null | grep -q "^; min-release-age\|^min-release-age"' \
+    && ok "npm knows min-release-age" "npm >= 11.10; the .npmrc line is enforced" \
+    || no "npm knows min-release-age" "npm too old — ~/.npmrc says 7 days and nothing honours it"
+
+# Install scripts are the execution vector: a malicious version does not need to
+# be imported, only installed. npm runs them by default; pnpm has not since v10.
+remote 'test "$(~/.local/share/mise/shims/npm config get ignore-scripts)" = true' \
+    && ok "npm install scripts disabled" "ignore-scripts=true" \
+    || no "npm install scripts disabled" "dependency postinstall runs on install"
+
+# pnpm's protection is default-deny plus an allowlist. The failure mode is not
+# an unset flag, it is someone reaching for the documented override.
+remote 'test "$(~/.local/share/mise/shims/pnpm config get dangerouslyAllowAllBuilds)" != true' \
+    && ok "pnpm builds not blanket-allowed" "default-deny intact; allowlist via onlyBuiltDependencies" \
+    || no "pnpm builds not blanket-allowed" "dangerouslyAllowAllBuilds=true — every dependency build runs"
+
 # ── containers ──────────────────────────────────────────────────────────────
 section "Containers"
 

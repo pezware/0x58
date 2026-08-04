@@ -97,6 +97,17 @@ place_dotfiles() {
     [[ -f "$DOTFILES/config-git/allowed_signers" ]] && cp -v "$DOTFILES/config-git/allowed_signers" ~/.config/git/
     [[ -f "$DOTFILES/config-git/personal" ]] && cp -v "$DOTFILES/config-git/personal" ~/.config/git/
 
+    # npm / pnpm supply-chain cooldown.
+    #
+    # Two files because the two tools disagree on both the key and the unit, and
+    # because only one of them is readable by a sandboxed agent: ~/.npmrc is on
+    # the credentials deny list (it is where npm auth lands), while pnpm 11 keeps
+    # non-auth settings in ~/.config/pnpm/config.yaml, which is not denied. See
+    # the headers in both files before changing either.
+    cp -v "$DOTFILES/npmrc" ~/.npmrc
+    mkdir -p ~/.config/pnpm
+    cp -v "$DOTFILES/pnpm/config.yaml" ~/.config/pnpm/config.yaml
+
     # w3m
     mkdir -p ~/.w3m
     cp -v "$DOTFILES/w3m/config" ~/.w3m/

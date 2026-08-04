@@ -13,15 +13,22 @@ Host devbox pezware-devbox
     HostName pezware-devbox
     User arbeitandy
 
-    # Forward the Secretive agent so git push and commit signing on the devbox
-    # use the Mac's Secure Enclave key — the private key never reaches the box.
+    # NOT forwarded, as of 2026-08-04. This used to be `yes`, justified as making
+    # "git push and commit signing on the devbox use the Mac's Secure Enclave
+    # key". That stopped being true when agents were given their own on-disk key:
+    # user.signingkey is a path and IdentityFile pins the same key for github.com,
+    # so pushes and signatures never touched the forwarded agent. It was carrying
+    # risk for a benefit nothing consumed.
     #
-    # Scoped to this Host on purpose. A forwarded agent lets the remote host use
-    # your key while you are connected, which is normally a real risk. It is
-    # acceptable here only because Secretive requires a Touch ID tap per
-    # signature: a compromised devbox cannot use the key silently, it can only
-    # make your Mac ask a question you did not expect.
-    ForwardAgent yes
+    # The risk was not theoretical once AF_UNIX opened up for container tests
+    # (linux/sandbox.md): a sandboxed agent can now reach any unix socket, and
+    # ~620 stale /tmp/auth-agent*/ sockets had accumulated on the box, live ones
+    # still answering with both Secure Enclave keys.
+    #
+    # `sign-push` is the one thing that genuinely needs it, and it already tells
+    # you to connect with `ssh -A` — opt in per invocation:
+    #     ssh -A devbox
+    ForwardAgent no
 
     # The devbox is deliberately disposable, and tailscaled regenerates its host
     # key on every rebuild — so a persisted known_hosts entry would produce a
@@ -41,7 +48,10 @@ Host devbox pezware-devbox
 Host k8s pezware-k8s
     HostName pezware-k8s
     User arbeitandy
-    ForwardAgent yes
+    # Never forward here. This is the box that exists to run code we do not
+    # trust — handing it live use of the Secure Enclave keys inverts the entire
+    # point of having a disposable node.
+    ForwardAgent no
     UserKnownHostsFile /dev/null
     StrictHostKeyChecking accept-new
     LogLevel ERROR

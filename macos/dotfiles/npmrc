@@ -1,0 +1,33 @@
+# npm user config — supply-chain cooldown. Placed at ~/.npmrc by restore.sh.
+#
+# UNITS: DAYS here, unlike pnpm's minutes. npm and pnpm are NOT interchangeable:
+# npm uses `min-release-age` (days, no exclude list, bypass only via
+# `npm i --min-release-age=0 <pkg>@<ver>`), pnpm uses `minimumReleaseAge`
+# (minutes, supports minimumReleaseAgeExclude). Mixing the two syntaxes
+# silently no-ops, because npm rejects unknown keys at use-time rather than at
+# parse-time. `npm config ls -l | grep release-age` tells you what YOUR npm
+# actually recognises.
+#
+# REQUIRES npm >= 11.10. On a devbox running npm 10.9.8 this line is inert —
+# present, parsed, and doing nothing. Check before trusting it.
+min-release-age=7
+
+# Do not execute dependency lifecycle scripts. npm's default is to RUN them,
+# which is the actual execution vector in most npm compromises — a malicious
+# version does not need you to import it, only to be installed. The cooldown
+# above buys time to notice; this removes the payload's trigger.
+#
+# Escape hatch when a package genuinely needs a native build (esbuild, sharp,
+# better-sqlite3): rebuild it by name, deliberately, rather than turning this
+# off — `npm rebuild <pkg>`, or `npm i --ignore-scripts=false <pkg>` scoped to
+# the one install. If you find yourself removing this line, that is the signal
+# to allowlist instead.
+ignore-scripts=true
+
+# NOTE for the devbox: ~/.npmrc is on the agent sandbox's credentials deny list
+# (it is the file npm auth tokens land in), so a sandboxed `npm install` cannot
+# read this gate. pnpm's equivalent lives in ~/.config/pnpm/config.yaml, which
+# is NOT denied and therefore does apply to agents. If npm ever becomes the
+# primary tool for agent work here, the durable fix is a project-level .npmrc
+# committed in the repo — that is read regardless of sandbox rules, and it
+# protects CI and teammates at the same time.
