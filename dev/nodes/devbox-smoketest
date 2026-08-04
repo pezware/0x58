@@ -179,6 +179,21 @@ case "$sig" in
     *) no "signs and verifies a real commit" "git reports '$sig', expected G" ;;
 esac
 
+# ...and again where the conditional include applies. Signing in /tmp proves only
+# that the GLOBAL config works; `includeIf gitdir:~/src/iden2/` overrides it there,
+# and an override that reintroduces the Mac's key:: form fails ONLY in iden2 repos.
+# That gap shipped once and was found by an agent doing real work, not by this test.
+sig2=$(remote 'd=$HOME/src/iden2/.smoketest-$$; mkdir -p "$d"; cd "$d" || exit 1
+  git init -q . 2>/dev/null
+  git commit -q --allow-empty -S -m smoketest 2>/dev/null
+  git log --format=%G? -1 2>/dev/null
+  cd /; rm -rf "$d"')
+case "$sig2" in
+    G)  ok "signs under ~/src/iden2 too" "the includeIf work config resolves" ;;
+    "") no "signs under ~/src/iden2 too" "signing failed only here — the work include likely overrides signingkey with key::" ;;
+    *)  no "signs under ~/src/iden2 too" "git reports '$sig2', expected G" ;;
+esac
+
 who=$(remote 'ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/devbox_agent -T git@github.com 2>&1 | head -1')
 case "$who" in
     *"Hi arbeitandy"*) ok "github ssh auth" "authenticates as arbeitandy" ;;
