@@ -248,12 +248,23 @@ than engineering around it.
 
 Cheapest and most certain first; nothing here depends on spending money.
 
-0. **Close the write scope. Do this before anything else.** Set `allowWrite` to
-   `["~/src", "/tmp"]` as `sandbox.md` already claims, and add `~/.bashrc`,
-   `~/.profile`, `~/.bash_profile`, `~/.config/systemd/user`, `~/.local/bin` and
-   `~/.claude/settings.local.json` to `denyWrite`. Until this lands, every control
-   below is cosmetic — persist-and-wait defeats all of them. This is the empirical
-   form of Codex's objection, and it is a live gap, not a design question.
+0. ~~**Close the write scope.**~~ **DONE 2026-08-04.** The obvious fix —
+   `allowWrite: ["~/src", "/tmp"]`, as `sandbox.md` claimed — was rejected on
+   measurement: `~/.cache` holds 3.3 GB of Go build cache and `~/go` 1.7 GB of
+   module cache, so it would break every Go build on the box. What landed instead
+   is a bounded `denyWrite` denylist of surfaces that execute on login or shadow a
+   command: shell profiles, `~/.config/systemd`, `~/.local/bin`, agent hook config
+   (including the `settings.local.json` override that was writable while
+   `settings.json` was denied), and git config with `core.hooksPath`.
+
+   Verified in-session with a control: `touch ~/.bashrc` and `~/.profile` now
+   return `EROFS`, while `~/.cache` still writes. `devbox-smoketest` asserts each
+   path individually — a count would pass while the one entry that mattered was
+   removed — and is now 45 checks, up from 38.
+
+   Two honest residuals. A denylist cannot cover unknown-unknowns, unlike the
+   allowlist that was rejected. And `~/.local/share/mise` stays writable although
+   its shims are on `PATH`, because denying it breaks `mise install`.
 1. **`ip_unprivileged_port_start = 0`** in `common_sysctl`. One line, unblocks the
    compose tier, no security cost worth the name on a box with no inbound.
 2. **Bake the toolbox image.** Measured: zero images cached, so every run

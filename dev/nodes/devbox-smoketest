@@ -274,6 +274,28 @@ for cred in claude/.credentials.json codex/auth.json; do
         || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
 done
 
+# ── login-execution surfaces ────────────────────────────────────────────────
+# Added 2026-08-04 after a probe found allowWrite was "~", not "~/src" as
+# sandbox.md claimed. That gap did not need privilege escalation to matter: an
+# agent cannot sudo (no_new_privs, measured in-session), but it could write
+# ~/.bashrc and wait for the human's next login — unsandboxed, NOPASSWD:ALL.
+#
+# Asserted one path at a time rather than as a count, because a count passes
+# happily while the single entry that mattered is the one removed.
+# ~/.claude/settings.local.json is called out specifically: settings.json was
+# already denied while the .local override was not, and planting agent hooks is
+# precisely how the 2026-08-04 npm worm persisted.
+for p in '~/.bashrc' '~/.bash_profile' '~/.profile' '~/.config/systemd' \
+         '~/.local/bin' '~/.claude/settings.local.json' '~/.gitconfig'; do
+    remote "python3 -c \"
+import json, os, sys
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+w = d.get('sandbox', {}).get('filesystem', {}).get('denyWrite', [])
+sys.exit(0 if '$p' in w else 1)\"" \
+        && ok "$p write-denied" "cannot persist into a privileged login" \
+        || no "$p write-denied" "an agent can plant code that runs in YOUR next session"
+done
+
 # ── supply-chain cooldown ───────────────────────────────────────────────────
 # A publish-then-yank attack is caught by waiting, not by scanning. Both gates
 # below fail OPEN when absent — an install just proceeds — so nothing surfaces

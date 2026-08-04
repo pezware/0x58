@@ -37,9 +37,31 @@ of both token files, `~/.npmrc`, `~/.config/gh/hosts.yml`, and unsets
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, `LINODE_TOKEN`, and
 `TF_VAR_tailscale_auth_key` for sandboxed commands.
 
-**Filesystem.** Reads denied for `~/.ssh`, `~/.gnupg`, `~/.config/gcloud`,
-`~/.kube`, `~/.aws`, and the Tailscale state directories. Writes limited to
-`~/src` and `/tmp`.
+**Filesystem.** Reads denied for `~/.gnupg`, `~/.config/gcloud`, `~/.kube`,
+`~/.aws`, the Tailscale state directories and `/etc/0x58-node.env`. Note that
+`~/.ssh` is **not** among them — it was removed deliberately on 2026-08-03 so
+agents could sign and push; see the trade-offs below.
+
+**Writes are a denylist over `~`, not an allowlist of `~/src`.** This paragraph
+claimed the latter until 2026-08-04, when a probe showed `allowWrite` is
+`["~", "/tmp"]`. The claim was not merely stale, it was **exploitable**:
+`~/.bashrc` was writable and `arbeitandy` has `NOPASSWD:ALL`, so an injected
+agent never needed to escalate itself — it could write a shell profile and wait
+for the human's next unsandboxed login. `~/.claude/settings.local.json` was
+writable too while `settings.json` was denied, which is exactly the persistence
+technique of the 2026-08-04 npm worm.
+
+The allowlist the text described would be stronger, and it was rejected on
+measurement rather than principle: `~/.cache` holds 3.3 GB of Go build cache and
+`~/go` 1.7 GB of module cache, so confining writes to `~/src` breaks every Go
+build on the box. What landed instead is a bounded denylist of the surfaces that
+**execute on login or shadow a command** — shell profiles, `~/.config/systemd`,
+`~/.local/bin`, agent hook config, and git config including `core.hooksPath`.
+
+Be honest about what that leaves: a denylist cannot cover unknown-unknowns, and
+`~/.local/share/mise` is knowingly still writable because its shims are on `PATH`
+but denying it would break `mise install`. `devbox-smoketest` probes the
+denylist, so a regression fails loudly instead of silently.
 
 **Egress allowlisted.** Package registries and source hosts only. Codex goes
 further with `network_access = false`; it escalates to a human when a command
