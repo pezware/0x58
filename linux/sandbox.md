@@ -4,6 +4,11 @@ Applied by `restore.sh` on Linux only:
 [`claude-settings.json`](claude-settings.json) and
 [`codex-devbox.config.toml`](codex-devbox.config.toml).
 
+This file describes the *intended* posture. Where the box has been measured to
+disagree with it, the gap is tracked in
+[`sandbox-findings.md`](sandbox-findings.md) — read that first, as of 2026-08-04
+it contradicts two claims below.
+
 ## The threat this addresses
 
 Tailscale and the Linode Cloud Firewall handle *inbound* risk well — the box has
