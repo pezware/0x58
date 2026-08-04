@@ -57,47 +57,70 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   --unix-socket /run/user/1000/podman/podman.sock http://d/_ping   # expect 200
 ```
 
-## ghcr mirrors — currently UNREACHABLE from this box, and not your fault
+## ghcr mirrors — working since 2026-08-04
 
-Every image we depend on is mirrored into **ghcr.io**, and that is where we would
-rather pull from: no Docker Hub rate limits, and images we control.
+Every image we depend on is mirrored into **ghcr.io**, and that is where to pull
+from: no Docker Hub rate limits, and images we control.
 
-**It does not work here, and no amount of retrying will fix it.** Measured
-2026-08-04, same token, back to back:
+This section read **UNREACHABLE** until 2026-08-04, and the old diagnosis was not
+wrong — it is still true and still worth knowing. **Fine-grained PATs have no
+packages permission at all**; the permission does not exist in the token UI, and
+ghcr accepts only *classic* PATs. Package visibility set to "inherit from repo
+access" governs which **users** may pull; a token is a separate principal and can
+never carry a scope GitHub never implemented for it. No configuration fixes that.
 
-| request | result |
-|---|---|
-| `GET /repos/iden2-com/go-monorepo/contents/README.md` | 200 |
-| `GET /orgs/iden2-com/packages?package_type=container` | **403** |
-| ghcr manifest read for `mirror/vault:1.20.4` | **403** |
+What changed is that a classic PAT scoped to `read:packages` **and nothing else**
+now exists on the box. Same calls that used to 403, measured 2026-08-04:
 
-The cause is a GitHub platform gap, not a misconfiguration: **fine-grained PATs
-have no packages permission at all** — the permission simply does not exist in
-the token UI — and ghcr accepts only *classic* PATs. Package visibility set to
-"inherit from repo access" governs which **users** may pull; a token is a separate
-principal and can never carry a scope GitHub never implemented for it.
+| request | before | now |
+|---|---|---|
+| `GET /orgs/iden2-com/packages?package_type=container` | 403 | **200** |
+| `GET /orgs/pezware/packages?package_type=container` | 403 | **200** |
+| ghcr tag list for `mirror/vault` | 403 | **200** — `1.18`, `1.20.4` |
+| `docker pull ghcr.io/iden2-com/mirror/vault:1.20.4` through the shim | 403 | **pulled** |
 
-So `gh auth token | podman login ghcr.io` **succeeds at login and still 403s on
-the manifest**. That split is the confusing part: do not read a successful login
-as proof of access.
+**You do not need to log in, and you do not need the token.** The login already
+happened, on the other side of the sandbox:
 
-**What to do meanwhile:** fall back to the upstream image, and say so in your
-report. Many Dockerfiles here already document the fallback — e.g. the did-sync
-init container takes `BASE_IMAGE=hashicorp/vault:1.20.4`. Prefer a documented
-fallback over inventing one.
+- `~/.config/containers/auth.json` (0600) holds it, written once by `podman login`.
+- The podman **service** runs outside the sandbox, so *it* is the process that
+  authenticates. Your `docker pull` through the shim carries no credentials and
+  does not need to.
 
-Do **not** propose minting a classic PAT to work around this. It is a long-lived
-credential on disk, the exact thing this box's design avoids, and the intended
-fix is making the `iden2-com/mirror/*` packages public — they mirror public
-upstream images, so there is nothing to protect.
+That is the same property that lets `gh` use a token you cannot read: the work is
+done by something the sandbox does not contain. Verified end to end on
+2026-08-04 — a raw `POST /images/create` on the socket with **no**
+`X-Registry-Auth` header pulled a private image, and so did `docker pull` through
+the shim above.
 
-Re-test before assuming it is still broken; this is expected to change:
+So just pull:
 
 ```bash
-cd ~/src/iden2/<repo> && TOK=$(~/.local/bin/gh auth token)
-curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOK" \
-  "https://api.github.com/orgs/iden2-com/packages?package_type=container"   # 200 = fixed
+docker pull ghcr.io/iden2-com/mirror/postgres:17.2
 ```
+
+If a pull 403s, do **not** reach for the token. Check the service-side login from
+an unsandboxed shell — a missing login looks exactly like a scope problem:
+
+```bash
+podman login --get-login ghcr.io          # expect: arbeitandy
+```
+
+The upstream fallback many Dockerfiles document (e.g. the did-sync init container
+taking `BASE_IMAGE=hashicorp/vault:1.20.4`) still works and is still a reasonable
+degraded path. It is no longer the expected one.
+
+**What the token can and cannot do.** Scope is `read:packages`, verified against
+`x-oauth-scopes` rather than assumed. It cannot read a repository, cannot write a
+package, and cannot act anywhere else. It lives in
+`~/.config/0x58/credentials.env` as `GHCR_TOKEN`, which agents **can** read —
+a deliberate choice, not an oversight: this box puts its weight on source control
+and a proven rebuild, not on hiding a read-only scope. Do not treat finding it
+there as a vulnerability report.
+
+The packages are `internal` visibility, which is why a token is needed at all.
+Making `mirror/*` public would remove the need entirely — they mirror public
+upstream images — and remains the cleaner fix if it is ever worth the change.
 
 ## kind
 
