@@ -70,16 +70,25 @@ credentials, and there are none by design.
 
 On 2026-08-05 a session sat in `~/src/iden2`, ran gh, read that line, concluded
 "gh isn't authenticated on this box" and stopped to ask the human — while gh one
-directory down worked fine. Probe **inside the repo** with a real command:
+directory down worked fine.
+
+**Either of these gives the wrapper what it needs.** `--repo` wins over the
+working directory, so you do not have to `cd` at all:
 
 ```bash
-cd ~/src/iden2/go-monorepo && gh repo view --json nameWithOwner
+gh issue view 1160 --repo iden2-com/go-monorepo      # works from anywhere
+cd ~/src/iden2/go-monorepo && gh issue view 1160     # uses the origin remote
 ```
 
-The wrapper now prints its own diagnosis ahead of gh's, so you should see the
-real reason first. If you ever see gh's bare message with nothing above it, the
-wrapper is not on PATH — that is the actual bug, and `gh auth login` still is not
-the fix.
+`-R` and `--repo=owner/name` work too. Until 2026-08-05 the wrapper ignored the
+flag entirely and looked only at the origin remote, so the first form failed from
+outside a checkout — which is precisely how that session used it, and it was
+right to.
+
+The wrapper prints its own diagnosis ahead of gh's, so you should see the real
+reason first. If you ever see gh's bare message with **nothing above it**, the
+wrapper is not the `gh` you ran — check `command -v gh`, and if it is a mise shim
+fix your PATH ordering. `gh auth login` is still not the fix.
 
 **2 — Worktree off `main`.** Never work on the primary checkout.
 

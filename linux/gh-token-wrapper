@@ -48,10 +48,46 @@ real_gh() {
 
 GH=$(real_gh) || { echo "gh-wrapper: cannot find the real gh on PATH" >&2; exit 127; }
 
-# Owner of the origin remote, from either ssh or https form. Falls through
+# An explicit --repo/-R wins over the working directory, because it is a
+# STRONGER statement of intent than where the shell happens to be.
+#
+# This was missing until 2026-08-05 and it mattered: an agent ran
+#   gh issue view 1160 --repo iden2-com/go-monorepo
+# from ~/src, which is exactly how gh is meant to be used from outside a
+# checkout, and got no token — because the wrapper only looked at the origin
+# remote. It then told the agent to cd into a repo, advice that was both
+# unnecessary and beside the point. gh already knew which repo; the wrapper did
+# not bother to look.
+#
+# gh accepts `[HOST/]OWNER/REPO`, so take the component before the repo name
+# rather than assuming the first.
+repo_arg=""
+prev=""
+for a in "$@"; do
+    case "$prev" in
+        -R|--repo) repo_arg="$a"; break ;;
+    esac
+    case "$a" in
+        --repo=*) repo_arg="${a#--repo=}"; break ;;
+        -R=*)     repo_arg="${a#-R=}";     break ;;
+    esac
+    prev="$a"
+done
+
+owner=""
+if [ -n "$repo_arg" ]; then
+    # Strip any scheme, then keep the OWNER of a trailing owner/repo pair.
+    owner=$(printf '%s' "$repo_arg" \
+            | sed -E 's#^[a-z]+://##; s#/+$##' \
+            | awk -F/ 'NF>=2 { print $(NF-1) }')
+fi
+
+# Fall back to the origin remote, from either ssh or https form. Falls through
 # silently when not in a repo — `gh --version` and friends still work.
-owner=$(git config --get remote.origin.url 2>/dev/null \
-        | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*$#\2#' || true)
+if [ -z "$owner" ]; then
+    owner=$(git config --get remote.origin.url 2>/dev/null \
+            | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*$#\2#' || true)
+fi
 
 if [ -z "${GH_TOKEN:-}" ] && [ -r "$CREDS" ]; then
     # shellcheck disable=SC1090
@@ -92,9 +128,10 @@ if [ -z "${GH_TOKEN:-}" ]; then
         *)
             if [ -z "$owner" ]; then
                 cat >&2 <<'MSG'
-gh-wrapper: no token selected — you are not inside a git repository.
-  This wrapper picks a token from the origin remote's OWNER, so it has nothing
-  to select on. cd into the repo you mean and re-run, e.g. ~/src/iden2/<repo>.
+gh-wrapper: no token selected — no --repo given and not inside a git repository.
+  This wrapper picks a token from the repository's OWNER. Give it one, either way:
+      gh <cmd> --repo iden2-com/<repo>      # works from anywhere
+      cd ~/src/iden2/<repo> && gh <cmd>     # uses the origin remote
   Do NOT run `gh auth login`, and do NOT reach for a PAT: there is no stored
   credential on this box by design. An empty ~/.config/gh is correct here.
 MSG
