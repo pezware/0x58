@@ -354,7 +354,7 @@ fetches the branch; `sign-push` uses `--force-with-lease` accordingly.
 Considered and rejected. `~/.ssh` and `~/.gnupg` are in the sandbox's `denyRead`,
 so an agent could not read a local key anyway — it would fail exactly as it does
 now. Putting one somewhere readable would let any agent-run command exfiltrate
-it, and `github.com` is in the egress allowlist. A stolen *signing* key lets
+it, and egress from this box is unrestricted. A stolen *signing* key lets
 someone produce commits that appear verified as you, which is the one property
 the Secure Enclave guarantees by construction: the key cannot be extracted, even
 by you.
