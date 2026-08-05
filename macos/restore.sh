@@ -64,9 +64,13 @@ place_dotfiles() {
     cp -v "$DOTFILES/vim/autoload/plug.vim" ~/.vim/autoload/
     cp -v "$DOTFILES/vim/colors/solarized.vim" ~/.vim/colors/
 
-    # nvim
-    mkdir -p ~/.config/nvim
-    rsync -a "$DOTFILES/config-nvim/" ~/.config/nvim/
+    # nvim — macOS only as of 2026-08-05. The devbox uses apt's vim, so shipping
+    # a lazy.nvim tree there placed ~40 KB of config for an editor that is no
+    # longer installed, and every `vim` on that box now resolves to /usr/bin/vim.
+    if [[ "$PLATFORM" == "macos" ]]; then
+        mkdir -p ~/.config/nvim
+        rsync -a "$DOTFILES/config-nvim/" ~/.config/nvim/
+    fi
 
     # tmux (cross-platform — config has no OS-hardcoded paths)
     if [[ -d "$DOTFILES/config-tmux" ]]; then
@@ -469,8 +473,11 @@ setup_dev_tools() {
         unset _cfg
     fi
 
-    # nvim plugins (lazy.nvim auto-bootstraps on first launch)
-    echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"
+    # nvim plugins (lazy.nvim auto-bootstraps on first launch). macOS only —
+    # printing this on the devbox would advertise an editor that is not there.
+    if [[ "$PLATFORM" == "macos" ]]; then
+        echo "    nvim: run 'nvim' once to install plugins via lazy.nvim"
+    fi
 
     # tmux: clone tpm so resurrect/continuum (and any future plugins) can be installed.
     # Config lives at ~/.config/tmux/tmux.conf, so TPM installs plugins to

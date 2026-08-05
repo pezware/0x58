@@ -46,6 +46,12 @@ brew "minikube"
 brew "mise"
 brew "mtr"
 brew "ncdu"
+# neovim is macOS-only, and lives here rather than in the shared mise config for
+# exactly the reason that file's header gives. The devbox uses native vim from
+# apt: it is the rescue editor that has to work before anything else does, and a
+# 40 MB editor plus a plugin manager is not something a headless box should be
+# fetching to let an agent read a file.
+brew "neovim"
 brew "nmap"
 brew "openjdk@17"
 brew "opensc"

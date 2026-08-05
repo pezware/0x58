@@ -21,7 +21,7 @@ For Linux (OrbStack VMs), the same script detects the platform and installs via 
 | Phase | macOS | Linux |
 |---|---|---|
 | Packages | `brew bundle` from Brewfile | `apt install` core tools + mise |
-| Dotfiles | bash, vim, nvim, kitty, git, w3m | bash, vim, nvim, w3m (no kitty) |
+| Dotfiles | bash, vim, nvim, kitty, git, w3m | bash, vim, w3m (no kitty, no nvim) |
 | Dev tools | vim-plug, npm globals | vim-plug, npm globals |
 | Preferences | defaults-dump.sh (Dock, Finder, etc.) | skipped |
 
