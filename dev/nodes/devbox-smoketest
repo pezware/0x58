@@ -160,10 +160,14 @@ fi
 # Local verification is a separate mechanism from GitHub's. sign-push refuses to
 # push unless `git log %G?` reports G, and that depends on allowed_signers — so a
 # correct key with a stale signers file still blocks the workflow.
-if remote 'grep -qF "$(awk "{print \$2}" ~/.ssh/devbox_agent.pub)" ~/.config/git/allowed_signers 2>/dev/null'; then
-    ok "devbox key in allowed_signers" "local verification will resolve"
+#
+# Checks the CONFIGURED key, not a hardcoded one. This named devbox_agent.pub
+# until 2026-08-04, so it went on passing after the global identity moved to the
+# personal key — it was asserting the presence of a key nothing was signing with.
+if remote 'grep -qF "$(awk "{print \$2}" "$(git config --get user.signingkey)".pub)" ~/.config/git/allowed_signers 2>/dev/null'; then
+    ok "configured key in allowed_signers" "local verification will resolve"
 else
-    no "devbox key in allowed_signers" "sign-push will report unsigned even after signing"
+    no "configured key in allowed_signers" "sign-push will report unsigned even after signing"
 fi
 
 # End to end: sign something and verify it. Throwaway repo, so no real history is
@@ -193,6 +197,40 @@ case "$sig2" in
     "") no "signs under ~/src/iden2 too" "signing failed only here — the work include likely overrides signingkey with key::" ;;
     *)  no "signs under ~/src/iden2 too" "git reports '$sig2', expected G" ;;
 esac
+
+# Everything above is LOCAL, and on 2026-08-04 every one of those checks passed
+# while GitHub rejected the signature on a real PR with `unknown_key`. The box has
+# two keys, one per account, and the global identity had been paired with the WORK
+# key; allowed_signers cross-mapped it, so %G? reported G for a key the committing
+# account does not own. Local agreement was configured, not earned.
+#
+# GitHub resolves email -> account -> THAT account's signing keys. Assert that
+# pairing, since it is the only one that decides whether a commit lands verified.
+# The endpoint is public, so this needs no token and no push.
+# $2 is expanded on the BOX, so it must be $HOME-based and double-quoted through.
+# A '~' here silently produces "not a path form" and the check skips green —
+# which is how this assertion first shipped, and exactly the failure it exists to
+# catch. A skipped check is not a passing one; read the amber.
+signing_pair() {   # $1 label   $2 dir on the box   $3 github login that owns the email
+    local kp pub keys em
+    em=$(remote "cd \"$2\" 2>/dev/null && git config --get user.email")
+    kp=$(remote "cd \"$2\" 2>/dev/null && git config --get user.signingkey")
+    case "$kp" in
+        "")      no   "$1 signing key belongs to $3" "no signingkey resolved at $2 — is the repo there?" ; return ;;
+        key::*)  skip "$1 signing key belongs to $3" "key:: form — the agent holds it, nothing on disk to resolve" ; return ;;
+    esac
+    pub=$(remote "awk '{print \$2}' \"$kp.pub\" 2>/dev/null")
+    [[ -n "$pub" ]] || { no "$1 signing key belongs to $3" "cannot read $kp.pub on the box" ; return ; }
+    keys=$(curl -fsS --max-time 15 "https://api.github.com/users/$3/ssh_signing_keys" 2>/dev/null)
+    [[ -n "$keys" ]] || { skip "$1 signing key belongs to $3" "GitHub unreachable — pairing unchecked" ; return ; }
+    if grep -qF "$pub" <<<"$keys"; then
+        ok "$1 signing key belongs to $3" "$em signs with a key $3 owns"
+    else
+        no "$1 signing key belongs to $3" "$em signs with a key $3 does NOT own — pushes succeed and land UNVERIFIED"
+    fi
+}
+signing_pair "pezware" '$HOME/src/public/0x58'       achtungandy
+signing_pair "iden2"   '$HOME/src/iden2/go-monorepo' arbeitandy
 
 who=$(remote 'ssh -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i ~/.ssh/devbox_agent -T git@github.com 2>&1 | head -1')
 case "$who" in
