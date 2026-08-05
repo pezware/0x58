@@ -226,15 +226,29 @@ stale copy told agents that container tests were impossible, which by then was
 false. Nothing drifted maliciously. It drifted because a copy existed that no
 commit governed.
 
-There is a deliberate wrinkle worth knowing before it surprises you.
-`restore.sh` will **not** overwrite an existing `~/.claude/settings.json`; it
-lands the file beside it as `settings.0x58-sandbox.json` and tells you to merge.
-That guard exists so a restore cannot silently drop hooks or permissions — but it
-also means **settings changes never auto-apply**, and that is exactly the gap
-through which the live file and this repo diverge.
+`restore.sh` **merges** the keys this repo owns into an existing
+`~/.claude/settings.json`, as of 2026-08-05. It replaces `sandbox` wholesale, and
+under `hooks` replaces only its own `SessionStart` entry — matched by command
+path — so hand-added hooks and every other event survive. A backup lands at
+`settings.json.bak-restore`, and it prints which keys moved.
 
-So the honest workflow is: edit here, commit, pull on the box, restore, then
-merge the sandbox block by hand and diff to confirm.
+It used to refuse instead, landing `settings.0x58-sandbox.json` beside the live
+file with a NOTE to merge by hand. That guard was right about the danger — a
+blind overwrite drops the UI preferences Claude Code writes itself — but its
+failure mode was worse than the clobber it prevented: **settings changes simply
+never applied, silently.** It swallowed a credential change on 2026-08-04, then a
+SessionStart hook and an allowlist removal on 2026-08-05. Each time the change
+was committed, reviewed, merged and restored; each time the box carried on with
+the old behaviour until an agent hit exactly the problem the change was meant to
+fix.
+
+The lesson generalises past this file: **a safety guard that does nothing and
+says nothing is indistinguishable from a broken one.** If a guard must decline,
+it has to fail loudly enough to interrupt the workflow it is protecting, and
+"prints a NOTE among sixty lines of restore output" is not that.
+
+So the workflow is now: edit here, commit, pull on the box, restore. Verify
+rather than assume:
 
 ```bash
 # on the devbox, after the change is merged to main

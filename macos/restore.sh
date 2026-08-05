@@ -210,16 +210,67 @@ place_dotfiles() {
         done
         unset _d
 
+        # Settings: MERGE the keys this repo owns, rather than staging a copy and
+        # hoping someone merges it.
+        #
+        # This used to land settings.0x58-sandbox.json beside the live file and
+        # print a NOTE. The guard was right — a blind overwrite would drop hooks
+        # and permissions Claude Code writes itself — but the consequence was that
+        # settings changes NEVER applied. It swallowed a credential change on
+        # 2026-08-04 and a SessionStart hook plus an allowlist removal on
+        # 2026-08-05, each time silently, each time discovered only when an agent
+        # hit the behaviour the change was meant to fix. A guard whose failure mode
+        # is "nothing happened and nobody was told" is worse than the clobber it
+        # prevents.
+        #
+        # So merge narrowly instead. `sandbox` is wholly owned by this repo and is
+        # replaced. Under `hooks`, only OUR SessionStart entry is replaced --
+        # matched by its command path -- so hand-added hooks and every other event
+        # survive. Anything else in the file is untouched by construction.
         if [[ -f "$LINUX_DIR/claude-settings.json" ]]; then
             mkdir -p ~/.claude
-            if [[ -f ~/.claude/settings.json ]]; then
-                # Never clobber existing settings — a silent overwrite here could
-                # drop hooks or permissions the user depends on. Land it beside
-                # the real file and make the merge an explicit decision.
-                cp -v "$LINUX_DIR/claude-settings.json" ~/.claude/settings.0x58-sandbox.json
-                echo "    NOTE: ~/.claude/settings.json exists — merge sandbox block from settings.0x58-sandbox.json"
-            else
+            if [[ ! -f ~/.claude/settings.json ]]; then
                 cp -v "$LINUX_DIR/claude-settings.json" ~/.claude/settings.json
+            else
+                SETTINGS_SRC="$LINUX_DIR/claude-settings.json" python3 - <<'PY'
+import json, os, shutil, sys
+
+live_p = os.path.expanduser('~/.claude/settings.json')
+repo = json.load(open(os.environ['SETTINGS_SRC']))
+try:
+    live = json.load(open(live_p))
+except Exception as e:
+    print(f"    claude: settings.json is not valid JSON ({e}) — left alone", file=sys.stderr)
+    sys.exit(0)
+
+before = json.dumps(live, sort_keys=True)
+shutil.copy2(live_p, live_p + '.bak-restore')
+
+changed = []
+if live.get('sandbox') != repo.get('sandbox'):
+    live['sandbox'] = repo['sandbox']
+    changed.append('sandbox')
+
+# Replace only the entry whose command we install; leave every other hook alone.
+ours = {h['hooks'][0]['command']
+        for h in repo.get('hooks', {}).get('SessionStart', [])
+        if h.get('hooks')}
+if ours:
+    kept = [h for h in live.get('hooks', {}).get('SessionStart', [])
+            if not (h.get('hooks') and h['hooks'][0].get('command') in ours)]
+    merged = kept + repo['hooks']['SessionStart']
+    if live.get('hooks', {}).get('SessionStart') != merged:
+        live.setdefault('hooks', {})['SessionStart'] = merged
+        changed.append('hooks.SessionStart')
+
+if json.dumps(live, sort_keys=True) == before:
+    print('    claude: settings already in sync')
+else:
+    with open(live_p, 'w') as fh:
+        json.dump(live, fh, indent=2)
+        fh.write('\n')
+    print(f"    claude: settings merged ({', '.join(changed)}) — backup at settings.json.bak-restore")
+PY
             fi
         fi
         # Codex hardening goes into the REAL config, not a profile. A profile has
