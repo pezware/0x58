@@ -52,10 +52,34 @@ thinking about it. If a `gh` command ever answers `please run gh auth login`, do
 **not** run `gh auth login` and do **not** reach for a token — re-run
 `command -v gh` and fix the ordering.
 
-Two things that look like breakage and are not: `~/.config/gh/` is empty, and
-`$GH_TOKEN` is unset in your shell. The wrapper injects the token into gh's own
-process at exec time, so both are *always* empty here even when gh works
-perfectly. Probe with a real command rather than inspecting config.
+Three things that look like breakage and are not: `~/.config/gh/` is empty,
+`$GH_TOKEN` is unset in your shell, and **gh itself tells you to log in**. The
+wrapper injects the token into gh's own process at exec time, so the first two
+are *always* true here even when gh works perfectly.
+
+The third is the one that catches people, because it is gh's own voice:
+
+```
+To get started with GitHub CLI, please run: gh auth login
+```
+
+**That message is wrong on this box and following it is a dead end.** It means
+only that no token was selected — almost always because you are not inside a
+repo. `gh auth status` is useless here for the same reason: it reports on stored
+credentials, and there are none by design.
+
+On 2026-08-05 a session sat in `~/src/iden2`, ran gh, read that line, concluded
+"gh isn't authenticated on this box" and stopped to ask the human — while gh one
+directory down worked fine. Probe **inside the repo** with a real command:
+
+```bash
+cd ~/src/iden2/go-monorepo && gh repo view --json nameWithOwner
+```
+
+The wrapper now prints its own diagnosis ahead of gh's, so you should see the
+real reason first. If you ever see gh's bare message with nothing above it, the
+wrapper is not on PATH — that is the actual bug, and `gh auth login` still is not
+the fix.
 
 **2 — Worktree off `main`.** Never work on the primary checkout.
 
