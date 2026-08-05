@@ -45,10 +45,6 @@
           "mode": "deny"
         },
         {
-          "path": "~/.codex/auth.json",
-          "mode": "deny"
-        },
-        {
           "path": "~/.npmrc",
           "mode": "deny"
         },

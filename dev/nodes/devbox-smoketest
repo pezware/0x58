@@ -312,21 +312,41 @@ remote 'grep -q "allowAllUnixSockets" ~/.claude/settings.json 2>/dev/null' \
     && ok "unix sockets reachable in-session" "allowAllUnixSockets on — container tiers can run" \
     || no "unix sockets reachable in-session" "allowAllUnixSockets absent — integration/e2e tiers cannot run"
 
-# With AF_UNIX open, these denials are the whole boundary around the two
-# subscription refresh tokens — nothing else stands between an agent and them.
-# Both must sit in sandbox.credentials.files with mode deny; denyWrite is not
-# enough, and ~/.codex/auth.json was listed ONLY under denyWrite until 2026-08-04
-# while the docs claimed it was denied outright.
+# The two subscription refresh tokens are asserted in OPPOSITE directions, and
+# that asymmetry is the whole point. With AF_UNIX open, the deny-list is the only
+# thing standing between an agent and the CLAUDE token, which buys the account.
+# The CODEX token buys a review subscription, and is readable on purpose as of
+# 2026-08-05 so `codex exec` runs in-session — making independent review part of
+# the loop instead of something the human relays by hand.
+#
+# This assertion INVERTED for codex on 2026-08-05. It used to demand both be
+# denied, which was right until the posture changed; leaving it would have
+# reported a healthy box as leaking a credential. A silent revert in EITHER
+# direction is a posture change, so both directions fail loudly.
+#
+# Asserted through the parsed JSON, not grep: ~/.codex/auth.json still appears in
+# denyWrite as a bare string, so grepping for the path matches a line that proves
+# nothing about read access.
 #
 # Unlike its neighbours this check inspects rather than does. The honest in-session
 # control needs a live Claude session, and an agent may decline to run a
 # credential probe at all — correct of it, but a smoke test must not depend on a
-# judgement call landing one way. Run the probe in linux/sandbox.md by hand.
-for cred in claude/.credentials.json codex/auth.json; do
-    remote "grep -A1 -e path.*${cred##*/} ~/.claude/settings.json | grep -q mode.*deny" \
-        && ok "~/.${cred%%/*}/${cred#*/} denied to agents" "in credentials.files as deny" \
-        || no "~/.${cred%%/*}/${cred#*/} denied to agents" "NOT denied — an agent can read the refresh token"
-done
+# judgement call landing one way. Run the probes in linux/sandbox.md by hand.
+cred_denied() {
+    remote "python3 -c \"
+import json, os, sys
+d = json.load(open(os.path.expanduser('~/.claude/settings.json')))
+f = d.get('sandbox', {}).get('credentials', {}).get('files', [])
+sys.exit(0 if any(e.get('path') == '$1' and e.get('mode') == 'deny' for e in f) else 1)\""
+}
+
+cred_denied '~/.claude/.credentials.json' \
+    && ok "claude token denied to agents" "in credentials.files as deny" \
+    || no "claude token denied to agents" "NOT denied — an agent can read the refresh token"
+
+cred_denied '~/.codex/auth.json' \
+    && no "codex token readable to agents" "denied — in-session codex exec is stranded" \
+    || ok "codex token readable to agents" "deliberate — independent review runs in-session"
 
 # ── login-execution surfaces ────────────────────────────────────────────────
 # Added 2026-08-04 after a probe found allowWrite was "~", not "~/src" as
