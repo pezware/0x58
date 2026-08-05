@@ -123,10 +123,12 @@ go test -tags=integration ./...     # works — needs the docker shim first
 
 Container-backed tests used to be impossible here. They are not any more:
 `allowAllUnixSockets` is on and the podman socket answers from inside the
-sandbox. You still need a `docker` shim and a ghcr login before anything pulls —
-both are in [containers and the k8s tier](patterns/containers-and-k8s.md), along
-with what that open socket costs. Read it before your first container command;
-skipping it turns a five-minute setup into an hour of misattributed errors.
+sandbox. You still need a `docker` shim before anything pulls — it is in
+[containers and the k8s tier](patterns/containers-and-k8s.md), along with what
+that open socket costs. Read it before your first container command; skipping it
+turns a five-minute setup into an hour of misattributed errors. You do **not**
+need a ghcr login: that happened server-side, and private `ghcr.io` mirrors pull
+without any credential of yours.
 
 **7 — Comment on the issue or PR.** Report what actually happened, including
 failures and skipped steps.
@@ -205,7 +207,7 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
 | container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
-| ghcr pull 403s **after a successful login** | fine-grained PATs cannot access ghcr at all — a GitHub gap, not your setup. Use the upstream fallback the Dockerfile documents and report it |
+| ghcr pull 403s | the podman **service** holds the login, not you — check `podman login --get-login ghcr.io` from an unsandboxed shell before suspecting scopes. A rebuild wipes it. Do NOT try to log in with a token yourself |
 | `kubectl` cannot reach a kind cluster | loopback TCP is still blocked (separate from AF_UNIX) → drive the cluster from a toolbox container on the `kind` network, not by fixing the kubeconfig |
 | `pnpm install` refuses a fresh version | the 7-day supply-chain cooldown, working as intended → add a dated `minimumReleaseAgeExclude` entry, never lower the floor |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |

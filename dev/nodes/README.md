@@ -420,14 +420,21 @@ stays the source of truth where it exists.
 On the devbox, put a **separate, narrowly-scoped** Linode PAT in that file —
 Linodes + Volumes read/write, Events read-only, and nothing else. The Mac's token
 is full-access, and an injected agent with it could delete the entire account.
-The file is in the sandbox's `credentials.files` deny list, so agents cannot read
-it; it exists for you, driving the fleet from a phone.
+
+**Agents can read this file.** This paragraph claimed the opposite until
+2026-08-04 — that it sits in the sandbox's `credentials.files` deny list — and
+that stopped being true on 2026-08-03, when `c99f538` removed it so `gh` could
+authenticate at all. The live deny list is the two OAuth token files, `~/.npmrc`,
+`~/.config/gh/hosts.yml` and `~/.git-credentials`; `credentials.env` is not among
+them. Scope every secret in here on the assumption that a session can print it.
+That is why the Linode PAT is narrow and why `GHCR_TOKEN` is `read:packages` only.
 
 ```bash
 install -m 600 /dev/null ~/.config/0x58/credentials.env
 cat > ~/.config/0x58/credentials.env <<'ENV'
 LINODE_TOKEN=<scoped-pat>
 TF_VAR_tailscale_auth_key=<reusable key tagged tag:k8s>
+GHCR_TOKEN=<classic PAT, read:packages ONLY>
 ENV
 ```
 
@@ -537,7 +544,8 @@ never captured in this repo.
 #    3. delete the OLD node in the Tailscale admin console  <-- do not skip
 ./dev/nodes/devbox-keys restore           # 4. SSH keys back from Keychain escrow
 #    5. re-place ~/.config/0x58/credentials.env (below)
-./dev/nodes/devbox-smoketest              # 6. prove the loop actually works
+#    6. re-do the ghcr login (below) <-- root disk is gone, so auth.json is too
+./dev/nodes/devbox-smoketest              # 7. prove the loop actually works
 ```
 
 **Step 3 is not optional.** Tailscale will not reuse a hostname while a stale
@@ -545,7 +553,7 @@ record holds it, so the new node joins as `pezware-devbox-1`. The box is then
 perfectly healthy and completely unreachable by the name every script uses.
 `devbox-smoketest` checks for the suffix explicitly.
 
-**Step 5** has no automated path, because the file holds four secrets that
+**Step 5** has no automated path, because the file holds five secrets that
 deliberately never enter this repo or a backup:
 
 ```bash
@@ -554,8 +562,32 @@ kc() { security find-generic-password -s "$1" -a "$USER" -w; }
   printf 'GH_TOKEN_IDEN2=%s\n'            "$(kc gh-pat-devbox-iden2)"
   printf 'LINODE_TOKEN=%s\n'              "$(kc linode-pat-devbox)"
   printf 'TF_VAR_tailscale_auth_key=%s\n' "$(kc tailscale-devbox-authkey)"
+  printf 'GHCR_TOKEN=%s\n'                "$(kc ghcr-pat-devbox)"
 } | ssh devbox 'umask 077; mkdir -p ~/.config/0x58 && cat > ~/.config/0x58/credentials.env'
 ```
+
+**Step 6** is separate from step 5 on purpose. Putting `GHCR_TOKEN` in the file
+is not the same as being logged in: the thing that pulls is the podman *service*,
+which reads its own `~/.config/containers/auth.json`, and that file lives on the
+root disk a rebuild destroys. Miss this and every ghcr pull 403s while the token
+sits correctly in place — which reads as a scope problem and is not one.
+
+```bash
+ssh devbox 'umask 077; bash -lc "
+  set -a; . ~/.config/0x58/credentials.env; set +a
+  mkdir -p ~/.config/containers
+  printf %s \"\$GHCR_TOKEN\" | podman login ghcr.io -u arbeitandy --password-stdin \
+    --authfile ~/.config/containers/auth.json"'
+
+# prove it, from the Mac — expect: arbeitandy
+ssh devbox 'bash -lc "podman login --get-login ghcr.io"'
+```
+
+Why an explicit `--authfile`: podman's default is
+`$XDG_RUNTIME_DIR/containers/auth.json`, and `XDG_RUNTIME_DIR` is **unset** in
+every non-interactive and agent shell on this box (the same gotcha that breaks
+the socket probe). `~/.config/containers/auth.json` is deterministic and survives
+a reboot; a runtime-dir login does not survive either.
 
 Piped over stdin on purpose — a value passed as an argument would be visible in
 `ps` on the way through.
