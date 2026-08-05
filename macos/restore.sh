@@ -41,6 +41,22 @@ install_packages() {
         # shellcheck disable=SC2086  # word splitting is intended: one package per line
         sudo apt install -y $pkgs
 
+        # Compose provider — deliberately NOT in packages.txt, because it is the
+        # one package that must not bring its Recommends. docker-compose
+        # recommends docker-cli, which would put a real /usr/bin/docker on PATH
+        # that talks to /var/run/docker.sock (absent on this rootless box) and
+        # shadows the podman shim agents are told to use. Two confusing failures
+        # for the price of one convenience.
+        #
+        # docker-compose over podman-compose: podman prefers it when both are
+        # present, and it is the reference Compose-spec implementation, so an
+        # existing docker-compose.yml runs unmodified. --no-install-recommends
+        # keeps it to a single static binary depending only on libc6.
+        if ! command -v docker-compose &>/dev/null; then
+            echo "==> Installing compose provider (docker-compose, no recommends)"
+            sudo apt install -y --no-install-recommends docker-compose
+        fi
+
         # mise
         if ! command -v mise &>/dev/null; then
             curl https://mise.run | sh
@@ -380,6 +396,21 @@ SSHCFG
             mkdir -p ~/.local/bin
             install -m 755 "$LINUX_DIR/gh-token-wrapper" ~/.local/bin/gh
             echo "    gh: token-selecting wrapper installed to ~/.local/bin/gh"
+        fi
+
+        # SessionStart hook: states the box's divergences before an agent can be
+        # wrong about them. Wired in claude-settings.json, which names this
+        # absolute path -- settings.json does not expand ~ in hook commands.
+        #
+        # This exists because the devbox-workflow skill was present, current, and
+        # still did not fire on 2026-08-05: an agent read gh's own "run gh auth
+        # login" and believed it. Skills are elected by the model; a hook is run
+        # by the harness, which is the difference that matters for facts needed
+        # before the model knows it needs them.
+        if [[ -f "$LINUX_DIR/devbox-session-context" ]]; then
+            mkdir -p ~/.local/bin
+            install -m 755 "$LINUX_DIR/devbox-session-context" ~/.local/bin/devbox-session-context
+            echo "    claude: SessionStart context hook installed"
         fi
 
         # systemd user unit for the Codex broker.

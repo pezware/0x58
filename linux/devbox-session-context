@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# SessionStart hook: tell the agent what this box does differently, before it
+# has a chance to be wrong about it.
+#
+# WHY A HOOK AND NOT A SKILL
+#
+# The devbox-workflow skill already documents all of this, was byte-identical to
+# the repo copy, and still did not fire on 2026-08-05: an agent in ~/src/iden2
+# ran gh, got "please run gh auth login", and stopped to ask the human. Nothing
+# in that moment suggested a devbox quirk rather than an ordinary auth problem,
+# so no skill was elected. Skills are chosen by the model; they cannot cover the
+# facts it needs BEFORE it knows it needs them.
+#
+# A SessionStart hook is executed by the harness, not elected by the model, and
+# its additionalContext lands before the first prompt. That is the difference
+# that matters here.
+#
+# WHY IT PROBES INSTEAD OF RECITING
+#
+# This repo keeps relearning that a sentence cannot fail. A hook that hardcoded
+# "the podman socket answers" would keep saying so after it stopped being true --
+# which is exactly how a stale skill told agents container tests were impossible
+# for two days. So every line below is measured at session start. If something is
+# broken, the agent is told it is broken rather than told it works.
+#
+# Keep this SHORT. It is injected into every session, so it costs tokens every
+# time. Facts earn their place by being things an agent will otherwise get wrong
+# AND that cost real time.
+set -uo pipefail
+
+# Cheap probes only — this runs before the user's first prompt.
+# Resolve gh two ways: what PATH gives, and whether the wrapper exists at all.
+# Reporting only the first would cry wolf -- PATH here depends on how `claude`
+# itself was launched, so "not found" may mean "your PATH is thin", not "gh is
+# missing", and a false alarm in a session preamble is worse than silence.
+gh_path=$(command -v gh 2>/dev/null || true)
+wrapper="$HOME/.local/bin/gh"
+case "$gh_path" in
+    "$wrapper")  gh_note="gh -> wrapper (correct)" ;;
+    */shims/gh)  gh_note="gh -> mise shim (WRONG: raw gh, no token). Use $wrapper" ;;
+    "")          if [ -x "$wrapper" ]; then
+                     gh_note="gh not on your PATH, but the wrapper exists. Call $wrapper directly"
+                 else
+                     gh_note="gh wrapper MISSING from $wrapper -- re-run restore.sh"
+                 fi ;;
+    *)           gh_note="gh -> $gh_path (expected $wrapper)" ;;
+esac
+
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+if curl -s -o /dev/null --max-time 3 --unix-socket "$sock" http://d/_ping 2>/dev/null; then
+    podman_note="podman socket answers at $sock"
+else
+    podman_note="podman socket NOT answering at $sock -- container tiers are down"
+fi
+
+compose_note="no compose provider installed -- \`docker compose\` cannot work"
+for c in podman-compose docker-compose; do
+    command -v "$c" >/dev/null 2>&1 && { compose_note="compose provider: $c"; break; }
+done
+
+python3 - "$gh_note" "$podman_note" "$compose_note" "$sock" <<'PY'
+import json, sys
+
+gh, podman, compose, sock = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+ctx = f"""Devbox environment (measured at session start — trust these over assumptions):
+
+- **gh is repo-scoped.** {gh}
+  The wrapper picks a token from the origin remote's OWNER, so it has none
+  outside a repo. `cd` into ~/src/<org>/<repo> before any gh command. An empty
+  ~/.config/gh and an unset $GH_TOKEN are CORRECT here — the token is injected
+  per invocation. If gh says "please run gh auth login", that advice is wrong on
+  this box: never run it, never reach for a PAT.
+
+- **Containers: {podman}**
+  Use `podman --remote --url unix://{sock}`. Plain `podman` tries to build local
+  runtime state and dies with "read-only file system" or "newuidmap: Operation
+  not permitted" — that is the wrong runtime dir, NOT a privilege wall.
+  {compose}
+
+- **mise shims are not on PATH** in the non-interactive shell your Bash tool
+  gets. `go`, `kubectl`, `codex` etc. need ~/.local/share/mise/shims/<tool>, or
+  run once: export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+  — ~/.local/bin MUST stay first or it shadows the gh wrapper.
+
+- **Egress is unrestricted** and is the point of this box: fetch packages, read
+  docs, debug. Container image pulls originate outside the sandbox's network
+  path, so they are unaffected either way.
+
+Full detail, including the k8s tier and teardown duties: the devbox-workflow
+skill. Read it before your first container or PR command."""
+
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": ctx,
+    }
+}))
+PY
