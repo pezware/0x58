@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOTFILES="$SCRIPT_DIR/dotfiles"
 LINUX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/linux"
+BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/bin"
 
 # --- Detect platform ---
 OS="$(uname -s)"
@@ -555,6 +556,64 @@ setup_linux_server() {
 }
 
 # --- Phase 5: Manual steps reminder ---
+# --- Phase 3b: keeping ~/src current ---
+setup_src_sync() {
+    echo "==> src-sync (keep ~/src fast-forwarded)"
+
+    mkdir -p ~/.local/bin
+    local s
+    for s in src-sync src-sync-remind; do
+        [[ -f "$BIN_DIR/$s" ]] && install -m 755 "$BIN_DIR/$s" ~/.local/bin/"$s"
+    done
+    echo "    installed: ~/.local/bin/src-sync, ~/.local/bin/src-sync-remind"
+
+    if [[ "$PLATFORM" == "linux" ]]; then
+        # Automatic here, deliberately. There is no SSH agent on the devbox --
+        # ~/.ssh/config pins an on-disk key -- so an unattended fetch cannot
+        # produce a prompt, which is the one thing that would make a timer
+        # obnoxious. Enabled, unlike the codex broker above, because it is not a
+        # per-repo choice: it either applies to this machine's ~/src or to nothing.
+        if [[ -f "$LINUX_DIR/src-sync.service" && -f "$LINUX_DIR/src-sync.timer" ]]; then
+            mkdir -p ~/.config/systemd/user
+            cp "$LINUX_DIR/src-sync.service" "$LINUX_DIR/src-sync.timer" ~/.config/systemd/user/
+            systemctl --user daemon-reload 2>/dev/null || true
+            if systemctl --user enable --now src-sync.timer 2>/dev/null; then
+                echo "    systemd: src-sync.timer enabled (hourly, catches up after downtime)"
+            else
+                echo "    systemd: src-sync.timer NOT enabled — no user bus; run" >&2
+                echo "             'systemctl --user enable --now src-sync.timer' from a login shell" >&2
+            fi
+        fi
+    else
+        # The Mac gets a REMINDER, not a sync, and the reason is the Secure
+        # Enclave. Whether a git fetch costs a fingerprint is a per-key Secretive
+        # setting that can change without touching this repo. Measured 2026-08-05
+        # it is off, so an hourly sync WOULD work today -- and would start
+        # throwing a biometric prompt every hour the moment it flips. An
+        # unattended job that prompts trains you to dismiss it. The reminder needs
+        # no key and no network, so it survives that setting either way.
+        local src="$DOTFILES/launchd/com.0x58.src-sync-remind.plist"
+        local plist=~/Library/LaunchAgents/com.0x58.src-sync-remind.plist
+        if [[ -f "$src" ]]; then
+            mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+            sed -e "s#SRC_SYNC_REMIND_PATH#$HOME/.local/bin/src-sync-remind#" \
+                -e "s#SRC_SYNC_LOG#$HOME/Library/Logs/src-sync.log#" \
+                "$src" > "$plist"
+            # bootout before bootstrap: launchd refuses to bootstrap a label that
+            # is already registered and reports it as a generic input/output
+            # error, which reads like a malformed plist rather than "already
+            # loaded". Doing this unconditionally makes re-running restore safe.
+            launchctl bootout "gui/$UID/com.0x58.src-sync-remind" 2>/dev/null || true
+            if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+                echo "    launchd: src-sync-remind loaded (every 6h, silent unless something is stale)"
+            else
+                echo "    launchd: src-sync-remind NOT loaded — run" >&2
+                echo "             launchctl bootstrap gui/$UID $plist" >&2
+            fi
+        fi
+    fi
+}
+
 print_manual_steps() {
     echo ""
     echo "=========================================="
@@ -640,6 +699,7 @@ echo ""
 install_packages
 place_dotfiles
 setup_dev_tools
+setup_src_sync
 setup_pam_touchid
 setup_linux_server
 apply_macos_defaults

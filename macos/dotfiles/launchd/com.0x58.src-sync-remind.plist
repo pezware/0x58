@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Remind that repos under ~/src have gone stale. Does NOT sync them.
+
+  The Mac deliberately does not run src-sync on a timer, and the reason is the
+  Secure Enclave. Its git remotes sign with Secretive-held keys, and "does a
+  signature cost a fingerprint" is a per-key setting that can change at any time.
+  Measured 2026-08-05 it is off, so an hourly sync WOULD work today -- and would
+  start throwing a biometric prompt every hour the moment that setting flips. An
+  unattended job that prompts trains you to dismiss it, and then you dismiss the
+  one that mattered.
+
+  So the Mac nudges and you run `src-sync` when it suits you. The devbox, which
+  has no agent at all, syncs on a systemd timer instead: linux/src-sync.timer.
+
+  Note there is no SSH_AUTH_SOCK here, and that is the point -- this job touches
+  no key, opens no socket and needs no network. It reads the mtime of each repo's
+  FETCH_HEAD and nothing else, so it keeps working whatever Secretive is set to.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.0x58.src-sync-remind</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>SRC_SYNC_REMIND_PATH</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!--
+      Every 6 hours. The script is silent unless something is actually stale, so
+      this is not six notifications a day -- it is one on the day you have been
+      heads-down in a single repo for a while, which is when it is worth having.
+    -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <!--
+      RunAtLoad is false: a restore that immediately pops a notification about
+      repos you have not touched yet is noise attached to the wrong event.
+    -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>SRC_SYNC_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>SRC_SYNC_LOG</string>
+</dict>
+</plist>

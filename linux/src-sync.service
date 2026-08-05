@@ -1,0 +1,32 @@
+[Unit]
+# Fast-forward every repo under ~/src that is safe to fast-forward.
+# The guards, and why each one exists, are in the header of bin/src-sync.
+Description=Fast-forward clean repos under ~/src
+Documentation=file:%h/src/public/0x58/bin/src-sync
+
+# Wants= rather than Requires=: a boot with no network should still let the
+# timer fire and report, not leave the unit permanently failed.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/src-sync
+
+# The devbox has no SSH agent — ~/.ssh/config pins IdentityFile to an on-disk
+# key, so fetching needs no environment beyond PATH. This is exactly why the
+# script's concurrency default is 8 here and 1 on macOS.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# One run should never outlast its own interval. A hung fetch against a dead
+# remote would otherwise stack instances until the box notices in some unrelated
+# way; failing at 20 minutes puts the reason in the journal instead.
+TimeoutStartSec=20min
+
+# Nice/IOSchedulingClass: this is background hygiene competing with an agent
+# doing real work on a 4 GB box. It should always lose that contest.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

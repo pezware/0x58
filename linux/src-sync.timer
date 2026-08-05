@@ -1,0 +1,17 @@
+[Unit]
+Description=Hourly src-sync (fast-forward clean repos under ~/src)
+
+[Timer]
+# OnCalendar, not OnUnitActiveSec, specifically so Persistent= works: it only
+# applies to calendar timers. This box is rebuilt and rebooted often enough that
+# "catch up on the run you missed while off" is the behaviour worth having.
+OnCalendar=hourly
+Persistent=true
+
+# Every repo fetches from github.com, so an exact-on-the-hour start means ~40
+# connections in one burst, on every machine running this, forever. The jitter
+# costs nothing and is the polite default.
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

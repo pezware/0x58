@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# Notify when repos under ~/src have gone stale. Does NOT sync anything.
+#
+#   src-sync-remind [--stale-hours N] [root]
+#
+# WHY THIS EXISTS, AND WHY IT DOES NOT FETCH
+#
+# On the devbox, src-sync runs on a timer and this script is unnecessary: there is
+# no SSH agent there, ~/.ssh/config pins an on-disk key, and an unattended fetch
+# is unremarkable.
+#
+# The Mac is different. Its git remotes authenticate with Secure-Enclave keys held
+# by Secretive, and whether a signature costs a fingerprint is a per-key setting
+# that can be turned on at any time. Measured 2026-08-05 it is OFF -- twenty-odd
+# fetches ran unprompted -- so an hourly job WOULD work today. It would also start
+# throwing a biometric prompt at you every hour on the day someone flips that
+# setting, and an unattended job that prompts is worse than no job: you learn to
+# dismiss it, and then you dismiss the one that mattered.
+#
+# So the Mac gets a nudge instead of a daemon, and the nudge is built to survive
+# that setting changing -- it touches no key, opens no socket, and needs no
+# network. Staleness comes from the mtime of each repo's FETCH_HEAD, which git
+# rewrites on every fetch. That is enough to say "twelve repos have not been
+# fetched in a week" without asking anything of the Enclave.
+set -uo pipefail
+
+STALE_HOURS="${SRC_SYNC_STALE_HOURS:-24}"
+ROOT=""
+for arg in "$@"; do
+    case "$arg" in
+        --stale-hours=*) STALE_HOURS="${arg#*=}" ;;
+        -h|--help)       sed -n '3,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)              echo "unknown flag: $arg" >&2; exit 2 ;;
+        *)               ROOT="$arg" ;;
+    esac
+done
+ROOT="${ROOT:-${SRC_ROOT:-$HOME/src}}"
+[ -d "$ROOT" ] || { echo "src-sync-remind: no such directory: $ROOT" >&2; exit 2; }
+case "$STALE_HOURS" in ''|*[!0-9]*) echo "src-sync-remind: --stale-hours must be an integer" >&2; exit 2 ;; esac
+
+CUTOFF=$(( $(date +%s) - STALE_HOURS * 3600 ))
+stale=0
+oldest_days=0
+
+while read -r gitpath; do
+    repo="$(dirname "$gitpath")"
+
+    # No remote means nothing to be stale against -- a local scratch repo is not
+    # a reminder, it is just a directory.
+    git -C "$repo" remote get-url origin >/dev/null 2>&1 || continue
+
+    # FETCH_HEAD is rewritten by every fetch, including one that found nothing to
+    # do, so its mtime is "when we last asked the remote" rather than "when
+    # something last changed". That is the question being asked here.
+    #
+    # A repo that has never been fetched since clone has no FETCH_HEAD at all.
+    # Count it: never-fetched is the staleness this is looking for, not an
+    # exception to it.
+    fh="$repo/$(git -C "$repo" rev-parse --git-dir 2>/dev/null)/FETCH_HEAD"
+    if [ -f "$fh" ]; then
+        # stat(1) is not portable: BSD wants -f %m, GNU wants -c %Y. Try BSD
+        # first since this script's whole reason for existing is macOS.
+        mtime=$(stat -f %m "$fh" 2>/dev/null || stat -c %Y "$fh" 2>/dev/null)
+    else
+        mtime=0
+    fi
+    [ -n "$mtime" ] || mtime=0
+
+    if [ "$mtime" -lt "$CUTOFF" ]; then
+        stale=$((stale+1))
+        if [ "$mtime" -gt 0 ]; then
+            days=$(( ( $(date +%s) - mtime ) / 86400 ))
+            [ "$days" -gt "$oldest_days" ] && oldest_days=$days
+        fi
+    fi
+done < <(find "$ROOT" -mindepth 2 -maxdepth 3 -name .git -print 2>/dev/null | sort)
+
+[ "$stale" -eq 0 ] && exit 0
+
+MSG="$stale repo(s) not fetched in ${STALE_HOURS}h"
+[ "$oldest_days" -gt 0 ] && MSG="$MSG — oldest ${oldest_days}d"
+
+# Print regardless, so running this by hand tells you something and so launchd's
+# log has a record even if the notification is suppressed.
+printf 'src-sync-remind: %s — run: src-sync\n' "$MSG"
+
+if command -v osascript >/dev/null 2>&1; then
+    # Notifications posted this way are attributed to the host app and are
+    # silently dropped if its notification permission was never granted. That
+    # failure is invisible by design on macOS, which is why the line above prints
+    # unconditionally rather than only when osascript is missing.
+    osascript -e "display notification \"$MSG\" with title \"src-sync\" subtitle \"run src-sync to fast-forward\"" \
+        >/dev/null 2>&1 || true
+fi
