@@ -79,6 +79,21 @@ name:
 git -C ~/src/<org>/<repo> worktree add ../<repo>-<task-slug> <task-slug>
 ```
 
+**2a — Gather context, then write the plan.** Do this *in* the worktree, before
+the first edit. Read the code the issue touches and find two or three existing
+patterns to follow — this repo's conventions are not guessable from the issue
+text, and matching them is most of what makes a PR reviewable.
+
+Write the plan as `IMPLEMENTATION_PLAN.md` in the worktree root: 3–5 stages, each
+with a goal and how you will know it worked. It is **gitignored and local-only** —
+never `git add` it, never cite it in a commit message or PR body. Collaborators do
+not have it, and references to it rot within a day.
+
+Working several issues at once? Decide the branch shape before you start rather
+than after. One worktree per PR is the default; issues share a branch only when
+they share a change. Otherwise review is harder for everyone and a revert takes
+down work that was fine.
+
 **3 — Work, then commit signed.** Signing works with no agent and no tap, because
 `user.signingkey` is a **path** to an on-disk key.
 
@@ -173,8 +188,14 @@ ask a human to look, because self-review misses what you already believed.
 ```
 
 Use the **shim path** — `mise activate` has not run in a non-interactive shell,
-so plain `codex` is `command not found`. Prompt via stdin (`-`) to avoid shell
-escaping. `hook: Stop Failed` in the output is a disabled plugin hook; benign.
+so plain `codex` is `command not found` unless you ran the `export PATH` line in
+step 1. Prompt via stdin (`-`) to avoid shell escaping. `hook: Stop Failed` in the
+output is a disabled plugin hook; benign.
+
+This works in-session as of **2026-08-05**, and did not between 2026-08-03 and
+then: `~/.codex/auth.json` was on the sandbox credentials deny list, so `codex`
+died with `Permission denied (os error 13)`. If you see that today the box is
+running stale settings — see the table below, and do not run `codex login`.
 
 Tell Codex which checks are already green and ask it to focus on static analysis —
 the Go build cache lives outside the workspace, so it cannot usefully run tests.
@@ -192,6 +213,29 @@ anchor line comments. The exact recipe is in your global instructions under
 
 Approving, requesting changes, merging, and commenting on someone else's PR are
 outward-facing. Get explicit go-ahead first.
+
+**9 — Once the PR merges: tear down the worktree and re-sync.** A merged branch
+that still has a worktree is how this box accumulates confusing state —
+`git worktree list` grows, `main` reads as behind, and the next task branches off
+something stale.
+
+```bash
+cd ~/src/<org>/<repo>
+git worktree remove ../<repo>-<task-slug>    # --force only if you know what is dirty
+git branch -d <task-slug>                    # -d, NOT -D
+git fetch origin main && git merge --ff-only origin/main
+git worktree prune
+```
+
+**`git branch -d` refusing is information, not an obstacle.** It means the branch
+is not contained in `origin/main` — either the PR did not merge, or it merged as
+a squash and the SHA differs. Check which before reaching for `-D`; the first case
+means you are about to delete unmerged work.
+
+The `fetch`/`merge` pair is usually redundant: `src-sync` runs hourly and
+fast-forwards every repo that is on `main`, clean, and strictly behind. Run
+`~/.local/bin/src-sync` yourself when you want it now, or when it reported a repo
+as skipped.
 
 ## When something fails
 
@@ -214,6 +258,8 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
 | `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |
 | `could not lock config file .git/config` | **not** a stale lock — the sandbox masks it; the operation that needed it is unavailable, the rest of the command usually succeeded |
+| `codex exec` dies with `Permission denied (os error 13)`, or `codex login status` reports `loggedIn: false` | stale settings on the box. `~/.codex/auth.json` was un-denied on 2026-08-05; the live `~/.claude/settings.json` still denies it → re-pull and merge the sandbox block. Do **not** run `codex login` — the file is on the host, it is masked from your session, and re-authenticating treats a visibility problem as a credential one |
+| `git branch -d` says the branch is not fully merged, after the PR merged | the PR was **squash**-merged, so no commit with your SHA is in `main` → confirm on the PR page, then `-D` |
 
 Full detail, with the mechanism behind each:
 [devbox divergences](patterns/devbox-divergences.md).
@@ -222,12 +268,14 @@ Full detail, with the mechanism behind each:
 
 - **Do not** run `sign-push` for your own commits. It exists for the human to sign
   a batch; you sign as you go.
-- **Do not** try to read `~/.claude/.credentials.json` or `~/.codex/auth.json`.
-  They are denied, deliberately, and nothing you are doing needs them.
+- **Do not** try to read `~/.claude/.credentials.json`. It is denied,
+  deliberately, and nothing you are doing needs it. `~/.codex/auth.json` *is*
+  readable — that is what makes step 7b work — but reach it through `codex`
+  itself, never by opening the file.
 - **Do not** treat the sandbox as containment for anything you hand to the
-  container runtime. It runs outside the sandbox, so image pulls ignore the egress
-  allowlist and bind mounts reach denied paths. Hostile code belongs on the
-  disposable k8s node — see `~/src/public/0x58/linux/sandbox.md`.
+  container runtime. It runs outside the sandbox, so image pulls originate outside
+  the proxied network path and bind mounts reach denied paths. Hostile code
+  belongs on the disposable k8s node — see `~/src/public/0x58/linux/sandbox.md`.
 - **Do not** leave a k8s node running. It bills hourly.
 - **Do not** leave a local kind cluster or toolbox container running either. It
   bills in the next session's RAM instead of dollars, which is harder to trace.
