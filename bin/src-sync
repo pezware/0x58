@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+#
+# Fast-forward every repo under ~/src that is safe to fast-forward.
+#
+#   src-sync [--dry-run] [root]      # root defaults to $SRC_ROOT, then ~/src
+#
+# WHY THIS EXISTS
+#
+# Git has no auto-pull, and that absence is deliberate: `pull` can merge, rebase,
+# or conflict, and none of those are safe to run unattended against a tree you
+# might be mid-edit in. What IS safe is the narrow case this script covers —
+# advance a branch that has no local commits of its own, in a repo with nothing
+# to lose.
+#
+# So every repo gets fetched (the useful half of `git maintenance`'s prefetch:
+# origin/* is current, branching and diffing are instant, review is offline-able)
+# and only the ones that pass EVERY guard below get moved:
+#
+#   1. checked out on its default branch  — a feature branch is someone's work
+#   2. no modified tracked files          — untracked files are fine, they survive
+#   3. no rebase/merge/bisect in progress — a paused operation is state
+#   4. strictly behind upstream           — no local commits, so ff-only cannot fail
+#
+# A repo that fails a guard is SKIPPED and named, never forced. Skips are the
+# normal case on a working machine and are not failures; the exit code reflects
+# fetch and merge errors only, so a timer only alerts on something real.
+#
+# Worktrees need no special handling and get none. A worktree for task work is on
+# a task branch, so guard 1 skips it; the primary checkout on main is what moves.
+set -uo pipefail
+
+DRY_RUN=0
+ROOT=""
+
+# Concurrency default is per-platform, and the reason is not performance.
+#
+# On macOS the SSH keys are Secure-Enclave backed through Secretive, and that
+# agent SERIALISES signing: fire eight fetches at once and seven come back
+#   sign_and_send_pubkey: signing failed ... from agent: agent refused operation
+#   git@github.com: Permission denied (publickey)
+# — which reads exactly like lost credentials, on a machine whose credentials are
+# fine. Measured 2026-08-05: 17 repos, 1 real failure serially, 15 fake ones at
+# --jobs=8. The devbox has no agent at all (IdentityFile points at an on-disk
+# key), so it parallelises cleanly.
+#
+# Raise it on macOS only if you know the keys in play are not Enclave-backed.
+case "$(uname -s)" in
+    Darwin) JOBS=1 ;;
+    *)      JOBS=8 ;;
+esac
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|-n) DRY_RUN=1 ;;
+        --jobs=*)     JOBS="${arg#*=}" ;;
+        -h|--help)    sed -n '3,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)           echo "unknown flag: $arg" >&2; exit 2 ;;
+        *)            ROOT="$arg" ;;
+    esac
+done
+ROOT="${ROOT:-${SRC_ROOT:-$HOME/src}}"
+
+[ -d "$ROOT" ] || { echo "src-sync: no such directory: $ROOT" >&2; exit 2; }
+case "$JOBS" in ''|*[!0-9]*|0) echo "src-sync: --jobs must be a positive integer" >&2; exit 2 ;; esac
+
+MOVED=0; SKIPPED=0; ERRORS=0
+
+# Repos live at ~/src/<org>/<repo>, and worktrees as siblings of their parent.
+# -maxdepth 3 covers both without descending into vendor/ or node_modules, which
+# on this tree would mean walking several million files to find nothing.
+REPO_LIST="$(mktemp)"; FETCH_FAILED="$(mktemp)"
+trap 'rm -f "$REPO_LIST" "$FETCH_FAILED"' EXIT
+find "$ROOT" -mindepth 2 -maxdepth 3 -name .git -print 2>/dev/null | sort > "$REPO_LIST"
+
+# ---- pass 1: fetch, concurrently -------------------------------------------
+# Fetches are independent and network-bound, so they parallelise cleanly: ~40
+# repos took 5 minutes serially and well under one this way. The MERGE pass below
+# stays sequential on purpose — it is local, it is fast, and interleaved output
+# from concurrent merges would make the report unreadable.
+started=0
+while read -r gitpath; do
+    repo="$(dirname "$gitpath")"
+    if ! git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+        continue                                   # no remote: pass 2 explains it
+    fi
+    {
+        # Keep the FIRST line of stderr, not a generic message. "Repository not
+        # found" and "agent refused operation" have nothing in common except that
+        # a hand-written summary would have called both of them "fetch failed"
+        # and sent someone looking in the wrong place.
+        if ! err=$(git -C "$repo" fetch --quiet --prune origin 2>&1); then
+            printf '%s\t%s\n' "$repo" "$(printf '%s\n' "$err" | head -1)" >> "$FETCH_FAILED"
+        fi
+    } &
+    started=$((started+1))
+    [ $((started % JOBS)) -eq 0 ] && wait
+done < "$REPO_LIST"
+wait
+
+# Repos live at ~/src/<org>/<repo>, and worktrees as siblings of their parent.
+# -maxdepth 3 covers both without descending into vendor/ or node_modules, which
+# on this tree would mean walking several million files to find nothing.
+# ---- pass 2: guard, then move ----------------------------------------------
+# Redirected from a file, NOT piped from find. A `find | while` puts the loop
+# body in a subshell, where every counter below increments a copy that dies with
+# it — the summary would print zeros and the exit code would always be 0, so a
+# fetch failure in a timer would be invisible.
+while read -r gitpath; do
+    repo="$(dirname "$gitpath")"
+    name="${repo#"$ROOT"/}"
+
+    # Distinguish "no remote" from "remote did not answer". They look identical
+    # at the origin/HEAD check and have opposite fixes: the first is a local
+    # scratch repo doing nothing wrong, the second is a dead or renamed remote
+    # worth knowing about. Collapsing them into one message sent us looking for a
+    # missing remote on two repos that had one.
+    if ! git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+        printf '  skip   %-46s %s\n' "$name" "no origin remote — local-only repo"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    fetch_err=$(awk -F'\t' -v r="$repo" '$1==r {print $2; exit}' "$FETCH_FAILED" 2>/dev/null)
+    if [ -n "$fetch_err" ]; then
+        printf '  ERROR  %-46s %s\n' "$name" "$fetch_err"
+        ERRORS=$((ERRORS+1)); continue
+    fi
+
+    # Default branch from the remote's own HEAD, not a guess. A repo whose
+    # default is `master`, or `iden2-main` on a mirror, must still work — hard
+    # coding `main` would silently skip exactly the repos most likely to drift.
+    upstream_head=$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
+    default_branch="${upstream_head##*/}"
+    if [ -z "$default_branch" ]; then
+        # Unset on clones made with --single-branch, and on any repo fetched
+        # before the remote grew a default. Ask the remote and cache the answer
+        # rather than falling back to a guess.
+        if git -C "$repo" remote set-head origin --auto >/dev/null 2>&1; then
+            upstream_head=$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
+            default_branch="${upstream_head##*/}"
+        fi
+    fi
+    if [ -z "$default_branch" ]; then
+        printf '  skip   %-46s %s\n' "$name" "origin has no resolvable default branch"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ "$branch" != "$default_branch" ]; then
+        printf '  skip   %-46s %s\n' "$name" "on $branch, not $default_branch"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    # Tracked changes only. Untracked files are the normal state of a working
+    # tree -- build output, scratch notes -- and a fast-forward does not touch
+    # them, so blocking on them would skip almost every repo forever.
+    if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        printf '  skip   %-46s %s\n' "$name" "modified tracked files"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    gitdir=$(git -C "$repo" rev-parse --git-dir 2>/dev/null)
+    if [ -e "$repo/$gitdir/rebase-merge" ] || [ -e "$repo/$gitdir/rebase-apply" ] ||
+       [ -e "$repo/$gitdir/MERGE_HEAD" ] || [ -e "$repo/$gitdir/BISECT_LOG" ]; then
+        printf '  skip   %-46s %s\n' "$name" "rebase/merge/bisect in progress"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    local_sha=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+    remote_sha=$(git -C "$repo" rev-parse "origin/$default_branch" 2>/dev/null)
+    if [ "$local_sha" = "$remote_sha" ]; then
+        SKIPPED=$((SKIPPED+1)); continue          # already current: say nothing
+    fi
+
+    # Strictly behind: HEAD is an ancestor of the remote tip. If it is not, the
+    # branch has local commits or has diverged -- either way `pull` would want to
+    # merge or rebase, which is precisely the decision this script must not make.
+    if ! git -C "$repo" merge-base --is-ancestor HEAD "origin/$default_branch" 2>/dev/null; then
+        ahead=$(git -C "$repo" rev-list --count "origin/$default_branch..HEAD" 2>/dev/null)
+        printf '  skip   %-46s %s\n' "$name" "diverged — $ahead local commit(s) not upstream"
+        SKIPPED=$((SKIPPED+1)); continue
+    fi
+
+    behind=$(git -C "$repo" rev-list --count "HEAD..origin/$default_branch" 2>/dev/null)
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '  would  %-46s %s\n' "$name" "fast-forward $behind commit(s)"
+        MOVED=$((MOVED+1)); continue
+    fi
+
+    if git -C "$repo" merge --ff-only --quiet "origin/$default_branch" 2>/dev/null; then
+        printf '  ff     %-46s %s\n' "$name" "+$behind commit(s) on $default_branch"
+        MOVED=$((MOVED+1))
+    else
+        printf '  ERROR  %-46s %s\n' "$name" "ff-only merge failed after passing every guard"
+        ERRORS=$((ERRORS+1))
+    fi
+done < "$REPO_LIST"
+
+printf 'src-sync: %d fast-forwarded, %d skipped, %d error(s)  [%s]\n' \
+    "$MOVED" "$SKIPPED" "$ERRORS" "$ROOT"
+
+# Skips are the normal state of a machine someone works on, so they must not
+# colour the exit code — a timer that alerts on "you have a feature branch
+# checked out" gets muted within a week, and then the fetch failure it exists to
+# catch goes unread too.
+[ "$ERRORS" -eq 0 ]

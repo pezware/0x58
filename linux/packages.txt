@@ -3,7 +3,7 @@
 # Scope: apt owns ONLY the base system. Every language runtime and dev CLI comes
 # from mise (dotfiles/mise/config.toml), which is already cross-platform. Do not
 # duplicate anything mise manages — node, go, python, kubectl, terraform, gh,
-# ripgrep, fd, bat, fzf, jq, yq, neovim, shellcheck, ... Listing them here just
+# ripgrep, fd, bat, fzf, jq, yq, shellcheck, ... Listing them here just
 # shadows mise's shims with older Debian builds and makes upgrades ambiguous.
 #
 # Format: one package per line. '#' comments and blank lines are ignored.
@@ -20,12 +20,13 @@ wget
 
 # === Required by restore.sh itself ===
 git
-rsync          # place_dotfiles() syncs config-nvim/ with `rsync -a`
-vim            # setup_dev_tools() runs `vim +PlugInstall`; also the rescue editor
+rsync          # place_dotfiles() syncs ~/.claude subdirs; backup-devbox.sh snapshots with it
+vim            # THE editor on this box — no nvim here (see dotfiles/mise/config.toml).
+               # setup_dev_tools() runs `vim +PlugInstall`; also the rescue editor
 unzip          # mise extracts many release archives with unzip
 xz-utils       # ...and the rest with xz
 
-# === Core workflow (README: kitty + bash + nvim + git + w3m + claude/codex) ===
+# === Core workflow (bash + vim + git + w3m + claude/codex; no kitty, no nvim) ===
 tmux
 w3m
 less

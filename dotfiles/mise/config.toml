@@ -102,7 +102,10 @@ pre-commit = "latest"
 "npm:@openapitools/openapi-generator-cli" = "latest"
 
 # === Editors / TUI ===
-neovim = "latest"
+# neovim moved to macos/Brewfile on 2026-08-05. It belongs there because it is
+# wanted on ONE machine: this file is installed verbatim on the devbox too, and
+# `mise install` has no per-platform conditional, so listing it here was the only
+# thing putting a 40 MB editor on a headless box. The devbox uses apt's vim.
 
 # === Dev tooling ===
 mkcert   = "latest"
