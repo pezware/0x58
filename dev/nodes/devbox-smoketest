@@ -121,14 +121,24 @@ perm=$(remote 'stat -c %a ~/.ssh/devbox_agent 2>/dev/null')
     && ok "private key permissions" "0600" \
     || no "private key permissions" "${perm:-absent} — ssh refuses anything looser"
 
-n=$(remote 'grep -c . ~/.config/0x58/credentials.env 2>/dev/null')
-empty=$(remote 'grep -cE "=$" ~/.config/0x58/credentials.env 2>/dev/null')
+# Asserted one NAME at a time, not as a count. A count is the wrong shape twice
+# over: it passes while the single entry that mattered is the one missing, and it
+# fails for the harmless case of a secret being ADDED — which is exactly what
+# happened when GHCR_TOKEN landed and turned this red on a healthy box. The names
+# are the contract; the number is an accident of how many we have today.
 cperm=$(remote 'stat -c %a ~/.config/0x58/credentials.env 2>/dev/null')
-if [ "${n:-0}" -eq 4 ] && [ "${empty:-1}" -eq 0 ] && [ "$cperm" = "600" ]; then
-    ok "credentials.env" "4 vars, none empty, 0600"
-else
-    no "credentials.env" "vars=${n:-0} empty=${empty:-?} mode=${cperm:-absent} — re-place from Keychain"
-fi
+[ "$cperm" = "600" ] \
+    && ok "credentials.env permissions" "0600" \
+    || no "credentials.env permissions" "${cperm:-absent} — readable beyond you"
+
+for _v in GH_TOKEN_PEZWARE GH_TOKEN_IDEN2 LINODE_TOKEN TF_VAR_tailscale_auth_key GHCR_TOKEN; do
+    if remote "grep -qE '^$_v=.+' ~/.config/0x58/credentials.env 2>/dev/null"; then
+        ok "credentials.env: $_v" "present and non-empty"
+    else
+        no "credentials.env: $_v" "missing or empty — re-place from Keychain (dev/nodes/README.md step 5)"
+    fi
+done
+unset _v
 
 # ── signing: the check the rehearsal was worth running for ──────────────────
 section "Commit signing"
@@ -150,11 +160,17 @@ case "$raw" in
     *)      cfg=$(remote "ssh-keygen -lf \"\$(git config --get user.signingkey)\" 2>/dev/null | awk '{print \$2}'")
             form="path (signs without an agent)" ;;
 esac
-own=$(remote "ssh-keygen -lf ~/.ssh/devbox_agent.pub 2>/dev/null | awk '{print \$2}'")
-if [ -n "$cfg" ] && [ "$cfg" = "$own" ]; then
-    ok "signingkey is a key this box holds" "$form"
+# Compared against EVERY key on the box, not against devbox_agent by name. This
+# named that key literally until 2026-08-04 and so went red the moment the default
+# identity correctly moved to devbox_agent_personal — reporting a healthy box as
+# broken, which is the failure mode that trains you to ignore a red line. Which
+# key is right for which identity is a separate question, asserted against GitHub
+# further down; this one only asks whether the box can sign with it at all.
+own=$(remote 'for f in ~/.ssh/*.pub; do ssh-keygen -lf "$f" 2>/dev/null | awk "{print \$2}"; done')
+if [ -n "$cfg" ] && printf '%s\n' "$own" | grep -qxF "$cfg"; then
+    ok "signingkey is a key this box holds" "$form, $(remote "basename \"\$(git config --get user.signingkey)\"" 2>/dev/null)"
 else
-    no "signingkey is a key this box holds" "form=$form configured=${cfg:-unresolvable} on-disk=${own:-none}"
+    no "signingkey is a key this box holds" "form=$form configured=${cfg:-unresolvable} — no key in ~/.ssh matches"
 fi
 
 # Local verification is a separate mechanism from GitHub's. sign-push refuses to
