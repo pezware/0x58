@@ -27,13 +27,50 @@ account**, so a success would be silently misattributed.
 GitHub resolves a signature by **commit email → account → that account's signing
 keys**. The email decides the identity; the key only has to belong to it.
 
+| where you are | commit email | account | signing key |
+|---|---|---|---|
+| everywhere by default, incl. `~/src/public/` | `andy@pezware.com` | `achtungandy` | **`devbox_agent_personal`** |
+| `~/src/iden2/` (via `includeIf`) | `andy@iden2.com` | `arbeitandy` | **`devbox_agent`** |
+
 | key | account | role |
 |---|---|---|
 | `devbox_agent` | `arbeitandy` | auth **and** signing |
 | `devbox_agent_personal` | `achtungandy` | signing only — SSH auth with it fails, correctly |
 
 Two keys exist because GitHub enforces key uniqueness across accounts; the same
-key cannot be registered twice.
+key cannot be registered twice. **All pushes authenticate as `arbeitandy`** via
+`devbox_agent`, in both trees — auth and signing are independent, and only signing
+has to match the email.
+
+### The failure this pairing prevents
+
+Crossing them is silent in every place you would look. Until 2026-08-04
+`restore.sh` set the global `user.signingkey` to `devbox_agent`, so every commit
+in `~/src/public/` was signed with the **work** account's key while committing as
+`andy@pezware.com`:
+
+| signal | said |
+|---|---|
+| `git push` | succeeded |
+| `git log %G?` | `G` |
+| `devbox-smoketest` | all signing checks green |
+| GitHub, on the PR | **`unknown_key`** |
+
+`%G?` agreed because `allowed_signers` had been cross-mapped — it listed
+`devbox_agent` under *both* addresses, so local verification was configured to
+accept exactly the thing GitHub rejects. An over-permissive signers file does not
+merely fail to catch this; it manufactures the confidence that hides it.
+
+If a commit lands unverified, do **not** re-register keys. Check the pairing:
+
+```bash
+git config --get user.email        # which identity am I?
+git config --get user.signingkey   # does that account own this key?
+```
+
+`devbox-smoketest` now asserts the pairing against GitHub's public
+`users/<login>/ssh_signing_keys` endpoint, which is the only authority that
+matters and needs no token.
 
 ## `allowed_signers` is local-only
 
@@ -42,6 +79,11 @@ It governs `git log --show-signature` and nothing else. GitHub never consults it
 But `sign-push` refuses to push unless `%G?` reports `G`, so a correct signing key
 with a stale signers file still blocks the workflow — a failure that looks like a
 signing problem and is really a verification-config problem.
+
+The reverse is the dangerous direction, and it is the one that bit: a signers file
+that is too *permissive* makes `%G?` report `G` for a signature GitHub will
+reject. Map each key to the one address whose account owns it, never to both.
+`G` means "this box can verify it", not "GitHub will".
 
 ## ssh offers only default identity names
 

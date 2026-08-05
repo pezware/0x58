@@ -268,8 +268,26 @@ place_dotfiles() {
         # the sandbox's denyRead, which is what kept the original objection --
         # that any agent-run command could exfiltrate it -- from applying.
         if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
-            git config --global user.signingkey ~/.ssh/devbox_agent
-            echo "    git: signing with on-disk devbox key (path form, no agent needed)"
+            # TWO keys, one per GitHub account, and pairing them wrong is silent.
+            # GitHub resolves a signature by commit email -> account -> THAT
+            # account's signing keys, so the key must belong to the account that
+            # owns the email, not merely to you:
+            #
+            #   global default  andy@pezware.com -> achtungandy -> devbox_agent_personal
+            #   ~/src/iden2/    andy@iden2.com   -> arbeitandy  -> devbox_agent   (below)
+            #
+            # This line named devbox_agent until 2026-08-04, which signed every
+            # public-repo commit with the WORK account's key. Nothing failed: the
+            # push succeeded, `git log %G?` said G, and GitHub alone reported
+            # `unknown_key` on the PR. Falls back to devbox_agent when the personal
+            # key is absent, which is worse but still signs.
+            if [[ -f ~/.ssh/devbox_agent_personal ]]; then
+                git config --global user.signingkey ~/.ssh/devbox_agent_personal
+                echo "    git: signing with the PERSONAL devbox key (achtungandy owns andy@pezware.com)"
+            else
+                git config --global user.signingkey ~/.ssh/devbox_agent
+                echo "    git: signing with on-disk devbox key (no personal key present)"
+            fi
 
             # ssh only offers DEFAULT identity names (id_ed25519, id_rsa, ...).
             # devbox_agent is not one, so without this GitHub answers "Permission
@@ -306,17 +324,26 @@ SSHCFG
         # GitHub accepts. sign-push refuses to push unless `git log %G?` reports
         # G, so a correct signing key with a stale signers file still blocks the
         # workflow -- and the copied file lists only the Mac's keys.
-        if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent.pub ]]; then
+        # Map each key to the ONE email whose account owns it. This used to add
+        # devbox_agent under both addresses, which is why the crossed-key bug above
+        # survived: a cross-mapped signers file makes `%G?` report G for a signature
+        # GitHub will reject, so the local check agreed with nothing. Over-permissive
+        # here does not merely fail to catch the error, it manufactures confidence.
+        if [[ "$PLATFORM" == "linux" ]]; then
             mkdir -p ~/.config/git
-            _dk=$(awk '{print $2}' ~/.ssh/devbox_agent.pub)
-            if ! grep -qF "$_dk" ~/.config/git/allowed_signers 2>/dev/null; then
-                for _em in "$(git config --get user.email)" andy@iden2.com; do
-                    [[ -n "$_em" ]] && printf '%s %s\n' "$_em" "$(cat ~/.ssh/devbox_agent.pub)" \
-                        >> ~/.config/git/allowed_signers
-                done
-                echo "    git: devbox key added to allowed_signers"
-            fi
-            unset _dk _em
+            _add_signer() {   # $1 = email, $2 = pubkey path
+                [[ -f "$2" ]] || return 0
+                local _k; _k=$(awk '{print $2}' "$2")
+                grep -qF "$1 " <(grep -F "$_k" ~/.config/git/allowed_signers 2>/dev/null) && return 0
+                printf '%s %s\n' "$1" "$(cat "$2")" >> ~/.config/git/allowed_signers
+                echo "    git: allowed_signers += $1 -> $(basename "$2")"
+            }
+            _add_signer andy@pezware.com ~/.ssh/devbox_agent_personal.pub
+            _add_signer andy@iden2.com   ~/.ssh/devbox_agent.pub
+            # Pre-2026-08-04 files cross-map devbox_agent onto andy@pezware.com.
+            # Leave it: removing a signer can only turn a G into an N, and the
+            # authoritative check is GitHub's, asserted in devbox-smoketest.
+            unset -f _add_signer
         fi
         if [[ -f "$DOTFILES/config-git/work" ]]; then
             cp -v "$DOTFILES/config-git/work" ~/.config/git/work
