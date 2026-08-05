@@ -99,13 +99,23 @@ Be honest about what that leaves: a denylist cannot cover unknown-unknowns, and
 but denying it would break `mise install`. `devbox-smoketest` probes the
 denylist one path at a time, so a regression fails loudly instead of silently.
 
-**Egress proxied, and the allowlist is advisory.** `allowedDomains` lists package
-registries and source hosts, and it is a **record of what the box routinely
-needs, not a containment boundary** — it was measured unenforced on 2026-08-04,
-and enforcing it as written would block the documentation search the goal
-requires. Nothing rests on it; do not cite it as a control. What is load-bearing
-is the shape underneath: loopback-only netns, and the `socat` listeners on
-`:3128`/`:1080` as the sole route out.
+**Egress is proxied and unrestricted. There is no domain allowlist.**
+`allowedDomains` was removed on 2026-08-05. It had been documented as advisory
+on the strength of one measurement showing it unenforced — and that measurement
+was taken in a bridge session. In a *direct* session it enforces, which a real
+session proved by failing: `binaries.prisma.sh` and `registry-1.docker.io`
+returned nothing while `ghcr.io` (listed) answered, stranding a Prisma TLS
+investigation on a box whose stated purpose is to let agents fetch what they
+need.
+
+A list that enforces in one session type and not another is worse than either
+outcome on its own: it cannot be relied on as a control, and it cannot be relied
+on to stay out of the way. Since the goal says agent-initiated egress *is* the
+point, the list is gone rather than half-trusted.
+
+What is load-bearing is the shape underneath, and it is unchanged: loopback-only
+netns, and the `socat` listeners on `:3128`/`:1080` as the sole route out. The
+boundary is the route, not a list of names.
 
 ## Four deliberate trade-offs
 
@@ -328,18 +338,23 @@ Short-lived by intent. A sentence cannot fail, so everything here should either
 become an assertion in [`devbox-smoketest`](../dev/nodes/devbox-smoketest) or
 stop being true. Measured 2026-08-04 and re-checked 2026-08-05.
 
-**The proxy is not filtering, and it is not established why.** Measured
-in-session: `example.com`, `pastebin.com` and `1.1.1.1` all answered, and a
-`POST` to `httpbin.org` was echoed back with the Linode's public IP logged as the
-origin. None appear in `allowedDomains`, and the live `settings.json` is
-byte-identical to this repo's — the config is right and is not being applied.
-That session ran under a bridge harness (`CLAUDE_CODE_CHILD_SESSION=1`) whose own
-allowlist was not applied either, which argues the failure is in the proxy rather
-than in which list wins.
+**Egress filtering was session-type dependent, and that is why the list is
+gone.** Two measurements, both real, that took a day to reconcile:
 
-This does not change the posture, because the allowlist was the wrong shape of
-control for this box regardless. What stays open is confirming the *boundary*
-instead: that the netns is loopback-only and nothing routes around the proxy.
+| session | result |
+|---|---|
+| bridge (`CLAUDE_CODE_CHILD_SESSION=1`) | `example.com`, `pastebin.com`, `1.1.1.1` all answered; a `POST` to `httpbin.org` echoed back with the Linode's public IP as origin — **nothing filtered** |
+| direct | `ghcr.io` (listed) → 401, `binaries.prisma.sh` and `registry-1.docker.io` (unlisted) → no connection — **filtered exactly per the list** |
+
+The first was recorded as "the proxy is not filtering" and the allowlist demoted
+to advisory. That conclusion was drawn from one session type and was wrong as a
+general statement. The lesson is narrower than "verify twice": **a probe records
+the behaviour of the session that ran it**, and on this box session type is a
+variable, not a detail.
+
+Nothing is open here any more — the list is removed, so neither behaviour can
+strand work. What remains worth asserting is the boundary: that the netns is
+loopback-only and nothing routes around the proxy.
 
 **Those boundary checks cannot live in `devbox-smoketest` as it stands.**
 `remote()` is `ssh … bash -lc`, an unsandboxed login shell, so `ip -o addr show`

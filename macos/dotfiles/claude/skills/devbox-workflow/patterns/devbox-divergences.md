@@ -136,10 +136,18 @@ apt owns the base system; mise owns every dev tool. Do not install dev tooling
 with apt — it shadows mise's shims with older builds and makes upgrades ambiguous.
 The exceptions are deliberate and documented in `linux/packages.txt`.
 
-## Egress is allowlisted
+## Egress is unrestricted
 
-Package registries and source hosts only. A network failure to an arbitrary host
-is the sandbox working, not a broken box. Do not route around it.
+Fetch packages, read documentation, debug against real hosts — that is what this
+box is for. There is **no domain allowlist**; it was removed on 2026-08-05.
+
+This section said the opposite until then, and the reversal is worth one line
+because it will save you an hour: the old list enforced in *direct* sessions and
+not in *bridge* ones, so the same `curl` succeeded or failed depending on how the
+session was launched. It stranded a Prisma investigation on `binaries.prisma.sh`
+while `ghcr.io` worked. **A network failure now is a real network failure** — a
+dead host, a typo, no route — not the sandbox doing its job. Diagnose it, don't
+route around it and don't assume you are being blocked.
 
 ## `.git/config` is unwritable, and the lock is not stale
 

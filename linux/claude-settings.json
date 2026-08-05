@@ -140,32 +140,22 @@
         "/tmp/codex-broker/0x58.sock",
         "/tmp/codex-broker/go-monorepo.sock",
         "/tmp/codex-broker/platform-apis.sock"
-      ],
-      "allowedDomains": [
-        "registry.npmjs.org",
-        "*.npmjs.org",
-        "proxy.golang.org",
-        "sum.golang.org",
-        "storage.googleapis.com",
-        "pypi.org",
-        "files.pythonhosted.org",
-        "github.com",
-        "*.github.com",
-        "ghcr.io",
-        "pkg-containers.githubusercontent.com",
-        "codeload.github.com",
-        "objects.githubusercontent.com",
-        "raw.githubusercontent.com",
-        "releases.hashicorp.com",
-        "registry.terraform.io",
-        "deb.debian.org",
-        "security.debian.org",
-        "mise.jdx.dev",
-        "crates.io",
-        "static.crates.io",
-        "chatgpt.com",
-        "api.openai.com"
       ]
     }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/devbox-session-context",
+            "timeout": 15,
+            "statusMessage": "Probing devbox environment..."
+          }
+        ]
+      }
+    ]
   }
 }

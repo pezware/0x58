@@ -49,6 +49,21 @@ of where the API calls go. Verified 2026-08-04, after this exact detour cost a
 session real time and produced a confidently wrong "the CLI cannot work
 in-session" conclusion.
 
+### `docker compose`
+
+`podman compose` is only a wrapper around an external provider and fails with
+`looking up compose provider failed` when none is installed. `docker-compose`
+(the Go, Compose-spec implementation) is installed by `restore.sh` for exactly
+this, so compose stacks run unmodified:
+
+```bash
+docker-compose up -d           # or, through the shim above: docker compose up -d
+```
+
+If it reports `looking up compose provider failed`, the provider is missing
+rather than broken — re-run `restore.sh`, do not reach for `pip install
+podman-compose`.
+
 Verify with a control, because a blocked socket and an absent one are
 indistinguishable from inside:
 
@@ -230,10 +245,12 @@ how you would notice a delete that silently half-failed.
 The container runtime runs **outside** the sandbox, so work handed to it is not
 covered by the sandbox's limits. Two measured consequences:
 
-- **Egress allowlisting is bypassed.** `docker.io/library/alpine:3.20` pulled
-  successfully in-session even though `docker.io` is not in `allowedDomains`. The
-  allowlist filters the sandboxed process's own sockets, not what a daemon does
-  on its behalf.
+- **Pulls do not traverse the sandbox's network path.**
+  `docker.io/library/alpine:3.20` pulled in-session at a time when `docker.io`
+  was blocked for the agent's own sockets — the service fetches on your behalf,
+  from outside the session netns. Since the domain allowlist was removed on
+  2026-08-05 this no longer *strands* anything, but it still means container
+  traffic is invisible to the sandbox and is not shaped by it.
 - **File denials are bypassable the same way.** A bind mount is performed by the
   service, so `-v $HOME:/m` reaches paths the sandbox denies you directly.
 

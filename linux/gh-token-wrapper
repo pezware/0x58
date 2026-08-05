@@ -49,7 +49,7 @@ real_gh() {
 GH=$(real_gh) || { echo "gh-wrapper: cannot find the real gh on PATH" >&2; exit 127; }
 
 # Owner of the origin remote, from either ssh or https form. Falls through
-# silently when not in a repo — `gh auth status` and friends still work.
+# silently when not in a repo — `gh --version` and friends still work.
 owner=$(git config --get remote.origin.url 2>/dev/null \
         | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*$#\2#' || true)
 
@@ -62,6 +62,51 @@ if [ -z "${GH_TOKEN:-}" ] && [ -r "$CREDS" ]; then
     esac
     # Never leak the other org's token into the child process.
     unset GH_TOKEN_IDEN2 GH_TOKEN_PEZWARE LINODE_TOKEN TF_VAR_tailscale_auth_key
+fi
+
+# ── Say what actually went wrong, before gh says something false ─────────────
+#
+# With no token selected, gh prints:
+#
+#     To get started with GitHub CLI, please run: gh auth login
+#
+# On this box that advice is WRONG and following it is harmful: there is no
+# stored credential by design — the token is injected per invocation, and
+# ~/.config/gh stays empty even when gh works perfectly. An agent that trusts
+# that message reaches for `gh auth login` or a PAT, and both are dead ends.
+#
+# This cost a real session on 2026-08-05. The agent was in ~/src/iden2, one level
+# above the repo, concluded "gh isn't authenticated on this box", and stopped to
+# ask the human — while `gh` two directories down worked fine. The skill covering
+# this was present and current; it simply never fired, because nothing suggested
+# a devbox quirk rather than an ordinary auth problem.
+#
+# So the correction goes where it cannot be missed: on stderr, in front of the
+# misleading line, every time. A wrapper that knows why it has no token should
+# not let the tool it wraps guess.
+if [ -z "${GH_TOKEN:-}" ]; then
+    case "${1:-}" in
+        # Local-only invocations need no token; staying quiet keeps the warning
+        # meaningful when it does appear.
+        ''|--version|-v|--help|-h|help|completion|alias|config|extension) ;;
+        *)
+            if [ -z "$owner" ]; then
+                cat >&2 <<'MSG'
+gh-wrapper: no token selected — you are not inside a git repository.
+  This wrapper picks a token from the origin remote's OWNER, so it has nothing
+  to select on. cd into the repo you mean and re-run, e.g. ~/src/iden2/<repo>.
+  Do NOT run `gh auth login`, and do NOT reach for a PAT: there is no stored
+  credential on this box by design. An empty ~/.config/gh is correct here.
+MSG
+            else
+                cat >&2 <<MSG
+gh-wrapper: no token for owner "$owner" — only pezware and iden2-com are mapped.
+  Check that ~/.config/0x58/credentials.env has a non-empty entry for it.
+  Do NOT run \`gh auth login\`: this box stores no credential by design.
+MSG
+            fi
+            ;;
+    esac
 fi
 
 exec "$GH" "$@"

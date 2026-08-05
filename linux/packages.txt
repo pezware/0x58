@@ -61,13 +61,21 @@ ncdu
 # What it costs is NOT mainly the SSH agent, which is what this comment used to
 # warn about: signing and pushing already use an on-disk key, so no Touch ID tap
 # was being protected. The real cost is that the runtime executes OUTSIDE the
-# sandbox, so image pulls ignore the egress allowlist and bind mounts reach denied
-# paths. Read linux/sandbox.md before changing this.
+# sandbox, so image pulls originate outside the proxied network path and bind
+# mounts reach denied paths. Read linux/sandbox.md before changing this.
 podman
 uidmap         # newuidmap/newgidmap — rootless podman cannot map subuids without it
 passt          # pasta: podman 5's default rootless network backend
 podman-remote  # `podman --remote`; also what a toolbox container needs to drive
                # the host socket when loopback TCP is blocked in-session
+
+# NOT here on purpose: docker-compose. `podman compose` is only a wrapper and
+# fails with "looking up compose provider failed" until a real provider exists,
+# so one IS required — but docker-compose Recommends docker-cli, and this file is
+# installed without --no-install-recommends. A real /usr/bin/docker would then
+# talk to /var/run/docker.sock, which does not exist on a rootless box, and would
+# shadow the podman shim agents are told to use. restore.sh installs it in its
+# own --no-install-recommends call instead.
 
 # === Agent-driven cluster/database work ===
 # Installed by hand inside a throwaway container the first time an agent needed
