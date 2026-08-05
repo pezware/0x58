@@ -4,27 +4,24 @@ Applied by `restore.sh` on Linux only:
 [`claude-settings.json`](claude-settings.json) and
 [`codex-devbox.config.toml`](codex-devbox.config.toml).
 
-This file describes the *intended* posture. Where the box has been measured to
-disagree, the gap is tracked in
-[`sandbox-findings.md`](sandbox-findings.md); read that alongside this one.
-
 ## What the devbox is for
 
 State the goal first, because every trade-off below is only legible against it.
 
-The devbox is where the work happens. Claude and Codex should be able to work the
-whole of `iden2` and `pezware` there **comfortably** — build and test, `git` and
-`gh`, kind and podman when a change needs them, and the ordinary Linux tooling to
-debug the stack. They should be able to search documentation and references
-without asking. Neither *lacking* access nor *excessive* access is acceptable,
-and of the two, lacking access is the failure this box has actually suffered:
-twice now a control has stranded work it was never meant to stop.
+The devbox is an isolated environment where Claude — and Codex, when Claude calls
+it — work the whole of `iden2` and `pezware` **comfortably**: build and test,
+`git` and `gh`, kind and podman when a change needs them, and the ordinary Linux
+tooling to debug the stack. They search documentation and references without
+asking. **Neither lacking access nor excessive access is acceptable**, and of the
+two, lacking access is the failure this box has actually suffered: twice a
+control has stranded work it was never meant to stop.
 
 The Mac is headquarters, not a second workplace. It manages the devbox lifecycle
 and is where deeper debugging, auditing and review happen when they are needed.
-A mobile device connects occasionally, and that path is proven.
+Most work happens on the devbox. A mobile device connects occasionally, and that
+path is proven.
 
-The network rule that follows is narrow, and worth stating exactly:
+The network rule is narrow, and worth stating exactly:
 
 > Egress that Claude or Codex initiate — for search, for packages, for debugging —
 > **is the point of the box.** Beyond that, nothing in and nothing out.
@@ -41,18 +38,19 @@ So the exposure that matters is not the agent doing its job. It is everything
 that is *not* that: an unattended listener, a background process dialing out, a
 credential reachable by something with no business asking.
 
-The devbox does hold, in plaintext on disk:
+The devbox holds two subscription refresh tokens in plaintext on disk, which mint
+new access tokens indefinitely until revoked. Linux has no Keychain equivalent,
+so this is an accepted exception rather than a solved problem:
 
-- `~/.claude/.credentials.json` — Claude subscription OAuth, mode 0600
-- `~/.codex/auth.json` — ChatGPT subscription OAuth
+| file | what it buys | agent access |
+|---|---|---|
+| `~/.claude/.credentials.json` | the Claude account | **denied** |
+| `~/.codex/auth.json` | a review subscription | **readable, deliberately** |
 
-Both contain **refresh tokens**, which mint new access tokens indefinitely until
-revoked. Linux has no Keychain equivalent, so this is an accepted exception
-rather than a solved problem. They are not worth the same: the Claude refresh
-token buys the account, the ChatGPT one buys a review subscription. That
-asymmetry is why they are not always treated alike.
+They are not worth the same, and that asymmetry is why they are not treated
+alike — see the Codex trade-off below.
 
-Tailscale and the Linode Cloud Firewall handle *inbound* well — the box has no
+Tailscale and the Linode Cloud Firewall handle *inbound* well: the box has no
 public listener and OpenSSH is disabled. Outbound they do not handle at all
 (`outbound_policy` is `ACCEPT`). A domain allowlist inside the sandbox is the
 wrong instrument for that gap, because it cannot tell agent-initiated traffic
@@ -60,8 +58,7 @@ from anything else — and the traffic it would block most reliably is the
 reference search the box exists to do. What *can* tell them apart is the
 sandbox's network shape: the session netns has loopback only, so every packet an
 agent sends traverses the proxy. **That boundary, not the list of domains, is the
-control.** See [`sandbox-findings.md`](sandbox-findings.md) §1 for the
-measurement that forced this correction.
+control.**
 
 ## What is configured
 
@@ -72,46 +69,45 @@ missing; that default converts a broken sandbox into no sandbox. This is also wh
 than optional — without them Claude Code refuses to start, which is the intent.
 
 **Credentials hidden.** `sandbox.credentials` (Claude Code 2.1.187+) denies reads
-of both token files, `~/.npmrc`, `~/.config/gh/hosts.yml`, and unsets
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, `LINODE_TOKEN`, and
-`TF_VAR_tailscale_auth_key` for sandboxed commands.
+of `~/.claude/.credentials.json`, `~/.npmrc`, `~/.config/gh/hosts.yml` and
+`~/.git-credentials`, and unsets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GH_TOKEN`, `GITHUB_TOKEN`, `LINODE_TOKEN`, `NPM_TOKEN` and
+`TF_VAR_tailscale_auth_key` for sandboxed commands. `~/.codex/auth.json` is
+**not** in that list, deliberately.
 
 **Filesystem.** Reads denied for `~/.gnupg`, `~/.config/gcloud`, `~/.kube`,
 `~/.aws`, the Tailscale state directories and `/etc/0x58-node.env`. Note that
 `~/.ssh` is **not** among them — it was removed deliberately on 2026-08-03 so
 agents could sign and push; see the trade-offs below.
 
-**Writes are a denylist over `~`, not an allowlist of `~/src`.** This paragraph
-claimed the latter until 2026-08-04, when a probe showed `allowWrite` is
-`["~", "/tmp"]`. The claim was not merely stale, it was **exploitable**:
-`~/.bashrc` was writable and `arbeitandy` has `NOPASSWD:ALL`, so an injected
-agent never needed to escalate itself — it could write a shell profile and wait
-for the human's next unsandboxed login. `~/.claude/settings.local.json` was
-writable too while `settings.json` was denied, which is exactly the persistence
-technique of the 2026-08-04 npm worm.
+**Writes are a denylist over `~`, not an allowlist of `~/src`.** The allowlist
+would be stronger, and it was rejected on measurement rather than principle:
+`~/.cache` holds 3.3 GB of Go build cache and `~/go` 1.7 GB of module cache, so
+confining writes to `~/src` breaks every Go build on the box. What landed instead
+is a bounded denylist of the surfaces that **execute on login or shadow a
+command** — shell profiles, `~/.config/systemd`, `~/.local/bin`, agent hook
+config, and git config including `core.hooksPath`.
 
-The allowlist the text described would be stronger, and it was rejected on
-measurement rather than principle: `~/.cache` holds 3.3 GB of Go build cache and
-`~/go` 1.7 GB of module cache, so confining writes to `~/src` breaks every Go
-build on the box. What landed instead is a bounded denylist of the surfaces that
-**execute on login or shadow a command** — shell profiles, `~/.config/systemd`,
-`~/.local/bin`, agent hook config, and git config including `core.hooksPath`.
+This matters more than it sounds. `arbeitandy` has `NOPASSWD:ALL`, so an injected
+agent never needs to escalate itself: it writes a shell profile and waits for the
+human's next unsandboxed login. `~/.claude/settings.local.json` is denied
+alongside `settings.json` for the same reason — planting agent hooks in the
+`.local` override is exactly how the 2026-08-04 npm worm persisted.
 
 Be honest about what that leaves: a denylist cannot cover unknown-unknowns, and
 `~/.local/share/mise` is knowingly still writable because its shims are on `PATH`
 but denying it would break `mise install`. `devbox-smoketest` probes the
-denylist, so a regression fails loudly instead of silently.
+denylist one path at a time, so a regression fails loudly instead of silently.
 
 **Egress proxied, and the allowlist is advisory.** `allowedDomains` lists package
-registries and source hosts, and as of 2026-08-04 it is a **record of what the box
-routinely needs, not a containment boundary** — it was measured unenforced, and
-enforcing it as written would block the documentation search the goal above
+registries and source hosts, and it is a **record of what the box routinely
+needs, not a containment boundary** — it was measured unenforced on 2026-08-04,
+and enforcing it as written would block the documentation search the goal
 requires. Nothing rests on it; do not cite it as a control. What is load-bearing
 is the shape underneath: loopback-only netns, and the `socat` listeners on
-`:3128`/`:1080` as the sole route out. Codex is stricter by profile —
-`network_access = false` escalates to a human when a command needs the network.
+`:3128`/`:1080` as the sole route out.
 
-## Three deliberate trade-offs
+## Four deliberate trade-offs
 
 **Agents can sign, push and use `gh`.** As of 2026-08-03 this is granted
 *explicitly*: `~/.ssh` was removed from `denyRead`, and
@@ -125,93 +121,80 @@ lists — measured inside a real session, `gh` failed with
 `credentials.files` or `denyRead`.**
 
 The cost is real and stated plainly: a signature no longer proves a *person*
-authorised the commit — it proves this box produced it. Prompt injection here can
-push signed code to any repository the key reaches, which rotating a token does
-not undo.
-
-What did **not** move: `~/.claude/.credentials.json` and `~/.codex/auth.json` stay
-denied (verified — reads return `Permission denied`), and `~/.ssh` stays in
-`denyWrite`.
-
-**AF_UNIX no longer stays blocked, and this paragraph used to say it did.**
-`allowAllUnixSockets` went on in `070e22b` for container tests, and a
-bind/listen/connect round-trip was measured succeeding in-session on 2026-08-04.
-The sentence that stood here — that the forwarded **Secure Enclave** agent is
-unreachable because "seccomp blocks the syscall, not the path" — was false from
-that commit onward, and it contradicted the container-tests paragraph seventy
-lines below in this same file.
-
-The Mac's key is still the Mac's, for a different reason: `94f29f4` set
-`ForwardAgent no` for both `devbox` and `k8s`, having found ~620 stale
-`/tmp/auth-agent*/` sockets on the box with live ones still answering. **The
-socket is not blocked; it is not forwarded.** Prefer the weaker-sounding sentence
-— it is the true one, and it names the thing that can be undone by habit rather
-than by a config change. `sign-push` still asks for `ssh -A` by design; for the
-length of that session the keys are reachable to anything on the box.
-
-A caution for anyone probing this: `test -r` on a denied file returns *success*.
-`access(2)` is not intercepted — only the actual read is.
-
-Worth being precise, because it constrains every later decision: on Linux
-`allowUnixSockets` is not merely impractical here, it is **inert**. Its own
-schema reads *"macOS only: Unix socket paths to allow. Ignored on Linux (seccomp
-cannot filter by path)."* Blocking is a seccomp filter on `socket()`, and seccomp
-sees register values, not the path behind the `connect()` pointer — dereferencing
-that in-kernel would be a TOCTOU hazard. macOS Seatbelt resolves paths, so it can
-allow one socket; Linux gets exactly one switch, `allowAllUnixSockets`, and it is
-all-or-nothing. Any future "just allow this one socket" on this box is not a
-config change, it is a decision to allow every socket including the SSH agent.
-
-This paragraph used to claim that git operations authenticate through the
-**forwarded Secure Enclave key**, so every push and signature needed a Touch ID
-tap and an injected agent could not push silently. **That was already false when
-it was written.** The same 2026-08-03 change that let agents sign and push set
-`user.signingkey` to an on-disk *path* (`~/.ssh/devbox_agent`) and pinned
-`IdentityFile` to the same key for github.com. Verify rather than trust it:
+authorised the commit — it proves this box produced it. `user.signingkey` is an
+on-disk *path* (`~/.ssh/devbox_agent`) and `IdentityFile` pins the same key for
+github.com, so the devbox signs and pushes unattended with no agent and no Touch
+ID tap. That is the documented success of the loop, not a regression — but prompt
+injection here can push signed code to any repository the key reaches, which
+rotating a token does not undo. Verify rather than trust it:
 
 ```bash
 git config --get user.signingkey          # a path ⇒ signs with no agent, no tap
 grep -A1 'Host github.com' ~/.ssh/config  # IdentityFile ⇒ pushes with no tap
 ```
 
-The devbox has been signing and pushing unattended ever since — that is the
-documented success of the loop, not a regression. The lesson is the one this repo
-keeps relearning: a security property described in prose decays silently, while
-the same claim written as a probe fails loudly.
+**In-session Codex is worth a readable OpenAI token.** `~/.codex/auth.json` is
+readable by sandboxed commands so `codex exec` works in-session, which is what
+makes independent review part of the loop rather than something the human relays
+by hand.
 
-**Codex hardening is a profile, not the shared config.**
-`macos/dotfiles/codex/config.toml` is copied to both machines, and the Mac's
-workflow passes `-s read-only` per invocation. Tightening the shared file would
-change Mac behaviour as a side effect of hardening Linux. The devbox alias in
-`bashrc` adds `-p devbox` on Linux only.
+The two options were mutually exclusive by construction: a readable `auth.json`
+buys in-session review at the cost of a readable OpenAI refresh token; a denied
+one forces Codex through the broker or `codex-task`. The devbox is the workplace
+and Codex is one of the two agents meant to work there, so it is readable. What
+makes that cheap to hold is where the trust actually sits — that token buys a
+review subscription, not the account, and a bad session costs a rebuild.
 
-**Container tests now run inside agents (2026-08-04).** `allowAllUnixSockets` is
-on, so rootless podman's Docker-compatible socket answers from a sandboxed Bash
-call and agents run the `integration` and `e2e` tiers themselves.
+`~/.claude/.credentials.json` is a different proposition and stays denied. Keep
+the pair asymmetric on purpose; the day both are readable, the rebuild stops
+being a sufficient answer.
 
-The reason this was refused for so long — that agents would reach the forwarded
-SSH agent and push without a Touch ID tap — did not survive contact with the
-config above: they were already pushing with an on-disk key. What the switch
-actually costs is different, and larger:
+**AF_UNIX is open, and the Mac's key is safe for a different reason than it
+looks.** `allowAllUnixSockets` is on for container tests, and a
+bind/listen/connect round-trip was measured succeeding in-session on 2026-08-04.
+Any claim that the sandbox blocks AF_UNIX is stale.
 
-**The container runtime executes outside the sandbox, so anything delegated to it
-leaves the sandbox's view entirely.** Measured, not inferred:
+The forwarded Secure Enclave agent is unreachable because `94f29f4` set
+`ForwardAgent no` for both `devbox` and `k8s` — having found ~620 stale
+`/tmp/auth-agent*/` sockets on the box with live ones still answering. **The
+socket is not blocked; it is not forwarded.** Prefer the weaker-sounding sentence:
+it is the true one, and it names the thing that can be undone by habit rather
+than by a config change. `sign-push` still asks for `ssh -A` by design; for the
+length of that session the keys are reachable to anything on the box, so do not
+run agent sessions and `sign-push` in the same window without meaning to.
+
+Worth being precise, because it constrains every later decision: on Linux
+`allowUnixSockets` is not merely impractical, it is **inert**. Its own schema
+reads *"macOS only: Unix socket paths to allow. Ignored on Linux (seccomp cannot
+filter by path)."* Blocking is a seccomp filter on `socket()`, and seccomp sees
+register values, not the path behind the `connect()` pointer — dereferencing that
+in-kernel would be a TOCTOU hazard. macOS Seatbelt resolves paths, so it can
+allow one socket; Linux gets exactly one switch, `allowAllUnixSockets`, and it is
+all-or-nothing. Any future "just allow this one socket" here is not a config
+change, it is a decision to allow every socket including the SSH agent.
+
+A caution for anyone probing this: `test -r` on a denied file returns *success*.
+`access(2)` is not intercepted — only the actual read is.
+
+**Container tests run inside agents, and the runtime sits outside the sandbox.**
+Rootless podman's Docker-compatible socket answers from a sandboxed Bash call, so
+agents run the `integration` and `e2e` tiers themselves. What that costs is
+larger than the switch suggests:
+
+> **The container runtime executes outside the sandbox, so anything delegated to
+> it leaves the sandbox's view entirely.**
+
+Measured, not inferred:
 
 | delegated through podman | what it escapes |
 |---|---|
 | `docker pull docker.io/library/alpine:3.20` succeeded in-session | the proxy path — the pull originates outside the session netns |
 | `-v $HOME:/m` reads paths a direct `cat` cannot | `filesystem.denyRead` — a real bypass of a control that still counts |
 
-This paragraph used to argue that the container runtime routes around the egress
-allowlist, which named that list as the last line against exfiltrating a refresh
-token. The allowlist is no longer a control (see above), so the `docker.io` row
-now records something milder: the runtime does not honour the proxy path either,
-which is a fact about where traffic originates, not a breach of a boundary.
-
-The `-v $HOME:/m` row is the one that still bites. The credential deny-list
-blocks a *direct* read — both token files return `Permission denied` — but a bind
-mount reaches what `cat` cannot, and that is a genuine hole in the only control
-here that the goal above actually leans on.
+The bind-mount row is the one that bites. The credential deny-list blocks a
+*direct* read — `~/.claude/.credentials.json` returns `Permission denied` — but a
+bind mount reaches what `cat` cannot, and that is a genuine hole in the only
+control the goal actually leans on.
 
 So the honest statement of the posture is: the sandbox constrains the agent's own
 syscalls, and stops being a containment boundary the moment work is handed to the
@@ -220,7 +203,7 @@ runtime. Hostile code belongs on the disposable k8s node, as it always did.
 The trade is cheap, which is why it is easy to hold: **28 of 746** test files in
 the go monorepo need containers, and they already sit behind `//go:build e2e` or
 `integration` tags that a plain `go test ./...` skips. Agents run the other ~96%
-sandboxed; container tiers belong to you or to CI, like `sign-push`.
+sandboxed.
 
 ## How this file reaches the box — and why it drifts
 
@@ -272,17 +255,17 @@ python3 -m json.tool ~/.claude/settings.json >/dev/null && echo "settings parse 
 ls ~/.codex/devbox.config.toml
 ```
 
-Then, inside a Claude session on the devbox, confirm a sandboxed command cannot
-read the token file — it should fail, not print contents:
+Then, inside a Claude session on the devbox, confirm the deep lock holds *and*
+that the deliberate exception is genuinely excepted. These two must disagree — if
+both fail, Codex review is stranded; if both succeed, the lock is gone:
 
 ```
-cat ~/.claude/.credentials.json
+cat ~/.claude/.credentials.json     # must FAIL: Permission denied
+codex login status                  # must SUCCEED: auth.json is readable on purpose
 ```
 
-And confirm egress works and is *routed*. This expectation **inverted** on
-2026-08-04: it used to demand that an arbitrary host fail. Both of these must now
-succeed, because reaching documentation is a capability the box owes an agent,
-not a leak:
+And confirm egress works and is *routed*. Both of these must succeed, because
+reaching documentation is a capability the box owes an agent, not a leak:
 
 ```
 curl -sS -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org
@@ -300,9 +283,9 @@ ip -o addr show                              # must show loopback only
 A success on the first line is the real finding: it means a path exists that the
 sandbox never sees.
 
-And confirm the container socket is reachable — this expectation **inverted** on
-2026-08-04. Run it in both places: a blocked socket and an absent one look
-identical from inside, so the control run is what makes the result mean anything.
+And confirm the container socket is reachable. Run it in both places: a blocked
+socket and an absent one look identical from inside, so the control run is what
+makes the result mean anything.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
@@ -322,8 +305,8 @@ fallback is the whole reason this probe is trustworthy.
 
 - A compromised tailnet identity, or Linode control-plane compromise.
 - Anything running **outside** an agent sandbox, including your own shell.
-- `git`, by the deliberate exclusion above.
 - Kernel or bubblewrap escape.
+- Anything handed to the container runtime, per the trade-off above.
 - Reading source. Every repo on the box is readable by design — the sandbox
   protects credentials and shapes the network path, it does not make the source
   secret.
@@ -332,9 +315,53 @@ fallback is the whole reason this probe is trustworthy.
   that nothing *else* is talking.
 
 For genuinely hostile code, use the disposable k8s node or a throwaway VM. Do not
-run it on the box holding all source and both subscription credentials.
+run it on the box holding all source and the Claude credential.
 
 And keep the recovery path exercised. It is doing more load-bearing work in this
 posture than any single control listed above: the reason a trusted-agent model is
 affordable here is that a bad session costs a rebuild, and that only stays true
 while the rebuild is something recently done rather than recently described.
+
+## Open items
+
+Short-lived by intent. A sentence cannot fail, so everything here should either
+become an assertion in [`devbox-smoketest`](../dev/nodes/devbox-smoketest) or
+stop being true. Measured 2026-08-04 and re-checked 2026-08-05.
+
+**The proxy is not filtering, and it is not established why.** Measured
+in-session: `example.com`, `pastebin.com` and `1.1.1.1` all answered, and a
+`POST` to `httpbin.org` was echoed back with the Linode's public IP logged as the
+origin. None appear in `allowedDomains`, and the live `settings.json` is
+byte-identical to this repo's — the config is right and is not being applied.
+That session ran under a bridge harness (`CLAUDE_CODE_CHILD_SESSION=1`) whose own
+allowlist was not applied either, which argues the failure is in the proxy rather
+than in which list wins.
+
+This does not change the posture, because the allowlist was the wrong shape of
+control for this box regardless. What stays open is confirming the *boundary*
+instead: that the netns is loopback-only and nothing routes around the proxy.
+
+**Those boundary checks cannot live in `devbox-smoketest` as it stands.**
+`remote()` is `ssh … bash -lc`, an unsandboxed login shell, so `ip -o addr show`
+there reports the host's real interfaces and `curl --noproxy '*'` succeeds. Both
+would report FAIL on a healthy box — the same cry-wolf failure `4113fd9` had to
+fix twice. Only "no listener answers off-tailnet" is honestly testable from the
+Mac; the netns and route checks need either a live session or a sandboxed variant
+of `remote()`.
+
+**`/tmp` litter.** The ~620 stale `/tmp/auth-agent*/` sockets are gone — zero
+agent sockets under any name, despite no reboot since 2026-08-03, so something
+other than a rebuild cleared them. What is there instead is **2,093 empty
+`claude-empty-*` directories**, roughly 830/day: bubblewrap's masking mounts, one
+per denied path per session, never cleaned up. Harmless — `/tmp` is a 2 GB tmpfs
+at 1% with a million free inodes, and a reboot clears it — but it is what will
+mislead the next person who probes `/tmp` for stale sockets, because the
+directory link count reads 2,106 and looks alarming until you list it.
+
+**The Codex broker is built and has never run.** The unit exists at
+`~/.config/systemd/user/codex-broker@.service`, `Linger=yes` is set, and
+`/tmp/codex-broker/` exists but is empty with no instance loaded. With
+`auth.json` readable the broker is no longer needed for in-session review, so
+this is cleanup rather than a gap — but the headers of [`codex-task`](codex-task)
+and [`codex-broker`](codex-broker) still claim the sandbox refuses AF_UNIX, which
+is false, and they should be corrected or the scripts retired.
