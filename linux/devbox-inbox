@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# Two-way messaging with a running Claude Code session on this box.
+#
+#   devbox-inbox send 'text'      # queue a message for the devbox session
+#   devbox-inbox send -           # ...read the message from stdin
+#   devbox-inbox reply 'text'     # the SESSION replies to the operator
+#   devbox-inbox list             # queued, delivered, and replies
+#   devbox-inbox read             # print replies and mark them read
+#
+# Delivery is by hook, not by polling: devbox-inbox-hook fires on Stop (agent
+# about to go idle -> block and hand over the message) and on PostToolUse (agent
+# mid-task -> inject without blocking). See that script for why both exist.
+#
+# Written for two callers with opposite needs. The operator sends from the Mac
+# over ssh and reads replies; the session replies and never sends. Keeping both
+# in one command means neither has to remember a directory layout.
+set -uo pipefail
+
+ROOT="$HOME/src/iden2/.claude"
+INBOX="$ROOT/inbox"
+DELIVERED="$INBOX/.delivered"
+OUTBOX="$ROOT/outbox"
+
+die() { printf 'devbox-inbox: %s\n' "$*" >&2; exit 1; }
+ts()  { date -u +%Y%m%dT%H%M%SZ; }
+
+case "${1:-}" in
+-h|--help|"")
+    sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+
+send)
+    shift
+    text="${1:-}"
+    [ -n "$text" ] || die "nothing to send (use: send 'text', or send - for stdin)"
+    [ "$text" = "-" ] && text="$(cat)"
+    [ -n "${text// /}" ] || die "refusing to queue an empty message"
+    mkdir -p "$INBOX" || die "cannot create $INBOX"
+    f="$INBOX/$(ts)-msg.md"
+    printf '%s\n' "$text" > "$f" || die "write failed"
+    echo "queued $(basename "$f")"
+    echo "delivery: on the session's next tool call, or when it next tries to go idle"
+    ;;
+
+reply)
+    shift
+    text="${1:-}"
+    [ -n "$text" ] || die "nothing to reply (use: reply 'text', or reply - for stdin)"
+    [ "$text" = "-" ] && text="$(cat)"
+    mkdir -p "$OUTBOX" || die "cannot create $OUTBOX"
+    f="$OUTBOX/$(ts)-reply.md"
+    printf '%s\n' "$text" > "$f" || die "write failed"
+    echo "reply written: $(basename "$f")"
+    ;;
+
+list)
+    printf '=== queued (not yet delivered) ===\n'
+    ls -1 "$INBOX"/*.md 2>/dev/null | xargs -r -n1 basename || echo "  (none)"
+    printf '\n=== delivered ===\n'
+    ls -1t "$DELIVERED"/*.md 2>/dev/null | head -5 | xargs -r -n1 basename || echo "  (none)"
+    printf '\n=== replies waiting ===\n'
+    ls -1 "$OUTBOX"/*.md 2>/dev/null | xargs -r -n1 basename || echo "  (none)"
+    ;;
+
+read)
+    shopt -s nullglob
+    files=("$OUTBOX"/*.md)
+    shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then echo "(no replies)"; exit 0; fi
+    mkdir -p "$OUTBOX/.read"
+    for f in "${files[@]}"; do
+        printf '=== %s ===\n' "$(basename "$f")"
+        cat "$f"
+        printf '\n'
+        mv -f "$f" "$OUTBOX/.read/$(basename "$f")" 2>/dev/null || true
+    done
+    ;;
+
+*)
+    die "unknown command '${1}' — see --help"
+    ;;
+esac
