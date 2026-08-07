@@ -272,5 +272,61 @@ assert_contains "stdin preserves apostrophes" \
     "$(cat "$h"/src/iden2/.claude/inbox/*.md)" "it's got apostrophes"
 
 echo
+echo "identity precedence"
+
+# A stub tmux, so precedence is testable without a live server. It implements
+# only the two subcommands identity() could reach.
+stub_tmux() {
+    local d
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+    cat > "$d/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+show-options)    printf '%s' "${STUB_INBOX_OPT:-}" ;;
+display-message) printf '%s' "${STUB_PANE_TITLE:-}" ;;
+esac
+STUB
+    chmod +x "$d/tmux"
+    printf '%s' "$d"
+}
+TSTUB="$(stub_tmux)"
+
+# REGRESSION: identity used to come from the pane title. Claude Code rewrites
+# that as its work changes, so on 2026-08-07 a session addressed as "int-test"
+# was answering to "_ Manage session inbox and sub-agent lifecycle" within
+# minutes of the feature shipping. An identity must be owned by the addresser.
+h="$(new_home)"
+out="$(PATH="$TSTUB:$PATH" TMUX_PANE=%14 \
+    STUB_PANE_TITLE="_ Manage session inbox and sub-agent lifecycle" \
+    STUB_INBOX_OPT="" HOME="$h" "$INBOX_BIN" whoami 2>&1)"
+assert_not_contains "the pane title is never the identity" "$out" "Manage-session"
+assert_contains "an unnamed pane falls back to its stable pane id" "$out" "pane-14"
+assert_contains "and says how to give it a real name" "$out" "@inbox_id"
+
+# The pane option is user namespace; no application writes @-prefixed options.
+h="$(new_home)"
+out="$(PATH="$TSTUB:$PATH" TMUX_PANE=%14 \
+    STUB_PANE_TITLE="_ Manage session inbox and sub-agent lifecycle" \
+    STUB_INBOX_OPT="int-test" HOME="$h" "$INBOX_BIN" whoami 2>&1)"
+assert_contains "the @inbox_id pane option wins over the title" "$out" "int-test"
+assert_not_contains "a named pane gets no fallback nag" "$out" "@inbox_id <name>"
+
+# The env var still outranks everything, for sessions with no pane at all.
+h="$(new_home)"
+out="$(PATH="$TSTUB:$PATH" TMUX_PANE=%14 STUB_INBOX_OPT="from-option" \
+    DEVBOX_INBOX_ID=from-env HOME="$h" "$INBOX_BIN" whoami 2>&1)"
+assert_contains "DEVBOX_INBOX_ID outranks the pane option" "$out" "from-env"
+
+# And the hook must agree with the CLI, or addressed mail goes to nobody.
+h="$(new_home)"
+PATH="$TSTUB:$PATH" TMUX_PANE=%14 STUB_INBOX_OPT="int-test" HOME="$h" \
+    "$INBOX_BIN" send --to int-test 'for the named session' >/dev/null 2>&1
+out="$(printf '{"hook_event_name":"PostToolUse"}' | PATH="$TSTUB:$PATH" TMUX_PANE=%14 \
+    STUB_PANE_TITLE="_ Manage session inbox and sub-agent lifecycle" \
+    STUB_INBOX_OPT="int-test" HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_contains "hook resolves identity the same way the CLI does" "$out" "for the named session"
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

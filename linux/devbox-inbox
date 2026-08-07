@@ -57,16 +57,24 @@ ts() {
 # the operator which of them was speaking -- the replies said "SECOND SESSION
 # here" in prose, because the format carried no identity at all.
 #
-# The tmux pane title is the identity because it is the name a human already
-# gave the session and can already see. DEVBOX_INBOX_ID overrides it for
-# anything not in a pane.
+# NOT the pane title. That was the first design and it was wrong: Claude Code
+# writes the pane title itself, so within minutes of shipping, a session that
+# had been "int-test" was identified as
+# "_ Manage session inbox and sub-agent lifecycle". An identity has to be owned
+# by whoever does the addressing; the pane title is owned by the application
+# running in the pane, and it changes when the work changes.
+#
+# So, in order: an explicit env var; a tmux PANE OPTION, which is user namespace
+# (@-prefixed) and no application touches; then the pane id, which is opaque but
+# never lies. Never anything an app can rewrite underneath us.
 identity() {
     local id=""
     if [ -n "${DEVBOX_INBOX_ID:-}" ]; then
         id="$DEVBOX_INBOX_ID"
     elif [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-        id="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_title}' 2>/dev/null)"
-        [ -n "$id" ] || id="$TMUX_PANE"
+        id="$(tmux show-options -p -q -v -t "$TMUX_PANE" @inbox_id 2>/dev/null)"
+        # Opaque but stable. "%14" -> "pane-14", so it reads as a name.
+        [ -n "$id" ] || id="pane-${TMUX_PANE#%}"
     fi
     [ -n "$id" ] || id="unknown"
     safe_name "$id"
@@ -192,9 +200,17 @@ reply)
     ;;
 
 whoami)
-    printf '%s\n' "$(identity)"
-    printf 'address messages to this session with: devbox-inbox send --to %s ...\n' \
-        "$(identity)"
+    me="$(identity)"
+    printf '%s\n' "$me"
+    printf 'address messages to this session with: devbox-inbox send --to %s ...\n' "$me"
+    case "$me" in
+    pane-* | unknown)
+        printf '\nThat is a fallback id. To give this session a name a human will\n'
+        printf 'recognise, set the pane OPTION (not the pane title, which Claude\n'
+        printf 'Code rewrites as its work changes):\n'
+        printf '    tmux set-option -p -t %s @inbox_id <name>\n' "${TMUX_PANE:-<pane>}"
+        ;;
+    esac
     ;;
 
 list)
