@@ -501,7 +501,7 @@ SSHCFG
         # devbox-drift reports what no longer matches the repo; devbox-capture
         # makes recording a fix cheap enough to do mid-incident, which is the
         # only moment the reason is still known.
-        for _s in devbox-drift devbox-capture devbox-record-install devbox-inbox devbox-inbox-hook; do
+        for _s in devbox-drift devbox-capture devbox-record-install devbox-inbox devbox-inbox-hook devbox-worktree-rm; do
             if [[ -f "$LINUX_DIR/$_s" ]]; then
                 mkdir -p ~/.local/bin
                 install -m 755 "$LINUX_DIR/$_s" ~/.local/bin/"$_s"
@@ -743,7 +743,17 @@ setup_dev_tools() {
     # vim plugins
     if command -v vim &>/dev/null && [[ -f ~/.vim/autoload/plug.vim ]]; then
         echo "    vim: installing plugins"
-        vim +PlugInstall +qall 2>/dev/null || true
+        # --sync and </dev/null are both load-bearing:
+        #   --sync      vim-plug installs ASYNCHRONOUSLY by default, so a bare
+        #               +qall fires while jobs are still running and vim asks
+        #               "Press ENTER" rather than exiting.
+        #   </dev/null  with a TTY attached vim renders its UI and waits for a
+        #               keypress. Detaching stdin is what stops restore.sh
+        #               needing a manual `q` every single run.
+        # Measured 2026-08-07: neither form hangs headless (both return in <25s
+        # with all 5 plugins installed), so the annoyance was purely the TTY
+        # path -- which is the only path a human ever runs restore.sh on.
+        vim +'PlugInstall --sync' +qa </dev/null >/dev/null 2>&1 || true
     fi
 
     # npm globals

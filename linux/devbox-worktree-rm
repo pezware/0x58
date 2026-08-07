@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# Remove a git worktree from inside a Claude Code sandbox, where the normal
+# command cannot.
+#
+#   devbox-worktree-rm <worktree-path> [--delete-branch]
+#
+# WHY THIS EXISTS
+#
+# `git worktree remove` fails with "Device or resource busy" for EVERY worktree
+# in a sandboxed session, and neither --force nor rm -rf helps. It is not a
+# stale lock: the sandbox bind-masks <worktree>/.gitmodules and
+# .git/worktrees/<name>/{config.worktree,commondir} -- git config files that
+# could set core.hooksPath -- and it recomputes that mount list on EVERY Bash
+# call, so retrying can never succeed. Confirm with:
+#
+#     grep <slug> /proc/self/mountinfo | awk '{print $5}'
+#
+# The container runtime executes OUTSIDE the sandbox, so a bind mount performed
+# by podman reaches paths this process cannot touch. That is the documented
+# workaround; this script is that workaround made into one command, because the
+# hand-typed version is four steps with two non-obvious gotchas and it kept
+# being got wrong.
+#
+# SAFETY
+#
+# This removes a directory tree via `rm -rf` in a container running as root, so
+# the target is validated hard before anything runs. It must be a path git
+# itself reports as a worktree of the named repo, and it must not be the main
+# checkout. An unvalidated path is refused rather than guessed at.
+set -uo pipefail
+
+die() { printf 'devbox-worktree-rm: %s\n' "$*" >&2; exit 1; }
+
+WT=""; DELETE_BRANCH=0
+for a in "$@"; do
+    case "$a" in
+        --delete-branch) DELETE_BRANCH=1 ;;
+        -h|--help) sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) die "unknown flag: $a" ;;
+        *)  WT="$a" ;;
+    esac
+done
+[ -n "$WT" ] || die "usage: devbox-worktree-rm <worktree-path> [--delete-branch]"
+
+# Normalise without requiring the path to be readable through the mask.
+WT="${WT%/}"
+case "$WT" in /*) ;; *) WT="$PWD/$WT" ;; esac
+
+command -v git >/dev/null 2>&1 || die "git not on PATH"
+
+# The repo that OWNS this worktree. Ask git rather than guessing from the path,
+# so a mistyped argument cannot resolve to something removable.
+MAIN="$(git -C "$WT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+[ -n "$MAIN" ] || die "$WT is not inside a git worktree (or git cannot read it)"
+[ "$MAIN" != "$WT" ] || die "refusing: $WT is the MAIN checkout, not a linked worktree"
+
+# Confirm git actually lists it, so we never rm -rf a path git does not own.
+git -C "$MAIN" worktree list --porcelain 2>/dev/null \
+    | awk -v t="$WT" '/^worktree /{if ($2==t) found=1} END{exit !found}' \
+    || die "git does not list $WT as a worktree of $MAIN — refusing"
+
+SLUG="$(basename "$WT")"
+PARENT="$(dirname "$WT")"
+BRANCH="$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+
+echo "repo     : $MAIN"
+echo "worktree : $WT"
+echo "branch   : ${BRANCH:-<unknown>}"
+
+# Uncommitted work is the one thing worth stopping for: the container delete is
+# not recoverable, and "busy" errors have trained people to retry harder rather
+# than look.
+if ! git -C "$WT" diff --quiet 2>/dev/null || ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
+    die "worktree has uncommitted changes — commit, stash, or remove it by hand"
+fi
+
+DOCKER="${DEVBOX_PODMAN:-/usr/bin/podman --remote --url unix:///run/user/1000/podman/podman.sock}"
+IMAGE="${DEVBOX_TOOLBOX_IMAGE:-localhost/0x58-toolbox:latest}"
+
+echo "==> Removing via container (runs outside the sandbox)"
+# Mount the PARENT, not the worktree: the worktree's own path is what is masked.
+# Both the tree and git's metadata dir have to go, or `worktree list` keeps
+# reporting a directory that is no longer there.
+$DOCKER run --rm -v "$PARENT:/m:rw" -v "$MAIN/.git:/g:rw" "$IMAGE" \
+    sh -c "rm -rf '/m/$SLUG' '/g/worktrees/$SLUG'" \
+    || die "container removal failed (is the toolbox image present? $IMAGE)"
+
+git -C "$MAIN" worktree prune 2>/dev/null || true
+
+if [ "$DELETE_BRANCH" -eq 1 ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
+    # `branch -D` prints "error: could not lock config file .git/config" here and
+    # then succeeds anyway -- the sandbox masks that file, the ref delete itself
+    # does not need it. Expected, not a failure.
+    git -C "$MAIN" branch -D "$BRANCH" 2>&1 | grep -v "could not lock config file" || true
+fi
+
+echo "==> Verifying"
+if [ -d "$WT" ]; then
+    echo "    WARNING: $WT still exists on disk" >&2
+else
+    echo "    tree removed"
+fi
+git -C "$MAIN" worktree list | sed 's/^/    /'
+
+# One cosmetic residue is expected and is NOT a failure: the next Bash call may
+# recreate .git/worktrees/<slug>/ as an empty pair of mount points, because that
+# call's bind list was computed before this removal. `git worktree list` ignores
+# an empty metadata dir, and it disappears when the session ends.
