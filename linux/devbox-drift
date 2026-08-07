@@ -167,6 +167,43 @@ else
     say "  (mkcert not installed)"
 fi
 
+# ---- 1c. host facts that bite agents --------------------------------------
+# Neither is a file this repo owns, so both are checked by EFFECT. Both cost
+# real time on 2026-08-07, and both stay invisible until something fails in a
+# way that names the wrong cause.
+say "== host facts"
+
+# /usr/bin/time, the BINARY. `command -v time` answers "time" from the bash
+# builtin whether or not the binary exists, so the obvious check passes on a box
+# where `/usr/bin/time -v` returns 127. Test the path, not the name.
+if [ -x /usr/bin/time ]; then
+    ok "/usr/bin/time present"
+else
+    note "/usr/bin/time missing — '/usr/bin/time -v' profiling returns rc=127"
+    say  "         -> 'command -v time' still succeeds (bash builtin), so a naive"
+    say  "            check will not catch this"
+fi
+
+# /tmp on tmpfs IS RAM. On a 3.9 GB box hosting kind plus Claude Code's own
+# scratchpad (/tmp/claude-<uid>), a large write both ENOSPCs at ~2 GB and steals
+# from the workload. restore.sh masks tmp.mount, but that needs a reboot, so
+# report the LIVE state rather than the configured intent.
+_tmpfs="$(findmnt -no FSTYPE /tmp 2>/dev/null)"
+if [ "$_tmpfs" = "tmpfs" ]; then
+    _sz="$(df -h /tmp 2>/dev/null | awk 'NR==2{print $2}')"
+    if systemctl is-enabled tmp.mount 2>/dev/null | grep -q masked; then
+        note "/tmp still tmpfs (${_sz}) — tmp.mount masked, REBOOT PENDING"
+    else
+        note "/tmp is tmpfs (${_sz}) — RAM, not disk"
+        say  "         -> large agent writes ENOSPC and consume the 3.9 GB budget"
+        say  "         -> fix: re-run macos/restore.sh, then reboot"
+    fi
+    unset _sz
+else
+    ok "/tmp on disk (${_tmpfs:-unknown})"
+fi
+unset _tmpfs
+
 # ---- 2. apt packages ------------------------------------------------------
 say "== apt packages"
 if command -v apt-mark >/dev/null 2>&1; then
