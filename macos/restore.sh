@@ -617,6 +617,74 @@ setup_dev_tools() {
         unset _cfg
     fi
 
+    # mkcert root CA into the SYSTEM trust store — Linux only.
+    #
+    # Without it, anything on this box speaking HTTPS to *.dev.iden2.app fails
+    # with `x509: certificate signed by unknown authority`. That cost three
+    # separate investigations on 2026-08-07: an e2e run where 24 tests failed on
+    # a single https hop, a TNAS CrashLoop, and a chart missing its CA volume.
+    # The message names TLS while the cause is trust, so it reads as a service
+    # fault every time.
+    #
+    # This is a ROOT CA, installed once -- not a per-run cert. `task
+    # certs:generate` and CI both mint fresh LEAF certs on every round, and
+    # every one of them chains to this same root, so they are trusted without
+    # further action. Measured on the devbox: root serial CE2B0827 dated
+    # 2026-08-04, leaf serial 48A34BCD regenerated 2026-08-06, `openssl verify
+    # -CAfile root leaf` => OK. mkcert only mints a NEW root when CAROOT is
+    # empty; otherwise it reuses. CI reinstalls every run purely because a
+    # runner starts with an empty trust store.
+    #
+    # `mkcert -install` without sudo reaches only the NSS (browser) store, which
+    # no Go binary consults. Go on Linux reads /etc/ssl/certs/ca-certificates.crt,
+    # and writing there needs root. The Claude Code sandbox denies sudo to
+    # AGENTS; it does not deny it to this script, which the human runs and which
+    # already sudo-installs docker-compose above.
+    #
+    # SSL_CERT_FILE is the per-process workaround and deliberately not the fix:
+    # it must be remembered at every call site, and it makes the box diverge
+    # from CI -- the exact class of difference behind all three hunts above.
+    # ci-tests-kind.yml does what follows, naming "Go test binaries" as the
+    # beneficiary.
+    #
+    # Two gotchas, both inherited from that CI step:
+    #   - CAROOT must be passed EXPLICITLY. Under sudo HOME=/root, so mkcert
+    #     would mint a SECOND root there and install THAT one, leaving the certs
+    #     actually in use untrusted -- with no error.
+    #   - `mise which mkcert`, not the shim: sudo resets PATH.
+    if [[ "$PLATFORM" == "linux" ]] && command -v mkcert &>/dev/null; then
+        _caroot="$(mkcert -CAROOT)"
+        if [[ -f "$_caroot/rootCA.pem" ]]; then
+            # Compare FINGERPRINTS, not mere presence. If CAROOT is ever wiped
+            # (rebuild, or someone clearing ~/.local/share/mkcert) mkcert mints a
+            # new root, and because it names the installed file by serial the
+            # stale one would sit trusted beside it forever while new leaves went
+            # untrusted. Existence alone cannot see that.
+            _want="$(openssl x509 -in "$_caroot/rootCA.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+            _have=""
+            for _c in /usr/local/share/ca-certificates/mkcert_development_CA_*.crt; do
+                [[ -f "$_c" ]] || continue
+                _fp="$(openssl x509 -in "$_c" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+                [[ "$_fp" == "$_want" ]] && _have="$_c"
+            done
+            if [[ -n "$_have" ]]; then
+                echo "    mkcert: root CA already trusted system-wide"
+            else
+                _mkcert="$(mise which mkcert 2>/dev/null || command -v mkcert)"
+                echo "==> Installing mkcert root CA into the system trust store (sudo)"
+                if sudo CAROOT="$_caroot" "$_mkcert" -install; then
+                    echo "    mkcert: system trust store updated from $_caroot"
+                else
+                    echo "    WARNING: mkcert -install failed — HTTPS to *.dev.iden2.app will keep" >&2
+                    echo "             failing with x509 'unknown authority' until it succeeds." >&2
+                fi
+                unset _mkcert
+            fi
+            unset _want _have _c _fp
+        fi
+        unset _caroot
+    fi
+
     # nvim plugins (lazy.nvim auto-bootstraps on first launch). macOS only —
     # printing this on the devbox would advertise an editor that is not there.
     if [[ "$PLATFORM" == "macos" ]]; then
