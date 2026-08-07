@@ -7,6 +7,7 @@
 #   devbox-inbox reply 'text'     # the SESSION replies to the operator
 #   devbox-inbox list             # queued, delivered, and replies
 #   devbox-inbox read             # print replies and mark them read
+#   devbox-inbox show [N]         # re-print the last N delivered messages
 #
 # Delivery is by hook, not by polling: devbox-inbox-hook fires on Stop (agent
 # about to go idle -> block and hand over the message) and on PostToolUse (agent
@@ -15,6 +16,19 @@
 # Written for two callers with opposite needs. The operator sends from the Mac
 # over ssh and reads replies; the session replies and never sends. Keeping both
 # in one command means neither has to remember a directory layout.
+#
+# OWNERSHIP
+#
+# The Claude session on this box owns its own sessions and its own work. This
+# is a channel for communication and advice, not a remote control: messages
+# carry context, not orders. Escalation still originates from the Mac, but the
+# decision on the box stays with the session that lives there. That is why
+# devbox-inbox-hook frames delivered text as advisory -- if the wording ever
+# drifts back toward "do this", the channel has quietly changed meaning.
+#
+# NOTE FOR THE OPERATOR: `ssh devbox devbox-inbox ...` does NOT work. ssh runs a
+# non-login, non-interactive shell, so ~/.profile never adds ~/.local/bin to
+# PATH. Use `ssh devbox 'bash -lc "devbox-inbox ..."'`.
 set -uo pipefail
 
 ROOT="$HOME/src/iden2/.claude"
@@ -23,11 +37,49 @@ DELIVERED="$INBOX/.delivered"
 OUTBOX="$ROOT/outbox"
 
 die() { printf 'devbox-inbox: %s\n' "$*" >&2; exit 1; }
-ts()  { date -u +%Y%m%dT%H%M%SZ; }
+warn() { printf 'devbox-inbox: %s\n' "$*" >&2; }
+
+# Millisecond resolution, because seconds collide: two sends in the same second
+# used to produce the same filename and the second one silently truncated the
+# first. BSD date has no %N, so fall back rather than emit a literal "N".
+ts() {
+    local t
+    t="$(date -u +%Y%m%dT%H%M%S.%3NZ)"
+    case "$t" in *N*) t="$(date -u +%Y%m%dT%H%M%SZ)" ;; esac
+    printf '%s' "$t"
+}
+
+# Publish atomically. A message is only visible to the hook once it is COMPLETE:
+# we write to a staging name that deliberately does not match the hook's *.md
+# glob, then rename it into place. Without this, a send that races a busy
+# session gets picked up and delivered half-written, and the content is lost.
+publish() {
+    local dir="$1" suffix="$2" text="$3" stage f n
+    mkdir -p "$dir" || die "cannot create $dir"
+    stage="$dir/.staging-$$-${RANDOM}"
+    printf '%s\n' "$text" > "$stage" || { rm -f "$stage"; die "write failed"; }
+    n=0
+    f="$dir/$(ts)-$suffix.md"
+    while [ -e "$f" ]; do
+        n=$((n + 1))
+        [ "$n" -lt 100 ] || { rm -f "$stage"; die "cannot find a free name in $dir"; }
+        f="$dir/$(ts)-$n-$suffix.md"
+    done
+    mv -f "$stage" "$f" || { rm -f "$stage"; die "publish failed"; }
+    printf '%s' "${f##*/}"
+}
+
+# Newest-last slice of an array, for "show the last N".
+tail_slice() {
+    local n="$1" total="$2" start
+    start=$((total - n))
+    [ "$start" -lt 0 ] && start=0
+    printf '%s' "$start"
+}
 
 case "${1:-}" in
 -h|--help|"")
-    sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 
@@ -37,11 +89,15 @@ send)
     [ -n "$text" ] || die "nothing to send (use: send 'text', or send - for stdin)"
     [ "$text" = "-" ] && text="$(cat)"
     [ -n "${text// /}" ] || die "refusing to queue an empty message"
-    mkdir -p "$INBOX" || die "cannot create $INBOX"
-    f="$INBOX/$(ts)-msg.md"
-    printf '%s\n' "$text" > "$f" || die "write failed"
-    echo "queued $(basename "$f")"
+    name="$(publish "$INBOX" msg "$text")" || exit 1
+    echo "queued $name"
     echo "delivery: on the session's next tool call, or when it next tries to go idle"
+    # Sending into a void is the one failure the operator cannot see from here,
+    # so say it out loud instead of letting the message sit forever.
+    if command -v pgrep >/dev/null 2>&1 && ! pgrep -x claude >/dev/null 2>&1; then
+        warn "WARNING: no running claude session on this box — this will sit queued"
+        warn "         until one starts. Hooks are event-driven; nothing polls."
+    fi
     ;;
 
 reply)
@@ -49,19 +105,66 @@ reply)
     text="${1:-}"
     [ -n "$text" ] || die "nothing to reply (use: reply 'text', or reply - for stdin)"
     [ "$text" = "-" ] && text="$(cat)"
-    mkdir -p "$OUTBOX" || die "cannot create $OUTBOX"
-    f="$OUTBOX/$(ts)-reply.md"
-    printf '%s\n' "$text" > "$f" || die "write failed"
-    echo "reply written: $(basename "$f")"
+    name="$(publish "$OUTBOX" reply "$text")" || exit 1
+    echo "reply written: $name"
     ;;
 
 list)
+    # Globs, not `ls | head | xargs basename`: that pipeline made head close the
+    # pipe early and left "terminated by signal 13" noise in the output. Names
+    # are timestamps, so lexical order is chronological and newest is last.
+    shopt -s nullglob
+    queued=("$INBOX"/*.md)
+    delivered=("$DELIVERED"/*.md)
+    replies=("$OUTBOX"/*.md)
+    shopt -u nullglob
+
     printf '=== queued (not yet delivered) ===\n'
-    ls -1 "$INBOX"/*.md 2>/dev/null | xargs -r -n1 basename || echo "  (none)"
-    printf '\n=== delivered ===\n'
-    ls -1t "$DELIVERED"/*.md 2>/dev/null | head -5 | xargs -r -n1 basename || echo "  (none)"
+    if [ "${#queued[@]}" -eq 0 ]; then
+        printf '  (none)\n'
+    else
+        for f in "${queued[@]}"; do printf '  %s\n' "${f##*/}"; done
+    fi
+
+    # The section that used to mislead: a reader saw an empty queue and went
+    # hunting the filesystem for a message that had already been handed to them.
+    printf '\n=== delivered (already injected into the session context) ===\n'
+    printf '  These were pushed straight into the session by the hook; they are NOT\n'
+    printf '  waiting here to be polled. An empty queue above means everything\n'
+    printf '  arrived — not that nothing was sent.\n'
+    printf '  Re-read with: devbox-inbox show [N]\n'
+    if [ "${#delivered[@]}" -eq 0 ]; then
+        printf '  (none)\n'
+    else
+        for f in "${delivered[@]:$(tail_slice 5 ${#delivered[@]})}"; do
+            printf '  %s\n' "${f##*/}"
+        done
+    fi
+
     printf '\n=== replies waiting ===\n'
-    ls -1 "$OUTBOX"/*.md 2>/dev/null | xargs -r -n1 basename || echo "  (none)"
+    if [ "${#replies[@]}" -eq 0 ]; then
+        printf '  (none)\n'
+    else
+        for f in "${replies[@]}"; do printf '  %s\n' "${f##*/}"; done
+    fi
+    ;;
+
+show)
+    shift
+    n="${1:-1}"
+    case "$n" in '' | *[!0-9]*) die "show takes a count, e.g. 'show 3'" ;; esac
+    [ "$n" -gt 0 ] || die "show takes a count of 1 or more"
+    shopt -s nullglob
+    files=("$DELIVERED"/*.md)
+    shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then echo "(nothing delivered yet)"; exit 0; fi
+    # Deliberately non-destructive: show is for re-reading context that was
+    # already handed over, so it must stay repeatable.
+    for f in "${files[@]:$(tail_slice "$n" ${#files[@]})}"; do
+        printf '=== %s ===\n' "${f##*/}"
+        cat "$f"
+        printf '\n'
+    done
     ;;
 
 read)
@@ -71,10 +174,10 @@ read)
     if [ "${#files[@]}" -eq 0 ]; then echo "(no replies)"; exit 0; fi
     mkdir -p "$OUTBOX/.read"
     for f in "${files[@]}"; do
-        printf '=== %s ===\n' "$(basename "$f")"
+        printf '=== %s ===\n' "${f##*/}"
         cat "$f"
         printf '\n'
-        mv -f "$f" "$OUTBOX/.read/$(basename "$f")" 2>/dev/null || true
+        mv -f "$f" "$OUTBOX/.read/${f##*/}" 2>/dev/null || true
     done
     ;;
 
