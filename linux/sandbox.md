@@ -68,6 +68,49 @@ missing; that default converts a broken sandbox into no sandbox. This is also wh
 `bubblewrap` and `socat` are in [`packages.txt`](packages.txt) as required rather
 than optional — without them Claude Code refuses to start, which is the intent.
 
+**Approval is auto mode; enforcement is still the sandbox.** `permissions.defaultMode:
+"auto"` routes each action through a classifier model instead of prompting the human.
+The two layers are orthogonal and both stay on: the classifier decides *whether an
+action is allowed*, bubblewrap decides *what it can touch if it runs*. Nothing in the
+`denyRead`/`denyWrite`/credentials posture below is relaxed by this.
+
+It replaces prompting, not confinement — which is why the answer here is auto mode and
+not `bypassPermissions`. Bypass would have removed the prompts by removing the check.
+
+The measurement that forced it: with `autoAllowBashIfSandboxed`, Claude Code auto-approves
+a Bash call only when it can **statically prove** the command is sandboxable, and it
+cannot prove anything containing `$VAR`, `$(...)`, `exec`, or a redirect whose path is
+computed at runtime. The go-monorepo runbooks open every step with
+`export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$TMPDIR/bin:$PATH"`,
+because a non-interactive shell never runs `mise activate`. Two simple expansions, so the
+analyzer bails, so **every step of every runbook prompts**. A 2026-08-07 session spent
+two hours clearing ~45 prompts by hand to get one integration suite and one kind deploy
+through. The box is advertised as running tickets unattended; it was not.
+
+`autoMode.environment` is the other half, and skipping it just moves the stall. The
+classifier blocks port-forwards into "sensitive remote targets", teardown of stateful
+resources it did not create, and `terraform destroy` — all of which describe the normal
+kind and compose loop here, because the local backings are *named* like production:
+a cluster called `iden2-dev`, hostnames under `*.dev.iden2.app`, a real Vault, real
+Terraform. The environment entries say plainly that these are disposable and local, and
+that the genuinely sensitive targets — `*.stg.iden2.app`, production GCP, `infra-tf` —
+are not reachable from this box at all. Without them auto mode pauses and reverts to
+prompting after 3 consecutive or 20 total blocks, which is the old failure with extra
+latency.
+
+Both keys must live in **user** settings. Claude Code deliberately ignores
+`defaultMode: "auto"` and the whole `autoMode` block when they come from
+`.claude/settings.json` or `.claude/settings.local.json`, so a checked-out repo cannot
+grant itself autonomy. `restore.sh` writes them to `~/.claude/settings.json`.
+
+What this does not do is make the agent trustworthy — see the warning in the trade-offs
+below. It moves the human from approving every `grep` to reviewing the diff, which is
+where the attention was worth spending anyway. If you want a hard checkpoint back on a
+specific action, `permissions.ask` is evaluated *before* the classifier and always
+prompts; `"Bash(git push *)"` and `"Bash(gh pr create *)"` are the obvious candidates,
+and are deliberately **not** set here because unattended push-and-PR is the point of the
+box.
+
 **Credentials hidden.** `sandbox.credentials` (Claude Code 2.1.187+) denies reads
 of `~/.claude/.credentials.json`, `~/.npmrc`, `~/.config/gh/hosts.yml` and
 `~/.git-credentials`, and unsets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
@@ -278,6 +321,22 @@ claude --version                           # needs >= 2.1.187 for sandbox.creden
 python3 -m json.tool ~/.claude/settings.json >/dev/null && echo "settings parse OK"
 ls ~/.codex/devbox.config.toml
 ```
+
+Auto mode is the one setting that fails *quietly* — an unmet requirement leaves the
+session in Manual mode with no error, which looks exactly like the config not having
+landed. Check that the keys arrived and that the classifier actually reads them:
+
+```bash
+python3 -c "import json;d=json.load(open('$HOME/.claude/settings.json'));\
+print('defaultMode:',d.get('permissions',{}).get('defaultMode'));\
+print('autoMode entries:',len(d.get('autoMode',{}).get('environment',[])))"
+claude auto-mode config | head -20     # "$defaults" expanded + our entries present
+```
+
+`defaultMode: auto` present but the session starting in Manual means a requirement is
+unmet, not a transient fault: it needs Opus 4.6+/Sonnet 4.6+/Fable 5, and the key must
+be in **user** settings — Claude Code ignores it from `.claude/settings*.json`. The
+status bar reads `⏵⏵ auto mode on` when it took.
 
 Then, inside a Claude session on the devbox, confirm the deep lock holds *and*
 that the deliberate exception is genuinely excepted. These two must disagree — if

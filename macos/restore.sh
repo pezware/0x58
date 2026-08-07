@@ -223,10 +223,16 @@ place_dotfiles() {
         # is "nothing happened and nobody was told" is worse than the clobber it
         # prevents.
         #
-        # So merge narrowly instead. `sandbox` is wholly owned by this repo and is
-        # replaced. Under `hooks`, only OUR SessionStart entry is replaced --
-        # matched by its command path -- so hand-added hooks and every other event
+        # So merge narrowly instead. `sandbox` and `autoMode` are wholly owned by
+        # this repo and are replaced. Under `permissions` only `defaultMode` is
+        # ours; under `hooks`, only OUR SessionStart entry is replaced -- matched
+        # by its command path -- so hand-added hooks and every other event
         # survive. Anything else in the file is untouched by construction.
+        #
+        # The merge is an ALLOWLIST of keys, which means a key this repo starts
+        # owning later is silently dropped until it is added here too. That is the
+        # same "nothing happened and nobody was told" failure the staged copy had.
+        # If you add a key to claude-settings.json, add it below in the same commit.
         if [[ -f "$LINUX_DIR/claude-settings.json" ]]; then
             mkdir -p ~/.claude
             if [[ ! -f ~/.claude/settings.json ]]; then
@@ -250,6 +256,21 @@ changed = []
 if live.get('sandbox') != repo.get('sandbox'):
     live['sandbox'] = repo['sandbox']
     changed.append('sandbox')
+
+# `autoMode` is wholly owned by this repo, like `sandbox`, so it is replaced
+# rather than merged. Claude Code never writes this key itself.
+if repo.get('autoMode') is not None and live.get('autoMode') != repo['autoMode']:
+    live['autoMode'] = repo['autoMode']
+    changed.append('autoMode')
+
+# Under `permissions` we own ONLY defaultMode. `allow`/`deny`/`ask` accumulate
+# entries Claude Code writes as the human answers prompts, and replacing the
+# block wholesale would silently discard them -- the same class of bug the
+# staged-copy approach had, one level down.
+repo_mode = repo.get('permissions', {}).get('defaultMode')
+if repo_mode and live.get('permissions', {}).get('defaultMode') != repo_mode:
+    live.setdefault('permissions', {})['defaultMode'] = repo_mode
+    changed.append('permissions.defaultMode')
 
 # Replace only the entry whose command we install; leave every other hook alone.
 ours = {h['hooks'][0]['command']
