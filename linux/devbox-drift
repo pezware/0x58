@@ -131,6 +131,42 @@ PY
     fi
 fi
 
+# ---- 1b. mkcert root CA in the system trust store -------------------------
+# Not a file this repo owns -- the CA is per-machine -- so it is checked by
+# EFFECT instead: is the root that signs *.dev.iden2.app actually trusted
+# system-wide? Three separate x509 investigations on 2026-08-07 traced back to
+# this being false, each one reading as a service fault rather than a trust gap.
+#
+# Compares fingerprints, not presence: mkcert names the installed file by
+# serial, so a regenerated root lands BESIDE the stale one and leaves it
+# trusted indefinitely while newly minted leaves go untrusted.
+say "== mkcert root CA (system trust)"
+if command -v mkcert >/dev/null 2>&1; then
+    caroot="$(mkcert -CAROOT 2>/dev/null)"
+    if [ -f "$caroot/rootCA.pem" ]; then
+        want="$(openssl x509 -in "$caroot/rootCA.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+        found=""; stale=0
+        for c in /usr/local/share/ca-certificates/mkcert_development_CA_*.crt; do
+            [ -f "$c" ] || continue
+            fp="$(openssl x509 -in "$c" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+            if [ "$fp" = "$want" ]; then found="$c"; else stale=$((stale+1)); fi
+        done
+        if [ -n "$found" ]; then
+            ok "root CA trusted system-wide"
+        else
+            note "mkcert root CA is NOT in the system trust store"
+            say  "         -> every https client here (Go tests, terraform, curl) fails"
+            say  "            *.dev.iden2.app with x509 'unknown authority'"
+            say  "         -> fix: re-run macos/restore.sh, which installs it with sudo"
+        fi
+        [ "$stale" -gt 0 ] && note "$stale stale mkcert CA(s) still trusted in /usr/local/share/ca-certificates"
+    else
+        say "  (no rootCA.pem at $caroot — run 'task certs:generate' in go-monorepo)"
+    fi
+else
+    say "  (mkcert not installed)"
+fi
+
 # ---- 2. apt packages ------------------------------------------------------
 say "== apt packages"
 if command -v apt-mark >/dev/null 2>&1; then
