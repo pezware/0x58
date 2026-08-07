@@ -685,6 +685,44 @@ setup_dev_tools() {
         unset _caroot
     fi
 
+    # /tmp off tmpfs — Linux only.
+    #
+    # Debian 13 mounts /tmp as tmpfs at 50% of RAM (measured here: 2007984k on a
+    # 3.9 GB box). tmpfs is RAM, so every byte written to /tmp is a byte the
+    # workload cannot have -- on a 2 vCPU / 3.9 GB machine already running kind,
+    # that is the scarcest resource on the box.
+    #
+    # It is not theoretical: on 2026-08-07 an agent building a 1688 MB image
+    # bundle filled /tmp and died with ENOSPC, and Claude Code's own scratchpad
+    # lives at /tmp/claude-<uid>, so ordinary agent work competes for the same
+    # 2 GB. Root has 35 G free; this trades RAM pressure for disk that is idle.
+    #
+    # Masking rather than resizing: growing the tmpfs makes the RAM problem
+    # worse, and shrinking it makes ENOSPC arrive sooner. CLAUDE_CODE_TMPDIR was
+    # considered and rejected -- it is not a documented setting, so it would be
+    # a guess dressed as a fix.
+    #
+    # Deliberately does NOT unmount /tmp live. Processes hold open files there
+    # (agent sockets, the scratchpad), and pulling it out from under them trades
+    # a slow leak for an immediate outage. The mask takes effect on next boot.
+    if [[ "$PLATFORM" == "linux" ]]; then
+        if [[ "$(findmnt -no FSTYPE /tmp 2>/dev/null)" == "tmpfs" ]]; then
+            if systemctl is-enabled tmp.mount 2>/dev/null | grep -q masked; then
+                echo "    /tmp: tmp.mount already masked — reboot to move /tmp onto disk"
+            else
+                echo "==> Masking tmp.mount so /tmp lands on disk, not RAM (sudo)"
+                if sudo systemctl mask tmp.mount; then
+                    echo "    /tmp: masked. REBOOT REQUIRED — until then /tmp is still a"
+                    echo "          $(df -h /tmp | awk 'NR==2{print $2}') tmpfs and large writes still cost RAM."
+                else
+                    echo "    WARNING: could not mask tmp.mount; /tmp stays RAM-backed" >&2
+                fi
+            fi
+        else
+            echo "    /tmp: on disk already ($(findmnt -no FSTYPE /tmp 2>/dev/null))"
+        fi
+    fi
+
     # nvim plugins (lazy.nvim auto-bootstraps on first launch). macOS only —
     # printing this on the devbox would advertise an editor that is not there.
     if [[ "$PLATFORM" == "macos" ]]; then

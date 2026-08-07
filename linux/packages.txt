@@ -49,6 +49,13 @@ socat
 # the one thing that actually provides them.
 btop
 ncdu
+time           # /usr/bin/time — the BINARY, which is not the bash builtin. Agents
+               # profiling a step reach for `/usr/bin/time -v` (peak RSS, wall
+               # clock) and get rc=127 because only the builtin exists, and the
+               # builtin supports neither -v nor a format string. `command -v
+               # time` answers "time" either way, so the check that would catch
+               # this passes on a box where it is missing. Cost a profiling
+               # script on 2026-08-07.
 
 # === Containers — for your shell, CI, AND agents ===
 # Rootless podman provides the Docker-compatible API socket testcontainers-go looks
