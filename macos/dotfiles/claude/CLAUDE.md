@@ -108,6 +108,47 @@ When compressing, preserve in priority order:
 
 ## Operations Runbook
 
+### Talking to a Claude session on the devbox (`ssh devbox`)
+
+Do **not** drive it with tmux keystrokes. That is synthetic input to a UI and it
+fails three ways: swallowed by permission prompts, the agent-selection overlay
+steals the Enter that should submit, and `C-u` wipes text the human had queued.
+There is a real inbox instead:
+
+```bash
+ssh devbox devbox-inbox send 'text'   # queue a message for the running session
+ssh devbox devbox-inbox send -        # ...or read the message from stdin
+ssh devbox devbox-inbox read          # replies from the session
+ssh devbox devbox-inbox list          # queued / delivered / waiting replies
+```
+
+Delivered by hook, never polled: `Stop` blocks a session that is about to go
+idle and hands the message over; `PostToolUse` injects mid-task without
+blocking, so steering lands within seconds of its next tool call. The session
+replies with `devbox-inbox reply '...'`, which the delivery text tells it — so
+the reply direction needs no setup on its end.
+
+**The one limitation worth knowing: an already-idle session receives nothing.**
+Hooks are event-driven, and a session sitting at its prompt emits no events, so
+a queued message waits until it next does a turn. If it is idle and the message
+matters now, nudge it — the message is then delivered by the resulting turn.
+
+Never invoke `devbox-inbox-hook` by hand to "check" delivery: it *consumes* the
+queue, and the message the live session was about to receive is gone.
+
+### Other devbox-only helpers (all in `~/.local/bin`, installed by restore.sh)
+
+```bash
+devbox-drift                 # what no longer matches the repo; exits 1 on drift
+devbox-capture --pkg X 'why' # record a package/config fix at the moment you make it
+devbox-worktree-rm <path>    # `git worktree remove` CANNOT work in a sandboxed
+                             # session — the sandbox bind-masks .gitmodules and
+                             # .git/worktrees/<n>/{config.worktree,commondir} and
+                             # recomputes the list every Bash call, so retrying
+                             # and --force never help. This removes it through a
+                             # container, which runs outside the sandbox.
+```
+
 ### GitHub Actions - Force Cancel Stuck Workflow
 
 ```bash
