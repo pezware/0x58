@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+#
+# Tests for devbox-inbox and devbox-inbox-hook.
+#
+#   ./linux/devbox-inbox-test
+#
+# No test framework on purpose. The contract under test is "a message lands
+# intact and the hook hands it over exactly once", which is filesystem
+# behaviour; a dependency-free runner stays as portable as the scripts it
+# covers and runs on the devbox with nothing installed.
+#
+# Isolation is $HOME: both scripts derive every path from $HOME/src/iden2/.claude,
+# so a throwaway HOME per test is a complete sandbox.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+INBOX_BIN="$HERE/devbox-inbox"
+HOOK_BIN="$HERE/devbox-inbox-hook"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]" ;;
+    esac
+}
+assert_not_contains() {
+    case "$2" in
+    *"$3"*) no "$1" "output unexpectedly contained [$3]" ;;
+    *) ok "$1" ;;
+    esac
+}
+
+new_home() {
+    local d
+    d="$(mktemp -d)"
+    mkdir -p "$d/src/iden2/.claude"
+    TMPDIRS+=("$d")
+    printf '%s' "$d"
+}
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        case "$d" in /tmp/* | /var/folders/*) rm -rf "$d" ;; esac
+    done
+}
+trap cleanup EXIT
+
+# Count files matching a glob without tripping over "no matches".
+count_glob() {
+    local n=0 f
+    shopt -s nullglob
+    for f in $1; do [ -e "$f" ] && n=$((n + 1)); done
+    shopt -u nullglob
+    printf '%d' "$n"
+}
+
+run_hook() {  # run_hook <home> <event>
+    printf '{"hook_event_name":"%s"}' "$2" | HOME="$1" "$HOOK_BIN" 2>/dev/null
+}
+
+echo "devbox-inbox"
+
+# --- send publishes a complete, readable message -----------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'hello there' >/dev/null 2>&1
+assert_eq "send queues exactly one message" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "1"
+assert_eq "send writes the exact text" \
+    "$(cat "$h"/src/iden2/.claude/inbox/*.md)" "hello there"
+
+# The staging file must never survive, and must never be visible as *.md --
+# that is what stops the hook delivering a half-written message.
+assert_eq "no staging file left behind" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/.staging-*")" "0"
+
+# --- REGRESSION: two sends in the same second must not overwrite each other ---
+# Second-resolution filenames used to collide, and `>` silently truncated the
+# first message out of existence.
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'first' >/dev/null 2>&1
+HOME="$h" "$INBOX_BIN" send 'second' >/dev/null 2>&1
+HOME="$h" "$INBOX_BIN" send 'third' >/dev/null 2>&1
+assert_eq "three rapid sends all survive" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "3"
+
+# --- send refuses to queue nothing -------------------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send '   ' >/dev/null 2>&1
+assert_eq "whitespace-only message is refused" "$?" "1"
+assert_eq "refused message is not queued" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "0"
+
+# --- list ---------------------------------------------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'queued one' >/dev/null 2>&1
+out="$(HOME="$h" "$INBOX_BIN" list 2>&1)"
+assert_contains "list shows a queued message" "$out" "-msg.md"
+assert_not_contains "list has no SIGPIPE noise" "$out" "signal 13"
+assert_not_contains "list has no xargs noise" "$out" "xargs"
+
+run_hook "$h" PostToolUse >/dev/null
+out="$(HOME="$h" "$INBOX_BIN" list 2>&1)"
+assert_contains "list explains where delivered content went" \
+    "$out" "already injected into the session context"
+assert_contains "list points at the re-read command" "$out" "devbox-inbox show"
+assert_contains "list reports the now-empty queue" "$out" "(none)"
+
+# --- show re-reads without consuming -----------------------------------------
+first="$(HOME="$h" "$INBOX_BIN" show 1 2>&1)"
+second="$(HOME="$h" "$INBOX_BIN" show 1 2>&1)"
+assert_contains "show re-prints delivered content" "$first" "queued one"
+assert_eq "show is repeatable, not destructive" "$second" "$first"
+assert_eq "show leaves the archive intact" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/.delivered/*.md")" "1"
+
+out="$(HOME="$h" "$INBOX_BIN" show abc 2>&1)"
+assert_contains "show rejects a non-numeric count" "$out" "show takes a count"
+
+# --- reply / read -------------------------------------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" reply 'pong' >/dev/null 2>&1
+out="$(HOME="$h" "$INBOX_BIN" read 2>&1)"
+assert_contains "read prints the reply" "$out" "pong"
+out="$(HOME="$h" "$INBOX_BIN" read 2>&1)"
+assert_eq "read consumes the reply" "$out" "(no replies)"
+
+echo
+echo "devbox-inbox-hook"
+
+# --- delivers exactly once ----------------------------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'steering text' >/dev/null 2>&1
+out="$(run_hook "$h" PostToolUse)"
+assert_contains "hook emits the message body" "$out" "steering text"
+assert_contains "hook injects as additionalContext" "$out" "additionalContext"
+assert_contains "hook tells the session not to go hunting" "$out" "not search the filesystem"
+# The channel is for advice, not orders. If this preamble ever drifts back to
+# imperatives, the inbox has silently become a remote control over a session
+# that is supposed to own its own work.
+assert_contains "hook frames the channel as advisory" "$out" "ADVISORY channel"
+assert_contains "hook affirms the session owns the box" "$out" "You own this session"
+assert_not_contains "hook does not issue orders" "$out" "Read and act on them"
+assert_eq "hook drains the queue" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "0"
+assert_eq "hook archives the message" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/.delivered/*.md")" "1"
+
+out="$(run_hook "$h" PostToolUse)"
+assert_eq "hook delivers a message only once" "$out" ""
+
+# --- PostToolUse must not block the agentic loop ------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'mid-task steer' >/dev/null 2>&1
+out="$(run_hook "$h" PostToolUse)"
+assert_not_contains "PostToolUse never blocks" "$out" '"decision"'
+
+# --- Stop must block, so an idle-bound agent stays alive ----------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'catch me before idle' >/dev/null 2>&1
+out="$(run_hook "$h" Stop)"
+assert_contains "Stop blocks the stop" "$out" '"block"'
+assert_contains "Stop still carries the body" "$out" "catch me before idle"
+
+# --- empty queue is a silent no-op --------------------------------------------
+h="$(new_home)"
+out="$(run_hook "$h" PostToolUse)"
+assert_eq "empty queue emits nothing" "$out" ""
+
+# --- delivery is logged for post-hoc diagnosis --------------------------------
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'logged one' >/dev/null 2>&1
+run_hook "$h" PostToolUse >/dev/null
+assert_contains "delivery is logged" \
+    "$(cat "$h/src/iden2/.claude/inbox/.delivery.log" 2>&1)" "-msg.md"
+
+echo
+echo "addressing"
+
+# The 2026-08-07 incident: one unaddressed message, two sessions on one box,
+# both acted on it, and one converged the cluster under the other's test run.
+h="$(new_home)"
+DEVBOX_INBOX_ID=alice HOME="$h" "$INBOX_BIN" send --to bob 'for bob only' >/dev/null 2>&1
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=alice HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_eq "a message for bob is not delivered to alice" "$out" ""
+assert_eq "and it stays queued for bob" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "1"
+
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=bob HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_contains "bob receives his own message" "$out" "for bob only"
+assert_eq "and it leaves the queue once delivered" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "0"
+
+# An unaddressed message stays a broadcast: anyone may take it.
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'anyone may take this' >/dev/null 2>&1
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=carol HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_contains "broadcast reaches an unnamed session" "$out" "anyone may take this"
+
+# send warns that a broadcast is first-come-first-served.
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'plain' 2>&1)"
+assert_contains "send flags a broadcast as first-come" "$out" "BROADCAST"
+out="$(HOME="$h" "$INBOX_BIN" send --to dave 'targeted' 2>&1)"
+assert_contains "send confirms the addressee" "$out" "addressed to: dave"
+out="$(HOME="$h" "$INBOX_BIN" send --to 2>&1)"
+assert_contains "--to requires a name" "$out" "needs a session name"
+
+# list has to show who a queued message is for, or a message waiting on an
+# absent session looks identical to an undelivered broadcast.
+out="$(HOME="$h" "$INBOX_BIN" list 2>&1)"
+assert_contains "list shows the addressee" "$out" "->  dave"
+assert_contains "list marks broadcasts" "$out" "(broadcast)"
+
+# Replies carry the sender, so the operator never has to infer it from prose.
+h="$(new_home)"
+DEVBOX_INBOX_ID=int-test HOME="$h" "$INBOX_BIN" reply 'P1 green' >/dev/null 2>&1
+assert_eq "reply is stamped with the sender" \
+    "$(count_glob "$h/src/iden2/.claude/outbox/*from.int-test*.md")" "1"
+out="$(HOME="$h" "$INBOX_BIN" read 2>&1)"
+assert_contains "read shows which session replied" "$out" "from.int-test"
+
+out="$(DEVBOX_INBOX_ID=int-test HOME="$h" "$INBOX_BIN" whoami 2>&1)"
+assert_contains "whoami reports the identity" "$out" "int-test"
+
+# Identity has to survive characters that would otherwise fight the glob.
+h="$(new_home)"
+DEVBOX_INBOX_ID='weird name/../x' HOME="$h" "$INBOX_BIN" reply 'hi' >/dev/null 2>&1
+assert_eq "an unsafe identity cannot escape the outbox" \
+    "$(count_glob "$h/src/iden2/.claude/outbox/*.md")" "1"
+
+echo
+echo "broken caller quoting"
+
+# REGRESSION: reading only $1 silently dropped everything after an apostrophe
+# that closed the caller's shell quote. On 2026-08-07 a session's reply reached
+# the operator truncated mid-word, with nothing anywhere saying so.
+h="$(new_home)"
+# What the shell actually hands over when `reply 'it's blocked on X'` is typed.
+HOME="$h" "$INBOX_BIN" reply 'it' 's blocked on X' >/dev/null 2>&1
+assert_contains "text after a broken quote is kept, not dropped" \
+    "$(cat "$h"/src/iden2/.claude/outbox/*.md)" "blocked on X"
+
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'it' 's broken' 2>&1 >/dev/null)"
+assert_contains "and the caller is warned about the quoting" "$out" "closed the shell quote"
+
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'clean single arg' 2>&1 >/dev/null)"
+assert_not_contains "no warning for a well-quoted message" "$out" "closed the shell quote"
+
+# stdin stays byte-exact: it is the escape hatch the warning points at.
+h="$(new_home)"
+printf "line one\nit's got apostrophes & \"quotes\"\n" | HOME="$h" "$INBOX_BIN" send - >/dev/null 2>&1
+assert_contains "stdin preserves apostrophes" \
+    "$(cat "$h"/src/iden2/.claude/inbox/*.md)" "it's got apostrophes"
+
+echo
+printf '%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

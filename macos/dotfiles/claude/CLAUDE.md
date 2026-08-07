@@ -110,31 +110,68 @@ When compressing, preserve in priority order:
 
 ### Talking to a Claude session on the devbox (`ssh devbox`)
 
+**The devbox session owns its own work.** This is a channel for communication
+and advice, not a remote control: messages carry context, not orders. When
+something genuinely needs to change, the escalation originates from the Mac,
+but the decision on that box stays with the session that lives there. The
+delivery preamble is worded accordingly, and `devbox-inbox-test` guards the
+wording — if it ever drifts back to imperatives, the channel has quietly become
+something else.
+
 Do **not** drive it with tmux keystrokes. That is synthetic input to a UI and it
 fails three ways: swallowed by permission prompts, the agent-selection overlay
 steals the Enter that should submit, and `C-u` wipes text the human had queued.
 There is a real inbox instead:
 
 ```bash
-ssh devbox devbox-inbox send 'text'   # queue a message for the running session
-ssh devbox devbox-inbox send -        # ...or read the message from stdin
-ssh devbox devbox-inbox read          # replies from the session
-ssh devbox devbox-inbox list          # queued / delivered / waiting replies
+# `ssh devbox devbox-inbox ...` does NOT work: ssh runs a non-login,
+# non-interactive shell, so ~/.profile never puts ~/.local/bin on PATH.
+# Wrap every call in a login shell.
+ssh devbox 'bash -lc "devbox-inbox list"'                # queued / delivered / replies
+ssh devbox 'bash -lc "devbox-inbox read"'                # replies from the session
+ssh devbox 'bash -lc "devbox-inbox show 3"'              # re-read last 3 delivered
+ssh devbox 'bash -lc "devbox-inbox send -"' < msg.md     # queue a message from a file
+ssh devbox 'bash -lc "devbox-inbox send -"' <<<'text'    # ...or a one-liner
+ssh devbox 'bash -lc "devbox-inbox send --to int-test -"' < msg.md   # one session only
 ```
+
+**Always use the stdin forms.** Inline `send 'text'` nests quoting three deep
+through `ssh` → `bash -lc` → the script, and a single apostrophe in the text
+closes the quote. The remainder used to be dropped on the floor: on 2026-08-07 a
+session's reply reached the Mac truncated mid-word with nothing reporting it.
+Extra argv is now joined and warned about, but stdin is the only byte-exact form.
+
+**Address the message whenever more than one session runs on that box.** An
+unaddressed message is a broadcast, and whichever session's hook fires first
+takes it — the others never see it. On 2026-08-07 one broadcast was picked up by
+two sessions, both started the same phase, and one helm-converged the cluster
+underneath the other's passing test run. `--to NAME` delivers to exactly one
+session; the name is the tmux pane title, which a session reports with
+`devbox-inbox whoami`. A message for a session that never runs stays queued
+rather than being eaten, and `list` shows who each one is waiting for. Replies
+are stamped with the sender, so you never have to infer it from the prose.
 
 Delivered by hook, never polled: `Stop` blocks a session that is about to go
 idle and hands the message over; `PostToolUse` injects mid-task without
-blocking, so steering lands within seconds of its next tool call. The session
+blocking, so advice lands within seconds of its next tool call. The session
 replies with `devbox-inbox reply '...'`, which the delivery text tells it — so
 the reply direction needs no setup on its end.
 
+**An empty queue means delivered, not lost.** The hook pushes content straight
+into the session's context and archives the file, so `list` legitimately shows
+nothing queued afterwards. Use `show N` to re-read. Never invoke
+`devbox-inbox-hook` by hand to "check" delivery: it *consumes* the queue, and
+the message the live session was about to receive is gone.
+
 **The one limitation worth knowing: an already-idle session receives nothing.**
 Hooks are event-driven, and a session sitting at its prompt emits no events, so
-a queued message waits until it next does a turn. If it is idle and the message
-matters now, nudge it — the message is then delivered by the resulting turn.
-
-Never invoke `devbox-inbox-hook` by hand to "check" delivery: it *consumes* the
-queue, and the message the live session was about to receive is gone.
+a queued message waits until it next does a turn. Nudging it has to be a
+*human* keypress. `tmux send-keys` cannot submit that pane — verified
+2026-08-07: `Enter`, `C-m`, and text+`Enter` in a single burst all failed to
+submit, while literal characters and `BSpace` landed fine, so the transport
+works and the submit key specifically is swallowed. Worse, a burst containing
+`Enter` can *clear* text the human had queued in the prompt box. Type it
+yourself, or just let the message ride until the session's next turn.
 
 ### Other devbox-only helpers (all in `~/.local/bin`, installed by restore.sh)
 
