@@ -181,10 +181,26 @@ if command -v mise >/dev/null 2>&1 && [ -f "$MISE_CFG" ]; then
     # "npm:@redocly/cli" -- and the first version of this missed every name
     # containing / or @, reporting 14 declared tools as drift. Sixteen findings
     # of which fourteen are wrong is indistinguishable from a broken tool.
+    # `mise ls --installed` reports tools from EVERY config that governs this
+    # box, not just the global one -- and the repos under ~/src carry their own
+    # tracked .mise.toml files. go-monorepo's declares crane, gitleaks,
+    # kubeconform and three github: tools. Checking only the global config
+    # reported all six as drift when each is version-controlled by the repo that
+    # actually needs it, which is not drift at all: it is another repo doing
+    # exactly what this one does.
+    #
+    # So a tool counts as declared if ANY config governing this box declares it.
+    # Depth 3 covers ~/src/<org>/<repo>/.mise.toml and the worktrees that sit as
+    # siblings, matching the bound bin/src-sync already uses for the same tree.
+    mise_configs=("$MISE_CFG")
+    while IFS= read -r c; do
+        [ -n "$c" ] && mise_configs+=("$c")
+    done < <(find "$HOME/src" -maxdepth 3 \( -name '.mise.toml' -o -name 'mise.toml' \) 2>/dev/null)
+
     extra=""
     while read -r t; do
         [ -z "$t" ] && continue
-        grep -qF -- "$t" "$MISE_CFG" || extra="$extra$t"$'\n'
+        grep -qsF -- "$t" "${mise_configs[@]}" || extra="$extra$t"$'\n'
     done < <(mise ls --installed 2>/dev/null | awk '{print $1}' | sort -u)
     if [ -n "${extra//[$'\n']/}" ]; then
         while read -r t; do
@@ -194,7 +210,8 @@ if command -v mise >/dev/null 2>&1 && [ -f "$MISE_CFG" ]; then
         # are command substitution, and an earlier draft of this line actually
         # RAN "mise uninstall" on every drift report. A reporting tool must not
         # execute the remedy it is suggesting.
-        say '         -> add it to dotfiles/mise/config.toml, or uninstall it'
+        say '         -> declare it (globally, or in the .mise.toml of the repo'
+        say '            that needs it), or uninstall it'
     else
         ok "no undeclared mise tools"
     fi
