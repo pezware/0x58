@@ -191,7 +191,18 @@ fi
 _tmpfs="$(findmnt -no FSTYPE /tmp 2>/dev/null)"
 if [ "$_tmpfs" = "tmpfs" ]; then
     _sz="$(df -h /tmp 2>/dev/null | awk 'NR==2{print $2}')"
-    if systemctl is-enabled tmp.mount 2>/dev/null | grep -q masked; then
+    # Capture to a variable instead of piping. `systemctl is-enabled` prints
+    # "masked" on STDOUT but exits 1 for a masked unit, and this script runs
+    # under `set -o pipefail`, so the pipeline `systemctl ... | grep -q masked`
+    # inherits that 1 and the `if` takes the ELSE branch even though grep
+    # matched. The same expression typed at an interactive prompt (no pipefail)
+    # matches correctly, which is what made this survive review.
+    #
+    # It failed in the worst direction: on a box where tmp.mount WAS masked it
+    # reported "not masked" and told the operator to re-run restore.sh, when the
+    # actual remaining step was a reboot.
+    _masked="$(systemctl is-enabled tmp.mount 2>/dev/null || true)"
+    if [ "$_masked" = "masked" ]; then
         note "/tmp still tmpfs (${_sz}) — tmp.mount masked, REBOOT PENDING"
     else
         note "/tmp is tmpfs (${_sz}) — RAM, not disk"
