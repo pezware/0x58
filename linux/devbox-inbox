@@ -2,12 +2,14 @@
 #
 # Two-way messaging with a running Claude Code session on this box.
 #
-#   devbox-inbox send 'text'      # queue a message for the devbox session
-#   devbox-inbox send -           # ...read the message from stdin
-#   devbox-inbox reply 'text'     # the SESSION replies to the operator
-#   devbox-inbox list             # queued, delivered, and replies
-#   devbox-inbox read             # print replies and mark them read
-#   devbox-inbox show [N]         # re-print the last N delivered messages
+#   devbox-inbox send 'text'           # queue a message for ANY session (broadcast)
+#   devbox-inbox send --to NAME 'text' # ...for one named session only
+#   devbox-inbox send -                # ...read the message from stdin
+#   devbox-inbox reply 'text'          # the SESSION replies to the operator
+#   devbox-inbox list                  # queued, delivered, and replies
+#   devbox-inbox read                  # print replies and mark them read
+#   devbox-inbox show [N]              # re-print the last N delivered messages
+#   devbox-inbox whoami                # this session's inbox identity
 #
 # Delivery is by hook, not by polling: devbox-inbox-hook fires on Stop (agent
 # about to go idle -> block and hand over the message) and on PostToolUse (agent
@@ -49,24 +51,81 @@ ts() {
     printf '%s' "$t"
 }
 
+# Who this session is, for addressing. On 2026-08-07 one broadcast message was
+# picked up by two sessions sharing this box; they both ran it, and one of them
+# converged the cluster underneath the other's test run. Neither could even tell
+# the operator which of them was speaking -- the replies said "SECOND SESSION
+# here" in prose, because the format carried no identity at all.
+#
+# The tmux pane title is the identity because it is the name a human already
+# gave the session and can already see. DEVBOX_INBOX_ID overrides it for
+# anything not in a pane.
+identity() {
+    local id=""
+    if [ -n "${DEVBOX_INBOX_ID:-}" ]; then
+        id="$DEVBOX_INBOX_ID"
+    elif [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+        id="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_title}' 2>/dev/null)"
+        [ -n "$id" ] || id="$TMUX_PANE"
+    fi
+    [ -n "$id" ] || id="unknown"
+    safe_name "$id"
+}
+
+# Take the WHOLE argv, not just $1. An apostrophe in the text closes the caller's
+# shell quote and the remainder arrives as extra arguments; reading only $1 threw
+# those away silently. On 2026-08-07 that truncated a session's reply mid-word
+# and the operator received a sentence that simply stopped. Joining is not a fix
+# for broken quoting -- the text can still be mangled -- but a mangled message
+# the operator can see beats a clean-looking one that lost its second half.
+join_args() {
+    if [ $# -gt 1 ]; then
+        warn "note: got $# arguments; an apostrophe probably closed the shell quote."
+        warn "      Joined them rather than dropping any. Prefer stdin: send - / reply -"
+    fi
+    printf '%s' "$*"
+}
+
+# Names ride in filenames, so keep them to characters a glob will not fight.
+safe_name() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._' '-' | sed 's/-\{1,\}/-/g; s/^-//; s/-$//'
+}
+
 # Publish atomically. A message is only visible to the hook once it is COMPLETE:
 # we write to a staging name that deliberately does not match the hook's *.md
 # glob, then rename it into place. Without this, a send that races a busy
 # session gets picked up and delivered half-written, and the content is lost.
+#
+# publish <dir> <infix|""> <suffix> <text>  ->  <ts>[-<infix>]-<suffix>.md
 publish() {
-    local dir="$1" suffix="$2" text="$3" stage f n
+    local dir="$1" infix="$2" suffix="$3" text="$4" stage f n mid
     mkdir -p "$dir" || die "cannot create $dir"
     stage="$dir/.staging-$$-${RANDOM}"
     printf '%s\n' "$text" > "$stage" || { rm -f "$stage"; die "write failed"; }
+    mid=""
+    [ -n "$infix" ] && mid="-$infix"
     n=0
-    f="$dir/$(ts)-$suffix.md"
+    f="$dir/$(ts)$mid-$suffix.md"
     while [ -e "$f" ]; do
         n=$((n + 1))
         [ "$n" -lt 100 ] || { rm -f "$stage"; die "cannot find a free name in $dir"; }
-        f="$dir/$(ts)-$n-$suffix.md"
+        # Counter goes with the timestamp, not next to the suffix, so the
+        # addressee stays the last field and `addressee` keeps parsing.
+        f="$dir/$(ts)-$n$mid-$suffix.md"
     done
     mv -f "$stage" "$f" || { rm -f "$stage"; die "publish failed"; }
     printf '%s' "${f##*/}"
+}
+
+# "20260807T1930-to.int-test-msg.md" -> "int-test"; broadcast -> "".
+addressee() {
+    case "$1" in
+    *-to.*-msg.md)
+        local w="${1#*-to.}"
+        printf '%s' "${w%-msg.md}"
+        ;;
+    *) printf '' ;;
+    esac
 }
 
 # Newest-last slice of an array, for "show the last N".
@@ -79,18 +138,35 @@ tail_slice() {
 
 case "${1:-}" in
 -h|--help|"")
-    sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 
 send)
     shift
-    text="${1:-}"
-    [ -n "$text" ] || die "nothing to send (use: send 'text', or send - for stdin)"
-    [ "$text" = "-" ] && text="$(cat)"
+    to=""
+    if [ "${1:-}" = "--to" ]; then
+        [ -n "${2:-}" ] || die "--to needs a session name (see: devbox-inbox whoami)"
+        to="$(safe_name "$2")"
+        shift 2
+    fi
+    [ $# -gt 0 ] || die "nothing to send (use: send 'text', or send - for stdin)"
+    if [ "$1" = "-" ]; then
+        text="$(cat)"
+    else
+        text="$(join_args "$@")"
+    fi
     [ -n "${text// /}" ] || die "refusing to queue an empty message"
-    name="$(publish "$INBOX" msg "$text")" || exit 1
+    infix=""
+    [ -n "$to" ] && infix="to.$to"
+    name="$(publish "$INBOX" "$infix" msg "$text")" || exit 1
     echo "queued $name"
+    if [ -n "$to" ]; then
+        echo "addressed to: $to (other sessions will leave it alone)"
+    else
+        echo "BROADCAST: the first session to fire a hook takes it. If more than one"
+        echo "  session runs on this box, address it with --to NAME instead."
+    fi
     echo "delivery: on the session's next tool call, or when it next tries to go idle"
     # Sending into a void is the one failure the operator cannot see from here,
     # so say it out loud instead of letting the message sit forever.
@@ -102,11 +178,23 @@ send)
 
 reply)
     shift
-    text="${1:-}"
-    [ -n "$text" ] || die "nothing to reply (use: reply 'text', or reply - for stdin)"
-    [ "$text" = "-" ] && text="$(cat)"
-    name="$(publish "$OUTBOX" reply "$text")" || exit 1
+    [ $# -gt 0 ] || die "nothing to reply (use: reply 'text', or reply - for stdin)"
+    if [ "$1" = "-" ]; then
+        text="$(cat)"
+    else
+        text="$(join_args "$@")"
+    fi
+    [ -n "${text// /}" ] || die "refusing to queue an empty reply"
+    # Stamp the sender automatically. The operator should never have to work out
+    # which session is talking by reading the prose.
+    name="$(publish "$OUTBOX" "from.$(identity)" reply "$text")" || exit 1
     echo "reply written: $name"
+    ;;
+
+whoami)
+    printf '%s\n' "$(identity)"
+    printf 'address messages to this session with: devbox-inbox send --to %s ...\n' \
+        "$(identity)"
     ;;
 
 list)
@@ -123,7 +211,13 @@ list)
     if [ "${#queued[@]}" -eq 0 ]; then
         printf '  (none)\n'
     else
-        for f in "${queued[@]}"; do printf '  %s\n' "${f##*/}"; done
+        # Show the addressee: a message queued for a session that never runs
+        # would otherwise sit here looking like an undelivered broadcast.
+        for f in "${queued[@]}"; do
+            b="${f##*/}"
+            a="$(addressee "$b")"
+            printf '  %s  ->  %s\n' "$b" "${a:-(broadcast)}"
+        done
     fi
 
     # The section that used to mislead: a reader saw an empty queue and went

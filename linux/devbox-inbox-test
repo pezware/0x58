@@ -191,5 +191,86 @@ assert_contains "delivery is logged" \
     "$(cat "$h/src/iden2/.claude/inbox/.delivery.log" 2>&1)" "-msg.md"
 
 echo
+echo "addressing"
+
+# The 2026-08-07 incident: one unaddressed message, two sessions on one box,
+# both acted on it, and one converged the cluster under the other's test run.
+h="$(new_home)"
+DEVBOX_INBOX_ID=alice HOME="$h" "$INBOX_BIN" send --to bob 'for bob only' >/dev/null 2>&1
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=alice HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_eq "a message for bob is not delivered to alice" "$out" ""
+assert_eq "and it stays queued for bob" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "1"
+
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=bob HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_contains "bob receives his own message" "$out" "for bob only"
+assert_eq "and it leaves the queue once delivered" \
+    "$(count_glob "$h/src/iden2/.claude/inbox/*.md")" "0"
+
+# An unaddressed message stays a broadcast: anyone may take it.
+h="$(new_home)"
+HOME="$h" "$INBOX_BIN" send 'anyone may take this' >/dev/null 2>&1
+out="$(printf '{"hook_event_name":"PostToolUse"}' | DEVBOX_INBOX_ID=carol HOME="$h" "$HOOK_BIN" 2>/dev/null)"
+assert_contains "broadcast reaches an unnamed session" "$out" "anyone may take this"
+
+# send warns that a broadcast is first-come-first-served.
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'plain' 2>&1)"
+assert_contains "send flags a broadcast as first-come" "$out" "BROADCAST"
+out="$(HOME="$h" "$INBOX_BIN" send --to dave 'targeted' 2>&1)"
+assert_contains "send confirms the addressee" "$out" "addressed to: dave"
+out="$(HOME="$h" "$INBOX_BIN" send --to 2>&1)"
+assert_contains "--to requires a name" "$out" "needs a session name"
+
+# list has to show who a queued message is for, or a message waiting on an
+# absent session looks identical to an undelivered broadcast.
+out="$(HOME="$h" "$INBOX_BIN" list 2>&1)"
+assert_contains "list shows the addressee" "$out" "->  dave"
+assert_contains "list marks broadcasts" "$out" "(broadcast)"
+
+# Replies carry the sender, so the operator never has to infer it from prose.
+h="$(new_home)"
+DEVBOX_INBOX_ID=int-test HOME="$h" "$INBOX_BIN" reply 'P1 green' >/dev/null 2>&1
+assert_eq "reply is stamped with the sender" \
+    "$(count_glob "$h/src/iden2/.claude/outbox/*from.int-test*.md")" "1"
+out="$(HOME="$h" "$INBOX_BIN" read 2>&1)"
+assert_contains "read shows which session replied" "$out" "from.int-test"
+
+out="$(DEVBOX_INBOX_ID=int-test HOME="$h" "$INBOX_BIN" whoami 2>&1)"
+assert_contains "whoami reports the identity" "$out" "int-test"
+
+# Identity has to survive characters that would otherwise fight the glob.
+h="$(new_home)"
+DEVBOX_INBOX_ID='weird name/../x' HOME="$h" "$INBOX_BIN" reply 'hi' >/dev/null 2>&1
+assert_eq "an unsafe identity cannot escape the outbox" \
+    "$(count_glob "$h/src/iden2/.claude/outbox/*.md")" "1"
+
+echo
+echo "broken caller quoting"
+
+# REGRESSION: reading only $1 silently dropped everything after an apostrophe
+# that closed the caller's shell quote. On 2026-08-07 a session's reply reached
+# the operator truncated mid-word, with nothing anywhere saying so.
+h="$(new_home)"
+# What the shell actually hands over when `reply 'it's blocked on X'` is typed.
+HOME="$h" "$INBOX_BIN" reply 'it' 's blocked on X' >/dev/null 2>&1
+assert_contains "text after a broken quote is kept, not dropped" \
+    "$(cat "$h"/src/iden2/.claude/outbox/*.md)" "blocked on X"
+
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'it' 's broken' 2>&1 >/dev/null)"
+assert_contains "and the caller is warned about the quoting" "$out" "closed the shell quote"
+
+h="$(new_home)"
+out="$(HOME="$h" "$INBOX_BIN" send 'clean single arg' 2>&1 >/dev/null)"
+assert_not_contains "no warning for a well-quoted message" "$out" "closed the shell quote"
+
+# stdin stays byte-exact: it is the escape hatch the warning points at.
+h="$(new_home)"
+printf "line one\nit's got apostrophes & \"quotes\"\n" | HOME="$h" "$INBOX_BIN" send - >/dev/null 2>&1
+assert_contains "stdin preserves apostrophes" \
+    "$(cat "$h"/src/iden2/.claude/inbox/*.md)" "it's got apostrophes"
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

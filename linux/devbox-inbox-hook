@@ -60,9 +60,32 @@ shopt -u nullglob
 
 mkdir -p "$DELIVERED" 2>/dev/null || exit 0
 
+# Who this session is. Must agree with devbox-inbox's identity(): the tmux pane
+# title, overridable with DEVBOX_INBOX_ID.
+me=""
+if [ -n "${DEVBOX_INBOX_ID:-}" ]; then
+    me="$DEVBOX_INBOX_ID"
+elif [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    me="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_title}' 2>/dev/null)"
+    [ -n "$me" ] || me="$TMUX_PANE"
+fi
+[ -n "$me" ] || me="unknown"
+me="$(printf '%s' "$me" | tr -c 'A-Za-z0-9._' '-' | sed 's/-\{1,\}/-/g; s/^-//; s/-$//')"
+
 body=""
 for m in "${msgs[@]}"; do
-    base="$(basename "$m")"
+    base="${m##*/}"
+    # Someone else's mail stays in the queue. On 2026-08-07 a single unaddressed
+    # message was acted on by two sessions sharing this box, and one of them
+    # helm-converged the cluster underneath the other's passing test run. An
+    # addressed message is delivered to exactly one session or to none.
+    case "$base" in
+    *-to.*-msg.md)
+        want="${base#*-to.}"
+        want="${want%-msg.md}"
+        [ "$want" = "$me" ] || continue
+        ;;
+    esac
     # Move BEFORE reading content into the payload we emit. See the note above.
     mv -f "$m" "$DELIVERED/$base" 2>/dev/null || continue
     # Append-only delivery log. The mv-before-emit ordering above trades a
@@ -75,7 +98,7 @@ for m in "${msgs[@]}"; do
 done
 [ -n "$body" ] || exit 0
 
-PAYLOAD="$payload" BODY="$body" ARCHIVE="$DELIVERED" python3 <<'PY' 2>/dev/null || exit 0
+PAYLOAD="$payload" BODY="$body" ARCHIVE="$DELIVERED" ME="$me" python3 <<'PY' 2>/dev/null || exit 0
 import json, os, sys
 
 raw = os.environ.get("PAYLOAD", "")
@@ -106,7 +129,14 @@ context = (
     "abandon sound work just because a message arrived. Escalation comes from "
     "the Mac, but the call on this box stays yours.\n"
     "    reply:   devbox-inbox reply 'your text'\n"
-    "    re-read: devbox-inbox show 1\n\n"
+    "    re-read: devbox-inbox show 1\n"
+    "    you are: " + (os.environ.get("ME") or "unknown") + "  (the operator can "
+    "reach you alone with: devbox-inbox send --to "
+    + (os.environ.get("ME") or "unknown") + " ...)\n\n"
+    "If more than one session is running on this box, say so on the reply "
+    "channel -- an unaddressed message is taken by whichever session's hook "
+    "fires first, and two sessions acting on one message is how the cluster got "
+    "converged mid-test-run on 2026-08-07.\n\n"
     "This message has ALREADY been handed to you, here, in full. It is no longer "
     "queued. Do not run 'devbox-inbox list' expecting to find it waiting and do "
     "not search the filesystem for it -- an empty queue means delivered, not "

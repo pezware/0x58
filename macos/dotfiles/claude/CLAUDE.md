@@ -132,10 +132,24 @@ ssh devbox 'bash -lc "devbox-inbox read"'                # replies from the sess
 ssh devbox 'bash -lc "devbox-inbox show 3"'              # re-read last 3 delivered
 ssh devbox 'bash -lc "devbox-inbox send -"' < msg.md     # queue a message from a file
 ssh devbox 'bash -lc "devbox-inbox send -"' <<<'text'    # ...or a one-liner
+ssh devbox 'bash -lc "devbox-inbox send --to int-test -"' < msg.md   # one session only
 ```
 
-Prefer the stdin forms. Inline `send 'text'` nests quoting three deep through
-`ssh` → `bash -lc` → the script, and it is the reliable way to mangle a message.
+**Always use the stdin forms.** Inline `send 'text'` nests quoting three deep
+through `ssh` → `bash -lc` → the script, and a single apostrophe in the text
+closes the quote. The remainder used to be dropped on the floor: on 2026-08-07 a
+session's reply reached the Mac truncated mid-word with nothing reporting it.
+Extra argv is now joined and warned about, but stdin is the only byte-exact form.
+
+**Address the message whenever more than one session runs on that box.** An
+unaddressed message is a broadcast, and whichever session's hook fires first
+takes it — the others never see it. On 2026-08-07 one broadcast was picked up by
+two sessions, both started the same phase, and one helm-converged the cluster
+underneath the other's passing test run. `--to NAME` delivers to exactly one
+session; the name is the tmux pane title, which a session reports with
+`devbox-inbox whoami`. A message for a session that never runs stays queued
+rather than being eaten, and `list` shows who each one is waiting for. Replies
+are stamped with the sender, so you never have to infer it from the prose.
 
 Delivered by hook, never polled: `Stop` blocks a session that is about to go
 idle and hands the message over; `PostToolUse` injects mid-task without
