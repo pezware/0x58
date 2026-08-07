@@ -146,8 +146,19 @@ unaddressed message is a broadcast, and whichever session's hook fires first
 takes it — the others never see it. On 2026-08-07 one broadcast was picked up by
 two sessions, both started the same phase, and one helm-converged the cluster
 underneath the other's passing test run. `--to NAME` delivers to exactly one
-session; the name is the tmux pane title, which a session reports with
-`devbox-inbox whoami`. A message for a session that never runs stays queued
+session. **Name a session before addressing it** — a pane with no name answers to
+its opaque pane id (`pane-14`):
+
+```bash
+ssh devbox 'tmux set-option -p -t main:1.1 @inbox_id int-test'
+```
+
+That is a pane *option*, not the pane title. Do **not** use the pane title: Claude
+Code rewrites it as its work changes, so a session named `int-test` started
+answering to `_ Manage session inbox and sub-agent lifecycle` within minutes
+(2026-08-07). `@`-prefixed options are tmux's user namespace and no application
+touches them. `devbox-inbox whoami` reports the resolved name and, when it is a
+fallback, prints the command above. A message for a session that never runs stays queued
 rather than being eaten, and `list` shows who each one is waiting for. Replies
 are stamped with the sender, so you never have to infer it from the prose.
 
