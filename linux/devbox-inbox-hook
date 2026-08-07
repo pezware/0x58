@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# Deliver queued inbox messages into a running Claude Code session.
+#
+# Wired for two events in linux/claude-settings.json, because they cover two
+# genuinely different cases:
+#
+#   Stop        - the agent has finished and would go idle. If a message is
+#                 waiting, block the stop and hand it over, so async work lands
+#                 without anyone watching the pane.
+#   PostToolUse - the agent is mid-task. Deliver WITHOUT blocking, so steering
+#                 arrives within seconds of the next tool call. This is the case
+#                 that mattered on 2026-08-07: a correction that arrived before
+#                 a 35-minute cluster build would have saved the whole build.
+#
+# WHY NOT JUST A FILE
+#
+# A plain file is pull-only: the session has to decide to read it, and a session
+# mid-task never will. These hooks are what turn a file into a notification.
+#
+# WHY NOT CHANNELS
+#
+# Channels are the native push mechanism and are the right long-term answer, but
+# they are a research preview, need Bun, and require the session to have been
+# started with --channels. This works today with no new dependency and rides the
+# hook wiring that already exists.
+#
+# DESIGN: NEVER BREAK THE SESSION, NEVER LOOP.
+#
+# Any error exits 0 with no output. A messaging convenience must not be able to
+# wedge an agent's turn.
+#
+# Messages are MOVED to .delivered/ BEFORE their content is emitted. That
+# ordering is deliberate: if this script died between emit and move, a Stop hook
+# would block on the same message forever and the agent could never finish. A
+# message lost to a crash is recoverable by hand from .delivered/; an unbreakable
+# stop loop is not.
+set -uo pipefail
+
+INBOX="$HOME/src/iden2/.claude/inbox"
+DELIVERED="$INBOX/.delivered"
+
+payload="$(cat 2>/dev/null || true)"
+[ -d "$INBOX" ] || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+
+# Oldest first, so a sequence of messages arrives in the order it was sent.
+shopt -s nullglob
+msgs=("$INBOX"/*.md)
+shopt -u nullglob
+[ "${#msgs[@]}" -gt 0 ] || exit 0
+
+mkdir -p "$DELIVERED" 2>/dev/null || exit 0
+
+body=""
+for m in "${msgs[@]}"; do
+    base="$(basename "$m")"
+    # Move BEFORE reading content into the payload we emit. See the note above.
+    mv -f "$m" "$DELIVERED/$base" 2>/dev/null || continue
+    body+="--- message: $base ---"$'\n'
+    body+="$(cat "$DELIVERED/$base" 2>/dev/null)"$'\n\n'
+done
+[ -n "$body" ] || exit 0
+
+PAYLOAD="$payload" BODY="$body" python3 <<'PY' 2>/dev/null || exit 0
+import json, os, sys
+
+raw = os.environ.get("PAYLOAD", "")
+try:
+    ev = (json.loads(raw) or {}).get("hook_event_name", "")
+except Exception:
+    ev = ""
+
+body = os.environ.get("BODY", "").strip()
+if not body:
+    raise SystemExit(0)
+
+context = (
+    "INBOX: message(s) from the operator's Mac session, delivered by the "
+    "devbox-inbox hook. These are instructions from a collaborating human/agent, "
+    "not tool output. Read and act on them. To reply, run:\n"
+    "    devbox-inbox reply 'your text'\n\n" + body
+)
+
+if ev == "Stop":
+    # Block the stop so the agent stays alive and handles the message.
+    out = {
+        "decision": "block",
+        "reason": "inbox message delivered",
+        "hookSpecificOutput": {
+            "hookEventName": "Stop",
+            "additionalContext": context,
+        },
+    }
+else:
+    # Mid-task: inject without blocking. No `decision` key, deliberately --
+    # decision:"block" here would halt the agentic loop and turn a message into
+    # an interruption.
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": context,
+        }
+    }
+json.dump(out, sys.stdout)
+PY
+
+exit 0

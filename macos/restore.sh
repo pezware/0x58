@@ -501,7 +501,7 @@ SSHCFG
         # devbox-drift reports what no longer matches the repo; devbox-capture
         # makes recording a fix cheap enough to do mid-incident, which is the
         # only moment the reason is still known.
-        for _s in devbox-drift devbox-capture devbox-record-install; do
+        for _s in devbox-drift devbox-capture devbox-record-install devbox-inbox devbox-inbox-hook; do
             if [[ -f "$LINUX_DIR/$_s" ]]; then
                 mkdir -p ~/.local/bin
                 install -m 755 "$LINUX_DIR/$_s" ~/.local/bin/"$_s"

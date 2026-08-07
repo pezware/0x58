@@ -30,10 +30,10 @@
   "autoMode": {
     "environment": [
       "$defaults",
-      "Organization: pezware / iDen2. Primary use: software development and infrastructure automation on a single-tenant, disposable Linux devbox. Agents run tickets end to end — worktree, signed commit, push, PR — and run the integration and e2e test tiers against local container backings.",
+      "Organization: pezware / iDen2. Primary use: software development and infrastructure automation on a single-tenant, disposable Linux devbox. Agents run tickets end to end \u2014 worktree, signed commit, push, PR \u2014 and run the integration and e2e test tiers against local container backings.",
       "Source control: github.com/iden2-com and github.com/pezware, and all repos under them.",
       "Key internal services: ghcr.io/iden2-com, a pull-only mirror of public upstream container images. No cloud control plane is reachable from this box.",
-      "Trusted internal domains: *.dev.iden2.app and *.internal.iden2.app. These are LOCAL dev backings — Caddy or Traefik bound to 127.0.0.1 in front of containers on this same machine. They are not remote hosts despite the public-looking names. iden2.app also carries a wildcard A record, so these names resolve from anywhere even when nothing is running locally.",
+      "Trusted internal domains: *.dev.iden2.app and *.internal.iden2.app. These are LOCAL dev backings \u2014 Caddy or Traefik bound to 127.0.0.1 in front of containers on this same machine. They are not remote hosts despite the public-looking names. iden2.app also carries a wildcard A record, so these names resolve from anywhere even when nothing is running locally.",
       "Sensitive remote targets: *.stg.iden2.app, production *.iden2.app, and the GCP projects behind them. Nothing on this devbox is one of those. The kind cluster named 'iden2-dev', the docker-compose project named 'iden2', and every container in them are disposable local dev backings that are torn down and rebuilt many times a day. Port-forwards, kubectl exec, helm install, node operations and full teardown against the LOCAL kind cluster are routine and expected, not production access.",
       "Protected IaC scopes: the Terraform in the infra-tf repo, which manages real GCP and Cloudflare. NOT protected: .devops/vault-config and .devops/keycloak-config in go-monorepo when applied against the local compose or kind backing. Those target a dev-mode Vault whose storage is in-memory and a throwaway Keycloak realm on this box; applying and destroying them is a normal step in bringing a local stack up.",
       "Additional context: this box is a single-tenant Linode VM with no production credentials and no shared tenancy. Container images, kind clusters, compose stacks and local Terraform state on it are ephemeral by design and are recreated routinely."
@@ -177,6 +177,28 @@
           {
             "type": "command",
             "command": "/home/arbeitandy/.local/bin/devbox-record-install",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/devbox-inbox-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/devbox-inbox-hook",
             "timeout": 5
           }
         ]
