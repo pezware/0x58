@@ -45,8 +45,13 @@ install_packages() {
         # one package that must not bring its Recommends. docker-compose
         # recommends docker-cli, which would put a real /usr/bin/docker on PATH
         # that talks to /var/run/docker.sock (absent on this rootless box) and
-        # shadows the podman shim agents are told to use. Two confusing failures
-        # for the price of one convenience.
+        # shadows ~/.local/share/kind-shims/docker, installed further down this
+        # file. Two confusing failures for the price of one convenience.
+        #
+        # That shim only wins while kind-shims/env.sh has been sourced, which
+        # puts it first on PATH; a shell that has not sourced it would get the
+        # real docker-cli and fail against a socket that is not there. So the
+        # reasoning holds either way -- keep the Recommends off.
         #
         # docker-compose over podman-compose: podman prefers it when both are
         # present, and it is the reference Compose-spec implementation, so an
@@ -509,6 +514,24 @@ SSHCFG
         done
         unset _s
         echo "    devbox: drift/capture tooling installed (run devbox-drift)"
+
+        # kind shims. Until now these existed only as something an agent rebuilt
+        # by hand in $TMPDIR every session, which meant a reboot deleted the
+        # ability to drive kind at all -- and the comment further up this file,
+        # about not shadowing "the podman shim agents are told to use", was
+        # load-bearing documentation for a file nothing created.
+        #
+        # `docker` is a SYMLINK to `podman`, not a second copy: both names need
+        # identical forwarding, and two files that must stay in sync eventually
+        # do not. ~/.local/share, not ~/.cache: these cannot be deleted without
+        # loss, which is the distinction that cost three sessions a rediscovery.
+        if [[ -d "$LINUX_DIR/kind-shims" ]]; then
+            mkdir -p ~/.local/share/kind-shims
+            install -m 755 "$LINUX_DIR/kind-shims/podman" ~/.local/share/kind-shims/podman
+            ln -sf podman ~/.local/share/kind-shims/docker
+            install -m 644 "$LINUX_DIR/kind-shims/env.sh" ~/.local/share/kind-shims/env.sh
+            echo "    devbox: kind shims installed (. ~/.local/share/kind-shims/env.sh)"
+        fi
 
         # Rootless podman registry search path. Without it podman cannot resolve
         # a short image name, and the failure reads as a credentials error --
