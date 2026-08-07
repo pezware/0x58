@@ -269,6 +269,50 @@ stale copy told agents that container tests were impossible, which by then was
 false. Nothing drifted maliciously. It drifted because a copy existed that no
 commit governed.
 
+### Environment drift, and the fix that lived on one disk
+
+The repo is declarative — apt base in [`packages.txt`](packages.txt), runtimes in
+`dotfiles/mise/config.toml`, agent config in
+[`claude-settings.json`](claude-settings.json), provisioning in `dev/nodes/roles/`.
+What none of those cover is a config edited **in place** to get unblocked.
+
+On 2026-08-07 that was `~/.config/containers/registries.conf`: one line,
+`unqualified-search-registries = ["docker.io"]`. Without it podman cannot resolve
+a short image name, and the failure surfaces as `unable to retrieve auth token:
+invalid username/password: unauthorized` — which reads as a credentials problem
+and is not one. That error had already been misdiagnosed in an iden2 runbook as a
+permanent ghcr auth ceiling, complete with advice *not* to investigate logins. The
+fix existed on exactly one disk, in no repo and no backup, for several hours. A
+rebuild in that window would have resurrected the whole detour.
+
+Three tools address it, and the third is the one that matters:
+
+- **[`devbox-drift`](devbox-drift)** reports what no longer matches the repo:
+  tracked files, apt packages against a provisioning baseline, mise tools, the
+  install ledger, enabled units, plus a version fingerprint for the things that
+  can only be *recorded* rather than restored (kernel, a distro-upgraded podman).
+  Exits non-zero on drift, so a timer or hook can gate on it.
+- **[`devbox-record-install`](devbox-record-install)** is a `PostToolUse` hook that
+  logs install-shaped commands to a ledger with the session id, so the *moment* is
+  captured while the transcript explaining why still exists. It never blocks and
+  never fails — a hook that can break an agent's turn for bookkeeping is a bad
+  trade, and the drift check works from the package list alone regardless.
+- **[`devbox-capture`](devbox-capture)** makes recording cheap enough to do
+  mid-incident. **It refuses without a reason**, and that is the entire point:
+  re-running `apt install socat` takes thirty seconds, while re-deriving that
+  socat is needed because loopback TCP is blocked and kind's apiserver sits on a
+  loopback port took hours. `packages.txt` already holds that standard — its
+  entries carry paragraphs, not bare names.
+
+Tracking does not fail at review time. It fails at 02:00, mid-incident, when the
+person who knows *why* has a broken build in front of them and no cheap way to
+persist it. That is the gap being closed, and it is why the emphasis is on the
+reason rather than the artifact.
+
+`devbox-smoketest` answers "does this box work". `devbox-drift` answers "does this
+box still match what we wrote down" — a different question that nothing asked
+before.
+
 `restore.sh` **merges** the keys this repo owns into an existing
 `~/.claude/settings.json`, as of 2026-08-05. It replaces `sandbox` wholesale, and
 under `hooks` replaces only its own `SessionStart` entry — matched by command

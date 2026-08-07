@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# PostToolUse hook: log install-shaped Bash commands to a ledger.
+#
+# Wired for the Bash tool in linux/claude-settings.json. Reads the hook payload
+# on stdin and appends matching commands to ~/.local/state/0x58/installs.log,
+# which bin/devbox-drift reconciles against linux/packages.txt.
+#
+# WHY THIS EXISTS
+#
+# An agent that installs a package to get unblocked is doing the right thing.
+# The failure is that the install is invisible afterwards: it works, the task
+# proceeds, and weeks later a rebuilt box hits the original problem again with
+# no trace of what fixed it. A package list diff can find the package but not
+# the reason, and the reason is the expensive part.
+#
+# So this records the command AND the session id at the moment it ran, while
+# the transcript that explains why still exists. devbox-drift then reports any
+# ledger entry that never made it into a declaration.
+#
+# DESIGN: THIS NEVER BLOCKS AND NEVER FAILS.
+#
+# It exits 0 unconditionally, including on malformed input, a missing python3,
+# or an unwritable ledger. A hook that can break an agent's turn in exchange for
+# bookkeeping is a bad trade — the drift check is the backstop, and it works
+# from the package list alone even if every ledger write was lost.
+#
+# The payload schema is read defensively for the same reason: it looks for
+# tool_input.command and falls back to a raw scan, so a schema change degrades
+# this to a no-op instead of an error on every Bash call.
+set -uo pipefail
+
+LEDGER_DIR="$HOME/.local/state/0x58"
+LEDGER="$LEDGER_DIR/installs.log"
+
+payload="$(cat 2>/dev/null || true)"
+[ -n "$payload" ] || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+
+mkdir -p "$LEDGER_DIR" 2>/dev/null || exit 0
+
+PAYLOAD="$payload" LEDGER="$LEDGER" python3 <<'PY' 2>/dev/null || true
+import json, os, re, time
+
+raw = os.environ.get("PAYLOAD", "")
+try:
+    data = json.loads(raw)
+except Exception:
+    data = {}
+
+cmd = ""
+if isinstance(data, dict):
+    ti = data.get("tool_input")
+    if isinstance(ti, dict):
+        cmd = ti.get("command") or ""
+    if not cmd:
+        # Schema drift fallback: any string field that looks like a shell line.
+        for v in data.values():
+            if isinstance(v, str) and len(v) < 4000 and " " in v:
+                cmd = v
+                break
+if not cmd:
+    raise SystemExit(0)
+
+session = ""
+if isinstance(data, dict):
+    session = str(data.get("session_id") or data.get("sessionId") or "")[:8]
+
+# Deliberately narrow. Broad matching would log every `go build` and bury the
+# handful of lines that actually represent a durable change to the box.
+#   - apt/dnf/apk install         : changes the system package set
+#   - mise use/install            : changes the tool set on PATH
+#   - npm/pnpm/yarn -g, pipx, pip : user-global installs that survive the task
+#   - go install                  : drops a binary into ~/go/bin
+PATTERNS = [
+    r"\bapt(-get)?\s+(-\S+\s+)*install\b",
+    r"\b(dnf|yum|apk)\s+(add|install)\b",
+    r"\bmise\s+(use|install)\b",
+    r"\b(npm|pnpm|yarn)\s+(i|install|add)\s+(-\S+\s+)*(-g|--global)\b",
+    r"\bpipx\s+install\b",
+    r"\bpip3?\s+install\b",
+    r"\bgo\s+install\b",
+    r"\bcargo\s+install\b",
+]
+if not any(re.search(p, cmd) for p in PATTERNS):
+    raise SystemExit(0)
+
+# Skip the obvious no-ops so the ledger stays worth reading.
+if re.search(r"--dry-run|--help|\s-h\b", cmd):
+    raise SystemExit(0)
+
+line = "\t".join([
+    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    session or "-",
+    " ".join(cmd.split())[:400],
+])
+try:
+    with open(os.environ["LEDGER"], "a") as fh:
+        fh.write(line + "\n")
+except Exception:
+    pass
+PY
+
+exit 0

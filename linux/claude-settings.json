@@ -169,6 +169,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/devbox-record-install",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

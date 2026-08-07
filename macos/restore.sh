@@ -272,17 +272,21 @@ if repo_mode and live.get('permissions', {}).get('defaultMode') != repo_mode:
     live.setdefault('permissions', {})['defaultMode'] = repo_mode
     changed.append('permissions.defaultMode')
 
-# Replace only the entry whose command we install; leave every other hook alone.
-ours = {h['hooks'][0]['command']
-        for h in repo.get('hooks', {}).get('SessionStart', [])
-        if h.get('hooks')}
-if ours:
-    kept = [h for h in live.get('hooks', {}).get('SessionStart', [])
+# Replace only the entries whose commands we install; leave every other hook
+# alone. Iterates EVERY event the repo declares rather than SessionStart alone:
+# the old form was hardcoded to SessionStart, so adding a PostToolUse hook to
+# claude-settings.json would have been read from the repo and silently dropped
+# here -- a fresh instance of the exact bug this merge was written to fix.
+for event, repo_entries in repo.get('hooks', {}).items():
+    ours = {h['hooks'][0]['command'] for h in repo_entries if h.get('hooks')}
+    if not ours:
+        continue
+    kept = [h for h in live.get('hooks', {}).get(event, [])
             if not (h.get('hooks') and h['hooks'][0].get('command') in ours)]
-    merged = kept + repo['hooks']['SessionStart']
-    if live.get('hooks', {}).get('SessionStart') != merged:
-        live.setdefault('hooks', {})['SessionStart'] = merged
-        changed.append('hooks.SessionStart')
+    merged = kept + repo_entries
+    if live.get('hooks', {}).get(event) != merged:
+        live.setdefault('hooks', {})[event] = merged
+        changed.append(f'hooks.{event}')
 
 if json.dumps(live, sort_keys=True) == before:
     print('    claude: settings already in sync')
@@ -483,6 +487,43 @@ SSHCFG
             mkdir -p ~/.local/bin
             install -m 755 "$LINUX_DIR/devbox-session-context" ~/.local/bin/devbox-session-context
             echo "    claude: SessionStart context hook installed"
+        fi
+
+        # Environment drift tooling.
+        #
+        # The repo is declarative -- apt in packages.txt, runtimes in mise's
+        # config, agent config in claude-settings.json -- but none of those
+        # cover a config edited IN PLACE to get unblocked. On 2026-08-07 that
+        # was ~/.config/containers/registries.conf: one line, load-bearing, on
+        # one disk, in no repo, for hours. A rebuild in that window would have
+        # resurrected a problem whose error text points at credentials.
+        #
+        # devbox-drift reports what no longer matches the repo; devbox-capture
+        # makes recording a fix cheap enough to do mid-incident, which is the
+        # only moment the reason is still known.
+        for _s in devbox-drift devbox-capture devbox-record-install; do
+            if [[ -f "$LINUX_DIR/$_s" ]]; then
+                mkdir -p ~/.local/bin
+                install -m 755 "$LINUX_DIR/$_s" ~/.local/bin/"$_s"
+            fi
+        done
+        unset _s
+        echo "    devbox: drift/capture tooling installed (run devbox-drift)"
+
+        # Rootless podman registry search path. Without it podman cannot resolve
+        # a short image name, and the failure reads as a credentials error --
+        # see the header of the file itself for the full story.
+        if [[ -f "$LINUX_DIR/containers-registries.conf" ]]; then
+            mkdir -p ~/.config/containers
+            cp -v "$LINUX_DIR/containers-registries.conf" ~/.config/containers/registries.conf
+        fi
+
+        # Stamp the apt baseline once, so drift reports packages someone chose
+        # rather than the several hundred a Debian base install ships with.
+        if [[ ! -f ~/.config/0x58/apt-baseline ]] && command -v apt-mark >/dev/null 2>&1; then
+            mkdir -p ~/.config/0x58
+            apt-mark showmanual 2>/dev/null | sort -u > ~/.config/0x58/apt-baseline
+            echo "    devbox: apt baseline stamped ($(wc -l < ~/.config/0x58/apt-baseline) packages)"
         fi
 
         # systemd user unit for the Codex broker.

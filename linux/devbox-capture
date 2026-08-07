@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+#
+# Capture a live devbox change into the repo, at the moment you made it.
+#
+#   devbox-capture <live-path> 'why this is needed'   # track a config file
+#   devbox-capture --pkg <name> 'why this is needed'  # add an apt package
+#   devbox-capture --baseline                         # stamp the apt baseline
+#
+# WHY THIS EXISTS
+#
+# Tracking does not fail at review time; it fails at 02:00, mid-incident, when
+# the person who understands WHY has a broken build in front of them and no
+# cheap way to persist the fix. ~/.config/containers/registries.conf on
+# 2026-08-07 was exactly that: one line, load-bearing, on one disk, in no repo.
+#
+# So this is deliberately one command with no ceremony. It copies the file into
+# the right repo location, records the reason, and stages it. Committing and
+# pushing stays yours.
+#
+# THE REASON IS MANDATORY, and that is the whole point. Re-running
+# `apt install socat` takes thirty seconds; re-deriving that socat is needed
+# because loopback TCP is blocked in the sandbox and kind's apiserver sits on a
+# loopback port took someone hours. linux/packages.txt already reflects this —
+# its entries carry paragraphs, not bare names. A line without a reason is not
+# a captured fix, it is a future puzzle.
+set -uo pipefail
+
+REPO="${DEVBOX_REPO:-$HOME/src/public/0x58}"
+STATE_DIR="$HOME/.config/0x58"
+
+die() { printf 'devbox-capture: %s\n' "$*" >&2; exit 1; }
+
+[ -d "$REPO" ] || die "repo not found at $REPO (set DEVBOX_REPO)"
+
+# Which live paths map to which tracked file. Extend BOTH this map and
+# restore.sh in the same commit — a file tracked but never restored is worse
+# than untracked, because it looks handled.
+map_dest() {
+    case "$1" in
+        "$HOME/.config/containers/registries.conf") echo "linux/containers-registries.conf" ;;
+        "$HOME/.claude/settings.json")              echo "linux/claude-settings.json" ;;
+        *) return 1 ;;
+    esac
+}
+
+case "${1:-}" in
+-h|--help)
+    sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+
+--baseline)
+    # The apt set on a fresh Debian install is large and predates packages.txt.
+    # Without a baseline, drift detection would report a hundred packages nobody
+    # chose and the signal would be lost. Stamp once, after provisioning.
+    command -v apt-mark >/dev/null 2>&1 || die "--baseline needs apt-mark"
+    mkdir -p "$STATE_DIR"
+    apt-mark showmanual 2>/dev/null | sort -u > "$STATE_DIR/apt-baseline"
+    echo "stamped $(wc -l < "$STATE_DIR/apt-baseline") packages as the apt baseline"
+    echo "anything installed from now on shows up in devbox-drift"
+    ;;
+
+--pkg)
+    name="${2:-}"; reason="${3:-}"
+    [ -n "$name" ]   || die "usage: devbox-capture --pkg <name> 'why it is needed'"
+    [ -n "$reason" ] || die "a reason is required — see the header of this script for why"
+    pkgs="$REPO/linux/packages.txt"
+    [ -f "$pkgs" ] || die "no $pkgs"
+    if grep -qE "^\s*${name}(\s|#|$)" "$pkgs"; then
+        die "'$name' is already declared in linux/packages.txt"
+    fi
+    # Appended under a dated heading rather than sorted into a themed section:
+    # a human should place it properly when they commit, and an append that is
+    # obviously provisional invites that. Silent insertion into a curated file
+    # is how rationale gets lost.
+    {
+        printf '\n# === Captured %s — review placement before merging ===\n' "$(date -u +%Y-%m-%d)"
+        printf '%-14s # %s\n' "$name" "$reason"
+    } >> "$pkgs"
+    git -C "$REPO" add linux/packages.txt
+    echo "added '$name' to linux/packages.txt and staged it"
+    echo "  reason: $reason"
+    echo "  commit it before the box is rebuilt"
+    ;;
+
+"")
+    die "nothing to capture — see --help"
+    ;;
+
+*)
+    live="$1"; reason="${2:-}"
+    [ -f "$live" ]   || die "no such file: $live"
+    [ -n "$reason" ] || die "a reason is required — see the header of this script for why"
+    live="$(cd "$(dirname "$live")" && pwd)/$(basename "$live")"
+    dest_rel="$(map_dest "$live")" || die "no mapping for $live
+Add one to map_dest() in this script AND to restore.sh in the same commit,
+then re-run. An unmapped file cannot be restored, so capturing it silently
+would create the illusion of safety."
+    dest="$REPO/$dest_rel"
+    mkdir -p "$(dirname "$dest")"
+    if [ -f "$dest" ] && cmp -s "$live" "$dest"; then
+        echo "$dest_rel already matches the live file — nothing to do"
+        exit 0
+    fi
+    cp "$live" "$dest"
+    git -C "$REPO" add "$dest_rel"
+    echo "captured $live -> $dest_rel (staged)"
+    echo "  reason: $reason"
+    echo "  put that reason in the file as a comment before committing —"
+    echo "  the next person gets the file either way, but only the comment"
+    echo "  tells them whether they still need it."
+    ;;
+esac

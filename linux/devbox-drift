@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+#
+# Report environment drift between this devbox and what the repo declares.
+#
+#   devbox-drift            # report drift; exit 1 if any
+#   devbox-drift --quiet    # exit status only, for timers and hooks
+#   devbox-drift --fingerprint  # print the version fingerprint and exit 0
+#
+# WHY THIS EXISTS
+#
+# The repo is declarative: apt base in linux/packages.txt, runtimes in
+# dotfiles/mise/config.toml, agent config in linux/claude-settings.json,
+# provisioning in dev/nodes/roles/. What none of those cover is the thing an
+# agent or a human edits IN PLACE at 02:00 to make something work.
+#
+# On 2026-08-07 that was ~/.config/containers/registries.conf: one line, the fix
+# for a failure that had already been misdiagnosed in a runbook as permanent. It
+# existed on exactly one disk, in no repo and no backup, for several hours. A
+# rebuild in that window would have silently resurrected the original problem —
+# and the error text points at credentials, so the rediscovery would have cost
+# the same hours again.
+#
+# devbox-smoketest already answers "does this box work". It does NOT answer
+# "does this box still match what we wrote down". That is the gap here.
+#
+# WHAT THIS IS NOT
+#
+# Not a security control and not a restore tool. It reports; you decide. Drift
+# is frequently legitimate — the point is that it becomes a decision instead of
+# a surprise weeks later on a rebuilt box.
+set -uo pipefail
+
+REPO="${DEVBOX_REPO:-$HOME/src/public/0x58}"
+QUIET=0
+FINGERPRINT_ONLY=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --quiet|-q)     QUIET=1 ;;
+        --fingerprint)  FINGERPRINT_ONLY=1 ;;
+        -h|--help)      sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)             echo "unknown flag: $arg" >&2; exit 2 ;;
+    esac
+done
+
+[ -d "$REPO" ] || { echo "devbox-drift: repo not found at $REPO" >&2; exit 2; }
+
+DRIFT=0
+say()  { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+note() { DRIFT=1; [ "$QUIET" -eq 1 ] || printf '  DRIFT  %s\n' "$*"; }
+ok()   { [ "$QUIET" -eq 1 ] || printf '  ok     %s\n' "$*"; }
+
+# ---- version fingerprint --------------------------------------------------
+# Recorded, not enforced. A kernel or a distro-upgraded podman cannot be
+# restored from a git repo, but knowing what moved between a working box and a
+# broken one is most of the diagnosis. Print it even when nothing else drifted.
+fingerprint() {
+    printf 'kernel   %s\n' "$(uname -r)"
+    printf 'os       %s\n' "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
+    # `--version` is not universal: kubectl needs `version --client` (plain
+    # `version` contacts the apiserver and hangs without a cluster), helm wants
+    # `version --short`, and go spells it `go version`. Assuming one form prints
+    # a blank line, which reads like a broken tool rather than a bad probe.
+    for t in podman kind kubectl helm task go claude; do
+        if ! command -v "$t" >/dev/null 2>&1; then
+            printf '%-8s MISSING\n' "$t"; continue
+        fi
+        case "$t" in
+            kubectl) v="$(kubectl version --client 2>/dev/null | head -1)" ;;
+            helm)    v="$(helm version --short 2>/dev/null)" ;;
+            go)      v="$(go version 2>/dev/null)" ;;
+            *)       v="$("$t" --version 2>/dev/null | head -1)" ;;
+        esac
+        printf '%-8s %s\n' "$t" "$(printf '%s' "$v" | tr -d '\r')"
+    done
+}
+
+if [ "$FINGERPRINT_ONLY" -eq 1 ]; then fingerprint; exit 0; fi
+
+# ---- 1. files the repo owns ----------------------------------------------
+# Pairs of "repo-relative path : live path". Add a line here in the same commit
+# that adds a file to restore.sh, or the file is tracked but never checked.
+say "== tracked config files"
+while IFS=: read -r repo_rel live_path; do
+    [ -z "$repo_rel" ] && continue
+    live="${live_path/#\~/$HOME}"
+    src="$REPO/$repo_rel"
+    if [ ! -f "$src" ]; then
+        note "$repo_rel missing from the repo"
+    elif [ ! -f "$live" ]; then
+        note "$live_path absent on this box (run restore.sh)"
+    elif ! cmp -s "$src" "$live"; then
+        note "$live_path differs from $repo_rel"
+    else
+        ok "$live_path"
+    fi
+done <<'PAIRS'
+linux/containers-registries.conf:~/.config/containers/registries.conf
+PAIRS
+
+# claude-settings.json is deliberately absent from that list. restore.sh MERGES
+# it rather than copying, so the live file legitimately carries UI keys Claude
+# Code writes itself and a byte comparison would report drift on every single
+# run — noise that trains you to ignore the output. Compare the owned keys only.
+#
+# Captured into a variable rather than piped into `while`: the right-hand side
+# of a pipeline runs in a subshell, so a DRIFT=1 set inside it is discarded and
+# the script would exit 0 while printing DRIFT lines.
+if [ -f "$HOME/.claude/settings.json" ] && [ -f "$REPO/linux/claude-settings.json" ]; then
+    owned="$(python3 - "$REPO/linux/claude-settings.json" "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+try:
+    repo, live = (json.load(open(p)) for p in sys.argv[1:3])
+except Exception as e:
+    print(f'unreadable ({e})'); sys.exit(0)
+bad = []
+if repo.get('sandbox') != live.get('sandbox'):
+    bad.append('sandbox')
+if repo.get('autoMode') != live.get('autoMode'):
+    bad.append('autoMode')
+rm = repo.get('permissions', {}).get('defaultMode')
+if rm and live.get('permissions', {}).get('defaultMode') != rm:
+    bad.append('permissions.defaultMode')
+print(','.join(bad))
+PY
+)"
+    if [ -z "$owned" ]; then
+        ok "~/.claude/settings.json (owned keys: sandbox, autoMode, defaultMode)"
+    else
+        note "~/.claude/settings.json owned keys differ: $owned — run restore.sh"
+    fi
+fi
+
+# ---- 2. apt packages ------------------------------------------------------
+say "== apt packages"
+if command -v apt-mark >/dev/null 2>&1; then
+    # Manually-installed only. Automatic deps are noise: they are implied by the
+    # manual set and change with every distro point release.
+    live_pkgs="$(apt-mark showmanual 2>/dev/null | sort -u)"
+    declared="$(grep -vE '^\s*(#|$)' "$REPO/linux/packages.txt" | sed 's/#.*//' | tr -d ' \t' | grep -v '^$' | sort -u)"
+    # Packages present on the box but not declared. These are the ones that
+    # vanish on a rebuild, which is the scenario this whole script is about.
+    extra="$(comm -23 <(printf '%s\n' "$live_pkgs") <(printf '%s\n' "$declared"))"
+    missing="$(comm -13 <(printf '%s\n' "$live_pkgs") <(printf '%s\n' "$declared"))"
+    # A base install carries a large manual set that predates packages.txt, so
+    # reporting every extra would drown the signal. Only report packages newer
+    # than the marker file, which restore.sh stamps.
+    MARKER="$HOME/.config/0x58/apt-baseline"
+    if [ -f "$MARKER" ]; then
+        baseline="$(sort -u "$MARKER")"
+        extra="$(comm -23 <(printf '%s\n' "$extra") <(printf '%s\n' "$baseline"))"
+    else
+        say "  (no apt baseline at $MARKER — run devbox-capture --baseline once)"
+        extra=""
+    fi
+    if [ -n "$extra" ]; then
+        while read -r p; do
+            [ -n "$p" ] && note "apt '$p' installed but not in linux/packages.txt"
+        done <<<"$extra"
+        say "         -> devbox-capture --pkg <name> 'why it is needed'"
+    else
+        ok "no undeclared apt packages"
+    fi
+    if [ -n "$missing" ]; then
+        while read -r p; do
+            [ -n "$p" ] && note "apt '$p' declared but NOT installed"
+        done <<<"$missing"
+    fi
+else
+    say "  (no apt on this platform)"
+fi
+
+# ---- 3. mise tools --------------------------------------------------------
+say "== mise tools"
+MISE_CFG="$REPO/dotfiles/mise/config.toml"
+if command -v mise >/dev/null 2>&1 && [ -f "$MISE_CFG" ]; then
+    # Look each installed tool up in the config with a fixed-string grep rather
+    # than parsing the TOML for declared keys. A regex over key names has to
+    # cover backend-prefixed, slashed and scoped forms all at once --
+    # "aqua:securego/gosec", "go:golang.org/x/vuln/cmd/govulncheck",
+    # "npm:@redocly/cli" -- and the first version of this missed every name
+    # containing / or @, reporting 14 declared tools as drift. Sixteen findings
+    # of which fourteen are wrong is indistinguishable from a broken tool.
+    extra=""
+    while read -r t; do
+        [ -z "$t" ] && continue
+        grep -qF -- "$t" "$MISE_CFG" || extra="$extra$t"$'\n'
+    done < <(mise ls --installed 2>/dev/null | awk '{print $1}' | sort -u)
+    if [ -n "${extra//[$'\n']/}" ]; then
+        while read -r t; do
+            [ -n "$t" ] && note "mise '$t' installed but not in dotfiles/mise/config.toml"
+        done <<<"$extra"
+        # Single quotes deliberately: backticks inside a double-quoted string
+        # are command substitution, and an earlier draft of this line actually
+        # RAN "mise uninstall" on every drift report. A reporting tool must not
+        # execute the remedy it is suggesting.
+        say '         -> add it to dotfiles/mise/config.toml, or uninstall it'
+    else
+        ok "no undeclared mise tools"
+    fi
+else
+    say "  (mise or its config not present)"
+fi
+
+# ---- 4. the install ledger ------------------------------------------------
+# Written by the PostToolUse hook whenever an agent runs an install-shaped
+# command. An entry here that has not made it into a declaration is the exact
+# scenario this script exists for, caught at the moment it happened rather than
+# inferred from a package list weeks later.
+say "== install ledger"
+LEDGER="$HOME/.local/state/0x58/installs.log"
+if [ -s "$LEDGER" ]; then
+    pending=0
+    while IFS=$'\t' read -r ts _sid cmd; do
+        [ -z "${cmd:-}" ] && continue
+        # crude but effective: if every word of the command appears somewhere in
+        # the declarations, assume it was captured.
+        name="$(printf '%s' "$cmd" | grep -oE '[a-zA-Z0-9_.+-]+$' || true)"
+        if [ -n "$name" ] && grep -qsF "$name" "$REPO/linux/packages.txt" "$MISE_CFG" 2>/dev/null; then
+            continue
+        fi
+        note "unreconciled install ($ts): $cmd"
+        pending=$((pending+1))
+    done < "$LEDGER"
+    [ "$pending" -eq 0 ] && ok "every logged install is reflected in a declaration"
+else
+    ok "ledger empty"
+fi
+
+# ---- 5. systemd user units ------------------------------------------------
+say "== systemd user units"
+if command -v systemctl >/dev/null 2>&1; then
+    for unit in "$REPO"/linux/*.service "$REPO"/linux/*.timer; do
+        [ -e "$unit" ] || continue
+        u="$(basename "$unit")"
+        # Two shapes are correctly NOT enabled, and flagging them would report
+        # drift on a properly configured box -- which is how a checker teaches
+        # you to ignore its output:
+        #
+        #   1. Template units (name@.service). Only instances are ever enabled.
+        #   2. A .service that has a matching .timer. The timer is what you
+        #      enable; it starts the service. src-sync is exactly this pair.
+        case "$u" in *@.service) continue ;; esac
+        if [ "${u##*.}" = "service" ] && [ -e "${unit%.service}.timer" ]; then
+            continue
+        fi
+        if systemctl --user is-enabled "$u" >/dev/null 2>&1; then
+            ok "$u enabled"
+        else
+            note "$u tracked in the repo but not enabled on this box"
+        fi
+    done
+else
+    say "  (no systemctl)"
+fi
+
+# ---- fingerprint (always) -------------------------------------------------
+say ""
+say "== version fingerprint (recorded, not enforced)"
+[ "$QUIET" -eq 1 ] || fingerprint | sed 's/^/  /'
+
+say ""
+if [ "$DRIFT" -eq 1 ]; then
+    say "DRIFT FOUND. Capture what should persist:  devbox-capture --help"
+    exit 1
+fi
+say "No drift."
+exit 0
