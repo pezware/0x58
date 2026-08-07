@@ -188,7 +188,24 @@ fi
 # scratchpad (/tmp/claude-<uid>), a large write both ENOSPCs at ~2 GB and steals
 # from the workload. restore.sh masks tmp.mount, but that needs a reboot, so
 # report the LIVE state rather than the configured intent.
-_tmpfs="$(findmnt -no FSTYPE /tmp 2>/dev/null)"
+#
+# `stat -f`, not `findmnt`. findmnt prints one line PER MOUNT ENTRY, and inside
+# the Claude Code sandbox /tmp carries a stacked mount, so FSTYPE came back as
+# "tmpfs\ntmpfs" -- which is not equal to "tmpfs", so this check fell through to
+# the on-disk branch and reported HEALTHY on a box that was still running /tmp
+# in RAM. Worse, it did that ONLY inside the sandbox: over plain ssh findmnt
+# returns one line and the check works, so the operator and the agent got
+# opposite answers from the same command, and the agent -- the consumer that
+# needs it -- got the wrong one. An in-session `devbox-drift` was reporting ok
+# while a session ENOSPC'd against that exact 2 GB tmpfs.
+#
+# stat -f asks the kernel what backs the path and returns exactly one value, so
+# mount stacking cannot change its shape.
+#
+# This is the second time this check has failed OPEN (see the pipefail note
+# below for the first). Both times a string comparison against another tool's
+# output shape was the mechanism. Prefer a probe with a fixed-shape answer.
+_tmpfs="$(stat -f -c %T /tmp 2>/dev/null)"
 if [ "$_tmpfs" = "tmpfs" ]; then
     _sz="$(df -h /tmp 2>/dev/null | awk 'NR==2{print $2}')"
     # Capture to a variable instead of piping. `systemctl is-enabled` prints
