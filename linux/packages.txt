@@ -81,8 +81,8 @@ podman-remote  # `podman --remote`; also what a toolbox container needs to drive
 # so one IS required — but docker-compose Recommends docker-cli, and this file is
 # installed without --no-install-recommends. A real /usr/bin/docker would then
 # talk to /var/run/docker.sock, which does not exist on a rootless box, and would
-# shadow the podman shim agents are told to use. restore.sh installs it in its
-# own --no-install-recommends call instead.
+# shadow ~/.local/share/kind-shims/docker, which restore.sh installs. restore.sh
+# installs the compose provider in its own --no-install-recommends call instead.
 
 # === Agent-driven cluster/database work ===
 # Installed by hand inside a throwaway container the first time an agent needed

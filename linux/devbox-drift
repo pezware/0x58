@@ -232,6 +232,40 @@ else
 fi
 unset _tmpfs
 
+# ---- 1b. kind shims -------------------------------------------------------
+# There is no docker binary on this box and kind needs both `docker` and
+# `podman` on PATH, forced through the rootless socket. These used to be rebuilt
+# by hand in $TMPDIR every session, so a reboot removed the ability to drive kind
+# at all and each session rediscovered it from a read-only-filesystem error four
+# layers down. Assert the artifacts AND the writable runtime dir, because the
+# missing file is the cheap half -- the misdiagnosis is the expensive half.
+say "== kind shims"
+_shimdir="$HOME/.local/share/kind-shims"
+for _f in podman docker env.sh; do
+    if [ ! -e "$_shimdir/$_f" ]; then
+        note "kind shim missing: $_shimdir/$_f — run restore.sh"
+    elif [ "$_f" != "env.sh" ] && [ ! -x "$_shimdir/$_f" ]; then
+        note "kind shim not executable: $_shimdir/$_f"
+    else
+        ok "$_shimdir/$_f"
+    fi
+done
+unset _f
+
+# The runtime dir is the trap. podman needs it WRITABLE; the default
+# /run/user/<uid> is read-only inside the Claude Code sandbox and fails with
+# "set sticky bit on: chmod .../libpod: read-only file system", which reads as a
+# privilege wall and is not one. Check writability, not existence.
+_rundir="${XDG_RUNTIME_DIR:-$HOME/.cache/podman-run}"
+if [ ! -d "$_rundir" ]; then
+    note "podman runtime dir absent: $_rundir — source kind-shims/env.sh"
+elif [ ! -w "$_rundir" ]; then
+    note "podman runtime dir NOT WRITABLE: $_rundir — this is not a privilege problem"
+else
+    ok "podman runtime dir writable ($_rundir)"
+fi
+unset _rundir _shimdir
+
 # ---- 2. apt packages ------------------------------------------------------
 say "== apt packages"
 if command -v apt-mark >/dev/null 2>&1; then

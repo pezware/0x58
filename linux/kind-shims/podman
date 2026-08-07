@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# Forced-remote podman. Installed twice, as `podman` and as `docker` (a symlink),
+# because the kind path needs both names and both need the same forwarding.
+#
+# WHY `docker` AT ALL
+#
+# dev/kind/Taskfile.yml calls `docker` throughout and there is no docker binary
+# on this box. restore.sh deliberately keeps a real /usr/bin/docker off PATH --
+# it would talk to /var/run/docker.sock, which does not exist on a rootless box.
+# podman answers a Docker-compatible API on the rootless user socket, so the
+# shim is a one-line forward.
+#
+# WHY `podman` TOO -- this is the one that gets missed
+#
+# With KIND_EXPERIMENTAL_PROVIDER=podman, kind invokes `podman` from PATH
+# directly, so shimming only `docker` fixes the Taskfile and leaves kind itself
+# broken. Three sessions rebuilt the docker shim by hand before anyone noticed
+# the second one was also needed.
+#
+# WHY --remote
+#
+# Plain local podman cannot build its runtime state inside the Claude Code
+# sandbox: /run/user/<uid>/{libpod,containers} are mounted read-only, and it
+# fails with "RunRoot is pointing to a path which is not writable" or "creating
+# events dirs: read-only file system". Both read as a privilege wall and are
+# not one -- the rootless service socket is unaffected, so force every call
+# through it.
+#
+# WHY THE ABSOLUTE PATH ON THE EXEC LINE
+#
+# This directory is FIRST on PATH and contains a `podman` entry -- this file.
+# Execing a bare `podman` would re-find it and recurse until the process dies.
+#
+# NOTE ON THE SOCKET PATH: it is /run/user/<uid>, NOT $XDG_RUNTIME_DIR. The kind
+# env deliberately overrides XDG_RUNTIME_DIR to a writable dir, but the rootless
+# podman *socket* still lives under the systemd user manager's real runtime dir.
+# Deriving the socket from the overridden variable would point at nothing.
+set -u
+
+sock="${DEVBOX_PODMAN_SOCK:-/run/user/${UID}/podman/podman.sock}"
+exec /usr/bin/podman --remote --url "unix://${sock}" "$@"
