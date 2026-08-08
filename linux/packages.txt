@@ -57,6 +57,24 @@ time           # /usr/bin/time — the BINARY, which is not the bash builtin. Ag
                # this passes on a box where it is missing. Cost a profiling
                # script on 2026-08-07.
 
+# === DNS diagnostics ===
+# bind9-dnsutils, NOT dnsutils: the transitional package is gone in trixie
+# (`apt-cache policy dnsutils` answers "Candidate: (none)"), so the habitual
+# name resolves to nothing and installs nothing.
+#
+# The box already ships /usr/bin/host, pulled in as bind9-host by another
+# package's dependencies, so `command -v host` succeeds and the machine LOOKS
+# equipped for DNS triage while dig is absent — the same false-negative shape
+# as the `time` entry above.
+#
+# Cost a DNS misdiagnosis on 2026-08-07: a triage loop running `dig @<upstream>`
+# against all three of Linode's resolvers returned empty for every one, which is
+# indistinguishable from "no upstream answered", and nearly indicted resolvers
+# that were in fact healthy. host(1) is not a substitute — comparing
+# `dig @1.1.1.1 <name>` against `dig @<local-resolver> <name>` is the test that
+# separates a broken resolver from a broken name, and it was the unavailable one.
+bind9-dnsutils
+
 # === Containers — for your shell, CI, AND agents ===
 # Rootless podman provides the Docker-compatible API socket testcontainers-go looks
 # for. Until 2026-08-04 it was deliberately unreachable from inside an agent
