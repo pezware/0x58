@@ -193,8 +193,13 @@ devbox-worktree-rm <path>    # `git worktree remove` CANNOT work in a sandboxed
                              # session — the sandbox bind-masks .gitmodules and
                              # .git/worktrees/<n>/{config.worktree,commondir} and
                              # recomputes the list every Bash call, so retrying
-                             # and --force never help. This removes it through a
-                             # container, which runs outside the sandbox.
+                             # never helps and --force makes it WORSE: it deletes
+                             # tracked files before failing on the masked
+                             # metadata (observed 2026-08-09). This removes it
+                             # through a container, which runs outside the
+                             # sandbox. Also handles a worktree whose directory
+                             # is already gone (stale metadata after a reboot) —
+                             # run it from inside the owning repo for that case.
 ```
 
 ### GitHub Actions - Force Cancel Stuck Workflow
