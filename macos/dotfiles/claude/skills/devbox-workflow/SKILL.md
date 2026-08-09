@@ -200,12 +200,32 @@ podman image prune -f && podman volume prune -f
 free -m | head -2; df -h / | tail -1     # report what came back
 ```
 
-This box has 4 GB and **no swap**. A cluster left running held 1.6 GB of RAM and
-8 GB of disk on 2026-08-04 — enough that the *next* session fails in ways that
-look nothing like "someone forgot to clean up". Keep the gitignored artifacts the
-next run reuses (`dev/kind/.kubeconfig`, `dev/caddy/certs/`, the mkcert CA), and
-name anything you leave behind on purpose. Details and the keep/remove split:
+This box has 4 GB of RAM and **~4.5 GB of swap** (a 496 MB partition plus a 4 GB
+swapfile). A cluster left running held 1.6 GB of RAM and 8 GB of disk on
+2026-08-04 — enough that the *next* session fails in ways that look nothing like
+"someone forgot to clean up". Keep the gitignored artifacts the next run reuses
+(`dev/kind/.kubeconfig`, `dev/caddy/certs/`, the mkcert CA), and name anything you
+leave behind on purpose. Details and the keep/remove split:
 [containers and the k8s tier](patterns/containers-and-k8s.md).
+
+**Because swap exists, the box does not kill under memory pressure — it thrashes.**
+That changes what a leftover cluster looks like from the next session's seat: not
+an OOM kill but unbounded slowness, which is far harder to attribute. Measured
+2026-08-09 with a warm cluster up: 393 MB available, and `/proc/pressure/memory`
+at 147.9 s of cumulative *full* stall against 371.5 s for I/O, on 2 vCPU carrying
+load 4.7. Two consequences worth knowing before you debug the wrong thing:
+
+- **Do not diagnose a killed build as OOM without checking.** `dmesg` is closed
+  (`kernel.dmesg_restrict=1`) and journald needs a group you are not in, but
+  cgroup v2 keeps an unprivileged counter that is hierarchical and outlives the
+  dead child cgroup: `grep oom_kill /sys/fs/cgroup/user.slice/memory.events`. It
+  counts kills by **any** OOM killer, global included, so `0` is real evidence.
+  A build that died with no `fatal error: out of memory` in its log and a zero
+  counter was terminated by something else — a timeout, or you.
+- **Do not add `--memory` to a podman build to "contain" it.** A cgroup limit
+  converts today's slow build into a killed one, which is strictly worse. Cap
+  concurrency instead (`go build -p 1`, `task --concurrency 1`); the linker is
+  the real peak and `-p` will not shrink it.
 
 Report the before/after numbers rather than the word "cleaned up" — a delete that
 half-failed looks identical to one that worked until someone checks.
