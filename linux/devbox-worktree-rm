@@ -87,7 +87,15 @@ fi
 # not more privilege. Same value ~/.local/share/kind-shims/env.sh exports, set
 # here too so this helper works in a session that has not sourced it -- which is
 # every session that only wants to remove a worktree.
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache/podman-run}"
+#
+# Fall back on WRITABILITY, not on emptiness. A `${XDG_RUNTIME_DIR:-...}` default
+# substitutes only when the variable is unset or empty, and the sandbox always
+# SETS it -- to the read-only /run/user/<uid> that is the whole problem. So that
+# form silently keeps the broken value and the helper still fails, which is
+# exactly what shipped and had to be corrected. Test the path, not the variable.
+if [ ! -w "${XDG_RUNTIME_DIR:-/nonexistent}" ]; then
+    export XDG_RUNTIME_DIR="$HOME/.cache/podman-run"
+fi
 mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
