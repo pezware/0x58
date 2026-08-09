@@ -111,12 +111,22 @@ postgresql-client # psql against a service in kind or a compose stack
 # NOTE: jq is deliberately NOT here. mise owns it (see the header) and an apt jq
 # would shadow the shim with an older build.
 
+# === C toolchain — cgo, without which `go test -race` cannot run ===
+# ~200 MB, and deliberately OFF here until 2026-08-09. What changed: the Go race
+# detector requires cgo, cgo requires a C compiler, and with none installed
+# `go env CGO_ENABLED` reports 0 — so a suite that passes -race does not run
+# slowly, it does not run at all. go-monorepo's crs test:integration dies at
+# `go: -race requires cgo`, 0 tests, in 0.068s.
+#
+# The note this replaces was right that mise's Go toolchain needs no compiler to
+# BUILD pure-Go tools (goimports, govulncheck); it predates a test flag that
+# needs one to RUN. That is the distinction — not "a mise tool compiles from
+# source", which is still false.
+build-essential   # pulls binutils (ld/as/ar) and libc6-dev; gcc alone is not enough
+
 # === Optional — uncomment per box, not by default ===
 # Deliberately off: this is a 2-4 GB laptop and the point is to stay minimal.
 #
-# build-essential   # ~200 MB. Only needed if a mise tool compiles from source.
-#                   # The `go:` entries (goimports, govulncheck) are pure Go and
-#                   # do NOT need it — mise's own Go toolchain is enough.
 # tlp               # Battery/thermal tuning. NOT needed just for charge limits —
 #                   # linux/setup-server.sh uses the in-kernel thinkpad_acpi sysfs.
 # zram-tools        # Compressed swap. Worth it under ~2 GB; a headless Debian
