@@ -75,6 +75,22 @@ if ! git -C "$WT" diff --quiet 2>/dev/null || ! git -C "$WT" diff --cached --qui
     die "worktree has uncommitted changes — commit, stash, or remove it by hand"
 fi
 
+# podman needs a WRITABLE XDG_RUNTIME_DIR even in --remote mode. It loads its
+# configuration BEFORE honouring --remote, and that load chmods
+# $XDG_RUNTIME_DIR/libpod -- so the read-only default /run/user/<uid> inside the
+# sandbox kills a remote-only invocation that never touches local storage:
+#
+#     Failed to obtain podman configuration: set sticky bit on:
+#     chmod /run/user/1000/libpod: read-only file system
+#
+# That reads as a privilege wall and is not one; the fix is a writable directory,
+# not more privilege. Same value ~/.local/share/kind-shims/env.sh exports, set
+# here too so this helper works in a session that has not sourced it -- which is
+# every session that only wants to remove a worktree.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache/podman-run}"
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
 DOCKER="${DEVBOX_PODMAN:-/usr/bin/podman --remote --url unix:///run/user/1000/podman/podman.sock}"
 IMAGE="${DEVBOX_TOOLBOX_IMAGE:-localhost/0x58-toolbox:latest}"
 
@@ -84,7 +100,10 @@ echo "==> Removing via container (runs outside the sandbox)"
 # reporting a directory that is no longer there.
 $DOCKER run --rm -v "$PARENT:/m:rw" -v "$MAIN/.git:/g:rw" "$IMAGE" \
     sh -c "rm -rf '/m/$SLUG' '/g/worktrees/$SLUG'" \
-    || die "container removal failed (is the toolbox image present? $IMAGE)"
+    || die "container removal failed. Check the podman error above before assuming
+  a missing image: a 'set sticky bit on: chmod .../libpod' line means
+  XDG_RUNTIME_DIR is not writable, not that $IMAGE is absent. If podman itself
+  ran fine, then the image is the suspect — build it with dev/nodes/toolbox/build."
 
 git -C "$MAIN" worktree prune 2>/dev/null || true
 
