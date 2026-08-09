@@ -256,11 +256,34 @@ unset _f
 # /run/user/<uid> is read-only inside the Claude Code sandbox and fails with
 # "set sticky bit on: chmod .../libpod: read-only file system", which reads as a
 # privilege wall and is not one. Check writability, not existence.
+#
+# But "unwritable" is TWO findings and only one of them is drift. Inside a Claude
+# Code sandbox /run/user/<uid> is bind-mounted read-only in THIS mount namespace
+# while the underlying tmpfs stays rw, so the box is fine and only this process is
+# restricted. /proc/self/mountinfo shows both views: field 6 is the per-mount
+# options, the last field is the superblock's. ro there plus rw here means
+# namespace-local:
+#
+#     per-mount opts : ro,nosuid,nodev,relatime
+#     superblock opts: rw,size=401592k,...,mode=700,uid=1000,gid=1000
+#
+# Reported as DRIFT that fires in every agent session forever, for a condition no
+# rebuild can fix and env.sh already routes around -- and `devbox-drift --quiet`
+# is documented for timers and hooks, so it could never exit 0 in a session. A
+# check that cannot be satisfied trains people to ignore the whole report, which
+# costs more than the signal is worth.
 _rundir="${XDG_RUNTIME_DIR:-$HOME/.cache/podman-run}"
 if [ ! -d "$_rundir" ]; then
     note "podman runtime dir absent: $_rundir — source kind-shims/env.sh"
 elif [ ! -w "$_rundir" ]; then
-    note "podman runtime dir NOT WRITABLE: $_rundir — this is not a privilege problem"
+    if awk -v d="$_rundir" '
+            $5==d && $6 ~ /(^|,)ro(,|$)/ && $NF ~ /(^|,)rw(,|$)/ { found=1 }
+            END { exit !found }
+        ' /proc/self/mountinfo 2>/dev/null; then
+        ok "podman runtime dir read-only in this sandbox only ($_rundir) — box unaffected; kind-shims/env.sh redirects to ~/.cache/podman-run"
+    else
+        note "podman runtime dir NOT WRITABLE: $_rundir — this is not a privilege problem"
+    fi
 else
     ok "podman runtime dir writable ($_rundir)"
 fi
