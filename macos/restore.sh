@@ -786,6 +786,26 @@ setup_dev_tools() {
     fi
 }
 
+# --- Phase 3c: keymaster (Touch ID-gated keychain CLI) ---
+# Compiled from source rather than shipped as a binary: it is a credential tool,
+# so the thing on PATH should be reproducible from what is in this repo. See
+# macos/keymaster/README.md.
+setup_keymaster() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    local src="$SCRIPT_DIR/keymaster/keymaster.swift"
+    [[ -f "$src" ]] || return
+    if ! command -v swiftc &>/dev/null; then
+        echo "==> keymaster: skipped (no swiftc — run: xcode-select --install)"
+        return
+    fi
+    mkdir -p ~/.local/bin
+    if swiftc -O "$src" -o ~/.local/bin/keymaster 2>/dev/null; then
+        echo "    keymaster: built and installed to ~/.local/bin/keymaster"
+    else
+        echo "    keymaster: BUILD FAILED (left any existing binary in place)"
+    fi
+}
+
 # --- Phase 4a: PAM (Touch ID for sudo, including inside tmux) ---
 # pam-reattach (from Brewfile) is inert until wired into the PAM stack.
 # Without it, Touch ID works for sudo in a fresh terminal but silently
@@ -990,6 +1010,7 @@ install_packages
 place_dotfiles
 setup_dev_tools
 setup_src_sync
+setup_keymaster
 setup_pam_touchid
 setup_linux_server
 apply_macos_defaults

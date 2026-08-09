@@ -20,6 +20,11 @@ venv/
 # OS
 .DS_Store
 
+# keymaster is compiled from macos/keymaster/keymaster.swift by restore.sh.
+# Never commit the binary — a credential tool on PATH should be reproducible
+# from the source in this repo, not a blob someone has to trust.
+macos/keymaster/keymaster
+
 # Local-only working contracts — never committed, never referenced in commits/PRs
 IMPLEMENTATION_PLAN.md
 IMPLEMENTATION_PLAN-*.md
