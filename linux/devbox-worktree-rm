@@ -8,7 +8,11 @@
 # WHY THIS EXISTS
 #
 # `git worktree remove` fails with "Device or resource busy" for EVERY worktree
-# in a sandboxed session, and neither --force nor rm -rf helps. It is not a
+# in a sandboxed session. rm -rf does not help, and --force is WORSE than
+# useless: it deletes tracked files from the worktree BEFORE failing on the
+# masked metadata, leaving a half-destroyed tree that then trips the
+# uncommitted-changes guard below (observed 2026-08-09 — four tracked files
+# gone, then "Device or resource busy"). It is not a
 # stale lock: the sandbox bind-masks <worktree>/.gitmodules and
 # .git/worktrees/<name>/{config.worktree,commondir} -- git config files that
 # could set core.hooksPath -- and it recomputes that mount list on EVERY Bash
@@ -49,10 +53,27 @@ case "$WT" in /*) ;; *) WT="$PWD/$WT" ;; esac
 
 command -v git >/dev/null 2>&1 || die "git not on PATH"
 
-# The repo that OWNS this worktree. Ask git rather than guessing from the path,
-# so a mistyped argument cannot resolve to something removable.
-MAIN="$(git -C "$WT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
-[ -n "$MAIN" ] || die "$WT is not inside a git worktree (or git cannot read it)"
+# A worktree whose DIRECTORY is already gone (a /tmp worktree after reboot, an
+# interrupted removal) leaves git metadata behind that `worktree prune` cannot
+# clear here -- the sandbox masks .git/worktrees/<slug> too, so prune dies with
+# "Device or resource busy". That stale entry is still this script's job; it
+# just cannot be identified through the missing path.
+STALE=0
+[ -e "$WT" ] || STALE=1
+
+if [ "$STALE" -eq 1 ]; then
+    # Identity must come from a repo that lists this path. The caller's cwd is
+    # the only safe candidate: guessing an owner from the path text is how a
+    # typo becomes an rm -rf inside the wrong repo's .git.
+    MAIN="$(git -C "$PWD" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+    [ -n "$MAIN" ] || die "$WT no longer exists on disk, so its owner cannot be read from it.
+  Run this from inside the repo that owns the stale entry (git worktree list shows it)."
+else
+    # The repo that OWNS this worktree. Ask git rather than guessing from the
+    # path, so a mistyped argument cannot resolve to something removable.
+    MAIN="$(git -C "$WT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+    [ -n "$MAIN" ] || die "$WT is not inside a git worktree (or git cannot read it)"
+fi
 [ "$MAIN" != "$WT" ] || die "refusing: $WT is the MAIN checkout, not a linked worktree"
 
 # Confirm git actually lists it, so we never rm -rf a path git does not own.
@@ -62,17 +83,26 @@ git -C "$MAIN" worktree list --porcelain 2>/dev/null \
 
 SLUG="$(basename "$WT")"
 PARENT="$(dirname "$WT")"
-BRANCH="$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [ "$STALE" -eq 1 ]; then
+    # The tree cannot answer rev-parse; the owner's metadata still knows.
+    BRANCH="$(git -C "$MAIN" worktree list --porcelain 2>/dev/null \
+        | awk -v t="$WT" '/^worktree /{cur=$2} /^branch /{if (cur==t) {sub("refs/heads/","",$2); print $2; exit}}')"
+else
+    BRANCH="$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
 
 echo "repo     : $MAIN"
 echo "worktree : $WT"
+[ "$STALE" -eq 1 ] && echo "state    : directory already gone — removing stale metadata only"
 echo "branch   : ${BRANCH:-<unknown>}"
 
 # Uncommitted work is the one thing worth stopping for: the container delete is
 # not recoverable, and "busy" errors have trained people to retry harder rather
-# than look.
-if ! git -C "$WT" diff --quiet 2>/dev/null || ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
-    die "worktree has uncommitted changes — commit, stash, or remove it by hand"
+# than look. A stale entry has no tree to inspect -- and nothing left to lose.
+if [ "$STALE" -eq 0 ]; then
+    if ! git -C "$WT" diff --quiet 2>/dev/null || ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
+        die "worktree has uncommitted changes — commit, stash, or remove it by hand"
+    fi
 fi
 
 # podman needs a WRITABLE XDG_RUNTIME_DIR even in --remote mode. It loads its
@@ -105,9 +135,18 @@ IMAGE="${DEVBOX_TOOLBOX_IMAGE:-localhost/0x58-toolbox:latest}"
 echo "==> Removing via container (runs outside the sandbox)"
 # Mount the PARENT, not the worktree: the worktree's own path is what is masked.
 # Both the tree and git's metadata dir have to go, or `worktree list` keeps
-# reporting a directory that is no longer there.
-$DOCKER run --rm -v "$PARENT:/m:rw" -v "$MAIN/.git:/g:rw" "$IMAGE" \
-    sh -c "rm -rf '/m/$SLUG' '/g/worktrees/$SLUG'" \
+# reporting a directory that is no longer there. For a stale entry the tree is
+# already gone -- and its parent may be too (/tmp/<x> after a reboot), so only
+# the metadata mount is safe to ask for.
+if [ "$STALE" -eq 1 ]; then
+    MOUNTS=(-v "$MAIN/.git:/g:rw")
+    RMCMD="rm -rf '/g/worktrees/$SLUG'"
+else
+    MOUNTS=(-v "$PARENT:/m:rw" -v "$MAIN/.git:/g:rw")
+    RMCMD="rm -rf '/m/$SLUG' '/g/worktrees/$SLUG'"
+fi
+$DOCKER run --rm "${MOUNTS[@]}" "$IMAGE" \
+    sh -c "$RMCMD" \
     || die "container removal failed. Check the podman error above before assuming
   a missing image: a 'set sticky bit on: chmod .../libpod' line means
   XDG_RUNTIME_DIR is not writable, not that $IMAGE is absent. If podman itself
@@ -116,10 +155,14 @@ $DOCKER run --rm -v "$PARENT:/m:rw" -v "$MAIN/.git:/g:rw" "$IMAGE" \
 git -C "$MAIN" worktree prune 2>/dev/null || true
 
 if [ "$DELETE_BRANCH" -eq 1 ] && [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
-    # `branch -D` prints "error: could not lock config file .git/config" here and
-    # then succeeds anyway -- the sandbox masks that file, the ref delete itself
-    # does not need it. Expected, not a failure.
-    git -C "$MAIN" branch -D "$BRANCH" 2>&1 | grep -v "could not lock config file" || true
+    # `branch -D` prints "error: could not lock config file .git/config" AND
+    # "warning: update of config-file failed" here and then succeeds anyway --
+    # the sandbox masks that file, the ref delete itself does not need it.
+    # Expected, not a failure. Both lines are swallowed because each one reads
+    # like a half-failed removal and sent a reader chasing it (2026-08-09); the
+    # "Deleted branch" line that follows is the real verdict.
+    git -C "$MAIN" branch -D "$BRANCH" 2>&1 \
+        | grep -vE "could not lock config file|update of config-file failed" || true
 fi
 
 echo "==> Verifying"
