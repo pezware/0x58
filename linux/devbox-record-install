@@ -40,7 +40,7 @@ command -v python3 >/dev/null 2>&1 || exit 0
 mkdir -p "$LEDGER_DIR" 2>/dev/null || exit 0
 
 PAYLOAD="$payload" LEDGER="$LEDGER" python3 <<'PY' 2>/dev/null || true
-import json, os, re, time
+import json, os, re, subprocess, time
 
 raw = os.environ.get("PAYLOAD", "")
 try:
@@ -82,12 +82,92 @@ PATTERNS = [
     r"\bgo\s+install\b",
     r"\bcargo\s+install\b",
 ]
-if not any(re.search(p, cmd) for p in PATTERNS):
+
+
+def strip_literals(s):
+    """Blank out quoted strings and comments.
+
+    Matching raw command text confuses TALKING ABOUT an install with DOING one.
+    Both false entries in the ledger on 2026-08-09 were read-only greps of this
+    very repo: an `echo "... or apt install ..."` banner, and a
+    `grep -nE 'apt install|apt-get install' ...` pattern. Neither installed
+    anything. A ledger that fires on discussion is one people learn to skip.
+
+    Quotes become spaces rather than vanishing, so `a"x"b` cannot fuse into `ab`
+    and invent a token that was never typed.
+    """
+    out, quote, i, n = [], None, 0, len(s)
+    while i < n:
+        c = s[i]
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            quote, out = c, out + [" "]
+            i += 1
+            continue
+        if c == "#" and (not out or out[-1] in " \t\n;&|("):
+            while i < n and s[i] != "\n":
+                i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+effective = strip_literals(cmd)
+if not any(re.search(p, effective) for p in PATTERNS):
     raise SystemExit(0)
 
 # Skip the obvious no-ops so the ledger stays worth reading.
-if re.search(r"--dry-run|--help|\s-h\b", cmd):
+if re.search(r"--dry-run|--help|\s-h\b", effective):
     raise SystemExit(0)
+
+
+def apt_packages(text):
+    """Operands of an apt/dnf/apk install, i.e. what it claims to have added."""
+    pkgs = []
+    for m in re.finditer(
+        r"\b(?:apt(?:-get)?|dnf|yum|apk)\s+(?:-\S+\s+)*(?:install|add)\b(.*)", text
+    ):
+        for tok in m.group(1).split():
+            if tok.startswith("-"):
+                continue
+            if tok in (";", "&&", "||", "|", "&"):
+                break
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9+._-]*$", tok):
+                break
+            pkgs.append(tok)
+    return pkgs
+
+
+def installed(pkg):
+    try:
+        r = subprocess.run(
+            ["dpkg-query", "-W", "-f=${db:Status-Status}", pkg],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "installed"
+    except Exception:
+        # Cannot confirm is NOT the same as confirmed absent. Record and let the
+        # human reconcile; a spurious entry is cheap, a lost one is not.
+        return True
+
+
+# CONFIRM BY EFFECT, not by text. This is a PostToolUse hook, so the command has
+# already run: for system packages we can ask whether the operands are actually
+# installed NOW instead of trusting that the line meant what it looked like.
+# Only apt-family is confirmable this cheaply; mise/npm/pip/go/cargo keep the
+# textual path above, now with literals stripped.
+if re.search(r"\b(?:apt(?:-get)?|dnf|yum|apk)\s+(?:-\S+\s+)*(?:install|add)\b", effective):
+    pkgs = apt_packages(effective)
+    if pkgs and not any(installed(p) for p in pkgs):
+        raise SystemExit(0)
 
 line = "\t".join([
     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
