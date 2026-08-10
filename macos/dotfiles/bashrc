@@ -17,16 +17,11 @@ shopt -s histappend
 
 # Basic aliases for all environments
 #
-# `vim` is aliased only where nvim actually exists. This file is placed verbatim
-# on both machines, and the devbox deliberately has no nvim as of 2026-08-05 — an
-# unconditional alias there makes every `vim` invocation, including the ones you
-# reach for when something is already broken, fail with "command not found".
-# Probing for the binary rather than the platform keeps this correct if either
-# machine changes its mind.
-if command -v nvim >/dev/null 2>&1; then
-    alias vi=nvim
-    alias vim=nvim
-fi
+# No vi/vim -> nvim aliases (dropped 2026-08-10). This file is placed verbatim on
+# both machines and the devbox deliberately runs apt's vim, so the alias was
+# already guarded by a `command -v nvim` probe. Removing it entirely rather than
+# keeping the probe: `vi` is what other tools reach for when they need an editor
+# that is guaranteed to exist, and shadowing it buys nothing over typing `nvim`.
 alias cp="cp -i"
 # `cat` -> bat on macOS only. On a remote box it actively gets in the way: bat
 # paginates and adds line numbers and decorations, so reading a file in an ssh
