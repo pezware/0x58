@@ -604,7 +604,16 @@ SSHCFG
     if [[ -d "$DOTFILES/kube" ]]; then
         mkdir -p ~/.kube/configs
         [[ -f "$DOTFILES/kube/README.md" ]] && cp -v "$DOTFILES/kube/README.md" ~/.kube/README.md
-        if [[ -d "$DOTFILES/kube/configs" ]]; then
+        # macOS only. Everything tracked here authenticates through an exec
+        # plugin -- gke-gcloud-auth-plugin for GKE, `aws eks get-token` for EKS --
+        # and neither plugin is installed on the devbox, nor meant to be: that
+        # box reaches Kubernetes through kind, locally. Copying these there
+        # produced contexts that could not work in principle. Not "needs a
+        # login", which at least tells you what to do, but "no such binary",
+        # discovered only when you finally run a command against a cluster the
+        # prompt has been claiming for weeks. See sync_kind_contexts for what
+        # the devbox gets instead.
+        if [[ "$PLATFORM" == "macos" && -d "$DOTFILES/kube/configs" ]]; then
             for d in "$DOTFILES/kube/configs"/*/; do
                 [[ -d "$d" ]] || continue
                 name=$(basename "$d")
@@ -613,6 +622,48 @@ SSHCFG
             done
         fi
     fi
+}
+
+# --- Phase 3e: the devbox's own clusters ---
+# Its clusters are the ones kind creates on it; nothing else is reachable from
+# there. Until now restore.sh installed the Mac's GKE configs on it and imported
+# nothing, so `kube-list` offered two clusters it cannot authenticate to and
+# omitted the one real cluster -- iden2-dev -- that had been running all along.
+#
+# Re-running is also the repair for a rebuilt cluster: `kind export kubeconfig`
+# rewrites the CA and the port, which is exactly what goes stale after a
+# delete/create cycle and produces "TLS verify failed" out of nowhere.
+sync_kind_contexts() {
+    if [[ "$PLATFORM" != "linux" ]]; then return; fi
+    [[ -f "$DOTFILES/bash/kubectl-context.bash" ]] || return
+
+    echo "==> Importing local kind clusters"
+    (
+        # The module is written for an interactive shell, not for `set -euo`.
+        # Blanking both pane variables keeps this converge step from creating or
+        # rewriting the overlay of whatever pane restore.sh happens to run in --
+        # a sweep should not silently change the context under the operator.
+        set +eu
+        # shellcheck disable=SC2034  # both are read by the module sourced below
+        KITTY_WINDOW_ID="" TMUX_PANE=""
+        # shellcheck disable=SC1090
+        source "$DOTFILES/bash/kubectl-context.bash" >/dev/null 2>&1
+
+        # kind writes "using podman due to KIND_EXPERIMENTAL_PROVIDER" to stderr,
+        # so stdout is just the cluster names.
+        clusters=$(_kube_kind get clusters 2>/dev/null)
+        if [[ -z "$clusters" ]]; then
+            echo "    no kind clusters found (is podman running? systemctl --user status podman.socket)"
+            exit 0
+        fi
+        for c in $clusters; do
+            if kube-setup-kind "$c" >/dev/null 2>&1; then
+                echo "    imported: kind-$c"
+            else
+                echo "    WARNING could not import kind cluster '$c'" >&2
+            fi
+        done
+    )
 }
 
 # --- Phase 3: Dev tools ---
@@ -816,35 +867,77 @@ setup_keymaster() {
 # still has the external-drive mounter and a dead OrbStack kubeconfig; neither is
 # removed by simply not installing them any more.
 prune_retired_state() {
-    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    # Runs on BOTH platforms now. It used to return early on Linux while
+    # place_dotfiles installed kube configs on both -- so the devbox sat inside
+    # the blast radius of every install and outside the blast radius of every
+    # cleanup. That asymmetry is the whole reason it accumulated two unusable
+    # GKE contexts and 23 overlays pinned to `orbstack`, a context retired
+    # before that box had ever run a container. Cleanup narrower than the
+    # install it corrects will always leave orphans somewhere.
+    #
+    # Every path below is spelled "$HOME/..." rather than ~/..., and that is not
+    # a style preference. Bash binds a literal ~ when the script text is PARSED,
+    # so reassigning HOME later does not redirect it -- `HOME=/sandbox` followed
+    # by `rm -rf ~/.kube/configs/gke-*` deletes out of the REAL home while
+    # `"${d/#$HOME/~}"` in the very next line reports the sandbox. That is not a
+    # hypothetical: it ate two live kubeconfigs while this function was being
+    # tested on 2026-08-10. This is the only rm -rf in restore.sh, so it is also
+    # the one function that has to be safe to exercise against a throwaway HOME.
+    local d
 
-    # Login Item + script for the retired external-drive auto-mount. The Login
-    # Item lives in the BTM database, not in LaunchAgents -- see macos/login-items.md.
-    if [[ -f ~/bin/external-drives-mount.sh ]]; then
-        rm -f ~/bin/external-drives-mount.sh
-        echo "    pruned: ~/bin/external-drives-mount.sh (external drive retired)"
-    fi
-    if sfltool dumpbtm 2>/dev/null | grep -q "external-drives-mount"; then
-        osascript -e 'tell application "System Events" to delete login item "external-drives-mount.sh"' 2>/dev/null \
-            && echo "    pruned: external-drives-mount Login Item" \
-            || echo "    NOTE: remove the external-drives-mount Login Item in System Settings"
-    fi
-
-    # KUBECONFIG is glob-built from ~/.kube/configs/*/, so a leftover orbstack
-    # directory keeps a dead context in the merge list forever.
-    if [[ -d ~/.kube/configs/orbstack ]]; then
-        rm -rf ~/.kube/configs/orbstack
-        echo "    pruned: ~/.kube/configs/orbstack (OrbStack removed)"
-    fi
-    # Window overlays are per-pane current-context stubs; any naming a context
-    # that no longer exists will keep selecting it in that pane.
-    if [[ -d ~/.kube/configs/.window-overlays ]]; then
-        local n
-        n=$(grep -rl orbstack ~/.kube/configs/.window-overlays 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$n" != "0" ]]; then
-            grep -rl orbstack ~/.kube/configs/.window-overlays 2>/dev/null | xargs rm -f
-            echo "    pruned: $n kube window overlay(s) pinning orbstack"
+    if [[ "$PLATFORM" == "macos" ]]; then
+        # Login Item + script for the retired external-drive auto-mount. The Login
+        # Item lives in the BTM database, not in LaunchAgents -- see macos/login-items.md.
+        if [[ -f "$HOME/bin/external-drives-mount.sh" ]]; then
+            rm -f "$HOME/bin/external-drives-mount.sh"
+            echo "    pruned: ~/bin/external-drives-mount.sh (external drive retired)"
         fi
+        if sfltool dumpbtm 2>/dev/null | grep -q "external-drives-mount"; then
+            osascript -e 'tell application "System Events" to delete login item "external-drives-mount.sh"' 2>/dev/null \
+                && echo "    pruned: external-drives-mount Login Item" \
+                || echo "    NOTE: remove the external-drives-mount Login Item in System Settings"
+        fi
+
+        # KUBECONFIG is glob-built from ~/.kube/configs/*/, so a leftover orbstack
+        # directory keeps a dead context in the merge list forever.
+        if [[ -d "$HOME/.kube/configs/orbstack" ]]; then
+            rm -rf "$HOME/.kube/configs/orbstack"
+            echo "    pruned: ~/.kube/configs/orbstack (OrbStack removed)"
+        fi
+    fi
+
+    if [[ "$PLATFORM" == "linux" ]]; then
+        # The cloud configs this script used to install here. Gating the install
+        # in place_dotfiles does nothing for a box that already has them --
+        # "stop installing X" and "remove the X you installed" are two changes,
+        # and only shipping the first is how retired state becomes permanent.
+        for d in "$HOME"/.kube/configs/gke-* "$HOME"/.kube/configs/eks-*; do
+            [[ -d "$d" ]] || continue
+            rm -rf "$d"
+            echo "    pruned: ${d/#$HOME/\~} (exec-plugin cloud contexts are macOS-only)"
+        done
+    fi
+
+    # Both platforms: window overlays pinning a context nothing defines.
+    #
+    # Generalised from the old `grep -rl orbstack`. Naming the retired cluster
+    # meant a new special case at every retirement, and it could only ever catch
+    # the one name somebody remembered to add -- the next dead context would sit
+    # there just as long. The question that actually matters, "does anything
+    # still define this?", is the same one the shell now asks at startup, so ask
+    # it with the same code instead of keeping a second copy to drift.
+    if [[ -f "$DOTFILES/bash/kubectl-context.bash" ]]; then
+        (
+            # Written for an interactive shell, not for `set -euo`. Both pane
+            # variables are blanked so a converge step cannot create or rewrite
+            # the overlay of whatever pane restore.sh happens to be running in.
+            set +eu
+            # shellcheck disable=SC2034  # both are read by the module sourced below
+            KITTY_WINDOW_ID="" TMUX_PANE=""
+            # shellcheck disable=SC1090
+            source "$DOTFILES/bash/kubectl-context.bash" >/dev/null 2>&1
+            kube-prune-overlays
+        ) | sed 's/^/    /'
     fi
 }
 
@@ -1053,6 +1146,10 @@ place_dotfiles
 setup_dev_tools
 setup_src_sync
 setup_keymaster
+# Import before pruning: the prune asks "is this context defined anywhere?", so
+# the kind configs have to be in place first or it would delete the overlays
+# that legitimately point at them.
+sync_kind_contexts
 prune_retired_state
 setup_pam_touchid
 setup_linux_server
