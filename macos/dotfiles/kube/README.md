@@ -56,13 +56,12 @@ Setup commands write to `configs/<type>-<env>/config`, create a short context al
 | GKE | Exec plugin (`gke-gcloud-auth-plugin`) | No — tokens fetched on demand |
 | EKS | Exec plugin (`aws eks get-token`) | No — tokens fetched on demand |
 | Kind | Embedded client certificate + key | Yes — static TLS credentials |
-| OrbStack | Embedded client certificate + key | Yes — static TLS credentials |
 
 ### Credential locations
 
 - **GKE/gcloud**: `~/.config/gcloud/credentials.db` (OAuth refresh token), `access_tokens.db` (short-lived)
 - **AWS/EKS**: Managed by AWS CLI profiles (`~/.aws/`)
-- **Kind/OrbStack**: Client cert and key embedded directly in the kubeconfig files
+- **Kind**: Client cert and key embedded directly in the kubeconfig files
 
 ### Protections in place
 

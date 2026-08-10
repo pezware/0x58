@@ -85,7 +85,6 @@ GPG private keys are NOT in `~/.gnupg/private-keys-v1.d/` between sessions — t
 - **Secretive** — SSH via Secure Enclave (non-transferable per machine — must be re-created on new hardware)
 - **Migration Assistant** is the recommended path for new-machine setup; it transfers the login keychain so all credential restores Just Work afterwards
 - **Tailscale** — client-only, just sign in
-- **OrbStack** — container runtime; `restore.sh` also bootstraps Linux VMs
 - **Linux package split** — apt owns the base system, `mise` owns every dev tool and
   runtime. No Homebrew on Linux: `dotfiles/mise/config.toml` is already cross-platform
   and covers ~50 of the Brewfile's formulae, so a second package manager would only

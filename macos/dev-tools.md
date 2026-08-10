@@ -81,7 +81,6 @@ yq                                       4.53.3    ~/.config/mise/config.toml  l
 
 - **mise** — single source of truth for dev tools (node, go, terraform, kubectl, etc.)
 - **brew** — system libs, GUI casks, macOS-specific tools only
-- **OrbStack** — container runtime (Docker-compatible, paying user)
 - **Secretive** — SSH agent backed by Secure Enclave hardware keys
 - **GPG signing** enabled for git commits
 - **Release-age buffer** — 3 days for both mise and pnpm/npm

@@ -14,7 +14,7 @@ git clone https://github.com/pezware/0x58.git ~/src/public/0x58
 
 The script handles: brew install, dotfile placement, dev tool setup, and macOS defaults. It prints remaining manual steps at the end.
 
-For Linux (OrbStack VMs), the same script detects the platform and installs via apt instead.
+For Linux (the devbox), the same script detects the platform and installs via apt instead.
 
 ## What the Script Does
 
@@ -82,7 +82,6 @@ Daily habit: `gcloud_login` when you start, `gcloud_logout` when you stop.
 ### Kubernetes
 GKE/EKS configs are restored from the repo (exec-based, no embedded credentials). Local clusters need to be recreated:
 ```bash
-kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
 kube-setup-kind iden2-dev   # only if you have a kind cluster
 kube-refresh                # rebuilds the merged KUBECONFIG
 ```
@@ -195,7 +194,7 @@ gpg_backup_to_keychain                    # re-stage in new machine's keychain
 - [ ] `claude auth status` shows logged in (`apiProvider: firstParty`)
 - [ ] `codex --version` runs (auth is keychain-backed; no `~/.codex/auth.json`)
 - [ ] `gcloud_status` shows active account after `gcloud_login`
-- [ ] `kubectl config current-context` resolves (orbstack by default after `kube-setup-orbstack`)
+- [ ] `kubectl config current-context` resolves (gke-stg-ro by default)
 - [ ] `claude` and `codex` work
 - [ ] `w3m https://example.com` renders
 - [ ] Caps Lock acts as Control

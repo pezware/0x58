@@ -40,7 +40,6 @@ The explicit block is required because the `Host *` catch-all has `IdentitiesOnl
 |---|---|---|
 | `pezware-uno` | Tailscale | Personal server |
 | `pezware-dos` | Tailscale | Personal server |
-| OrbStack VMs | Via `~/.orbstack/ssh/config` include | Local Linux VMs |
 
 ## Global defaults (`Host *`)
 
@@ -54,4 +53,3 @@ The explicit block is required because the `Host *` catch-all has `IdentitiesOnl
 - **Secretive.app** (brew cask) — Secure Enclave SSH agent
 - **opensc** (brew) — PKCS#11 provider for GitHub auth
 - **Tailscale** — mesh VPN for remote host access
-- **OrbStack** — local Linux VM SSH access

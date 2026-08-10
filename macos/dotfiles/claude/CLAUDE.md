@@ -314,35 +314,6 @@ gh api -X POST /repos/<owner>/<repo>/pulls/<n>/reviews --input /tmp/review.json 
 
 Gotcha: an inline comment only anchors to a line that is **part of the PR diff** (RIGHT side = added/context line). For a **new file** every line qualifies; for an edited file, target an added/changed line or the POST 422s. Approving/outward-facing → needs explicit user go-ahead first (per the confirm-before-outward-action rule).
 
-### OrbStack — docker.sock missing / VM wedged (external-drive I/O stall)
-
-Symptom: `docker` / `docker compose` fails with `~/.orbstack/run/docker.sock: no such file or directory`, or `orb status`/`docker ps` hang forever. The socket is a **symptom**: it only exists while OrbStack's VM engine is up. Root cause (diagnosed 2026-07-02): OrbStack's VM disk (`data.img.raw`) lives on the external drive (`AchtungAndy` → `OrbStack.dmg.sparseimage` → `/Volumes/OrbStackData/orbstack-data/`); a brief drive stall wedges the guest kernel on block I/O (`virtio-fs failed -22`, hung task in `__swap_writepage → virtio_queue_rq` in `~/.orbstack/log/vmgr.log`). All volumes stay mounted — it is NOT a "disconnected drive" problem; don't remount anything.
-
-```bash
-# 1. Recover: graceful engine restart (worked cleanly, ~17s each)
-orb stop
-orb start
-
-# 2. GOTCHA — `orb start` may exit 1 with "start VM: timed out waiting for VM to start".
-#    That is a FALSE ALARM (CLI gives up waiting on the privileged helper); check vmgr.log —
-#    if the guest kernel booted and containers are starting, the VM is actually fine.
-
-# 3. Verify by probing, never by exit code (docker engine warms up ~30s after boot):
-orb status      # "Running"
-orb list        # machines up
-docker ps       # give it a retry after ~30s
-```
-
-Wrap every `orb`/`docker` probe in a watchdog while diagnosing — a wedged engine makes them hang forever, and macOS has no `timeout` (check `gtimeout`, else bash loop):
-
-```bash
-orb stop & pid=$!
-for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-kill -0 "$pid" 2>/dev/null && kill "$pid"    # still hung → kill, escalate to force-stop
-```
-
-Related but different: testcontainers-based Go integration tests failing with "rootless Docker not found" while the socket EXISTS → that's env vars, not a restart: `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock TESTCONTAINERS_RYUK_DISABLED=true`.
-
 ### Codex plugin broken after a codex CLI upgrade (stale broker/app-server)
 
 Symptom: after `mise` upgrades codex (or the model in `~/.codex/config.toml` changes), Claude sessions can't call the codex plugin. Root cause: the plugin persists a **shared per-project broker** in `~/.claude/plugins/data/codex-openai-codex/state/<project-hash>/broker.json`; `ensureBrokerSession` reuses it as long as its socket answers, and the broker's long-lived `codex app-server` child keeps executing the **deleted** old binary image (unlinked file stays alive in memory — mise upgrade doesn't kill it).

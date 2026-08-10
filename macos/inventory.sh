@@ -84,7 +84,6 @@ eval "$(mise activate bash)" 2>/dev/null || true
     echo ""
     echo "- **mise** — single source of truth for dev tools (node, go, terraform, kubectl, etc.)"
     echo "- **brew** — system libs, GUI casks, macOS-specific tools only"
-    echo "- **OrbStack** — container runtime (Docker-compatible, paying user)"
     echo "- **Secretive** — SSH agent backed by Secure Enclave hardware keys"
     echo "- **GPG signing** enabled for git commits"
     echo "- **Release-age buffer** — 3 days for both mise and pnpm/npm"
@@ -148,7 +147,7 @@ if [[ -d ~/.config/git ]]; then
     [[ -f ~/.config/git/personal ]] && cp -p ~/.config/git/personal "$DOTFILES_DIR/config-git/personal"
 fi
 
-# kube (README + exec-based GKE/EKS configs only; orbstack/kind have embedded TLS creds)
+# kube (README + exec-based GKE/EKS configs only; kind has embedded TLS creds)
 if [[ -d ~/.kube ]]; then
     mkdir -p "$DOTFILES_DIR/kube/configs"
     [[ -f ~/.kube/README.md ]] && cp -p ~/.kube/README.md "$DOTFILES_DIR/kube/README.md"
@@ -279,6 +278,5 @@ if [[ -d ~/.w3m ]]; then
 fi
 
 # ~/bin scripts tracked individually (only those we want versioned — not the whole dir)
-[[ -f ~/bin/external-drives-mount.sh ]] && cp -p ~/bin/external-drives-mount.sh "$SCRIPT_DIR/external-drives-mount.sh"
 
 echo "==> Done. Review generated files in $SCRIPT_DIR/"

@@ -595,15 +595,7 @@ SSHCFG
         fi
     fi
 
-    # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)
-    if [[ "$PLATFORM" == "macos" ]] && [[ -f "$SCRIPT_DIR/external-drives-mount.sh" ]]; then
-        mkdir -p ~/bin
-        cp -v "$SCRIPT_DIR/external-drives-mount.sh" ~/bin/external-drives-mount.sh
-        chmod +x ~/bin/external-drives-mount.sh
-        # Login Item registration is GUI-only (BTM database) — see macos/external-drives.md
-    fi
-
-    # kube (README + exec-based GKE/EKS configs; kind/orbstack regenerated via kube-setup-* commands)
+    # kube (README + exec-based GKE/EKS configs; kind regenerated via kube-setup-* commands)
     if [[ -d "$DOTFILES/kube" ]]; then
         mkdir -p ~/.kube/configs
         [[ -f "$DOTFILES/kube/README.md" ]] && cp -v "$DOTFILES/kube/README.md" ~/.kube/README.md
@@ -951,8 +943,7 @@ print_manual_steps() {
      gcloud init && gcloud auth login
 
   4. Kubernetes local clusters (TLS-cred configs are NOT tracked):
-     kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
-     kube-setup-kind iden2-dev   # if you have a kind cluster
+     kube-setup-kind iden2-dev   # if you have a kind cluster (on the devbox)
      kube-refresh                # rebuilds merged KUBECONFIG
 
   5. macOS Settings (cannot be scripted):
