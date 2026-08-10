@@ -5,7 +5,7 @@ Minimal bootstrap for: kitty + bash + nvim + git + w3m + claude/codex + gcloud.
 ## Quick Start
 
 ```bash
-# Clone this repo (or access from external drive at ~/src)
+# Clone this repo
 git clone https://github.com/pezware/0x58.git ~/src/public/0x58
 
 # Run the restore script
@@ -14,7 +14,7 @@ git clone https://github.com/pezware/0x58.git ~/src/public/0x58
 
 The script handles: brew install, dotfile placement, dev tool setup, and macOS defaults. It prints remaining manual steps at the end.
 
-For Linux (OrbStack VMs), the same script detects the platform and installs via apt instead.
+For Linux (the devbox), the same script detects the platform and installs via apt instead.
 
 ## What the Script Does
 
@@ -82,7 +82,6 @@ Daily habit: `gcloud_login` when you start, `gcloud_logout` when you stop.
 ### Kubernetes
 GKE/EKS configs are restored from the repo (exec-based, no embedded credentials). Local clusters need to be recreated:
 ```bash
-kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
 kube-setup-kind iden2-dev   # only if you have a kind cluster
 kube-refresh                # rebuilds the merged KUBECONFIG
 ```
@@ -105,8 +104,9 @@ auth       sufficient     pam_tid.so
 ```
 
 ### Claude Code
-The real Claude config directory is `~/src/claude` on the external drive; `~/.claude` is just a symlink pointing to it (`~/.claude → ~/src/claude`). The symlink is the only indirection — `CLAUDE_CONFIG_DIR` is not set. Link only when `~/.claude` is absent, so you never link onto an existing symlink (nested link) or turn `~/src/claude` itself into a symlink (loop):
+The real Claude config directory is `~/src/claude`; `~/.claude` is just a symlink pointing to it (`~/.claude → ~/src/claude`). The symlink is the only indirection — `CLAUDE_CONFIG_DIR` is not set. Link only when `~/.claude` is absent, so you never link onto an existing symlink (nested link) or turn `~/src/claude` itself into a symlink (loop). On a fresh machine the target has to exist first, otherwise you create a dangling symlink and Claude Code starts with no config:
 ```bash
+mkdir -p ~/src/claude
 [ -e ~/.claude ] || [ -L ~/.claude ] || ln -s ~/src/claude ~/.claude
 ```
 
@@ -195,17 +195,25 @@ gpg_backup_to_keychain                    # re-stage in new machine's keychain
 - [ ] `claude auth status` shows logged in (`apiProvider: firstParty`)
 - [ ] `codex --version` runs (auth is keychain-backed; no `~/.codex/auth.json`)
 - [ ] `gcloud_status` shows active account after `gcloud_login`
-- [ ] `kubectl config current-context` resolves (orbstack by default after `kube-setup-orbstack`)
+- [ ] `kubectl config current-context` resolves (gke-stg-ro by default)
 - [ ] `claude` and `codex` work
 - [ ] `w3m https://example.com` renders
 - [ ] Caps Lock acts as Control
 - [ ] `brew bundle check --file=macos/Brewfile` passes
 
-## External Drive Assumption
+## What restore.sh does NOT bring back
 
-The external drive mounts with partitions including `~/src`. As long as auto-mount works:
-- All project data in `~/src/` is already there
-- Claude config at `~/src/claude` is already there
-- Only the dotfiles and packages need to be restored (that's what `restore.sh` does)
+`restore.sh` restores dotfiles, packages and tool config. It does not restore
+data. On a fresh machine you also need:
 
-GPG keys are NOT on the external drive — they live in macOS Keychain (see [GPG Key Backup](#gpg-key-backup-macos-keychain) above). Migration Assistant or a manual export is needed when moving to a new Mac.
+- **`~/src` contents.** Nothing here is tracked. Re-clone the repos you actually
+  work on locally; everything else stays remote. Until 2026-08-09 this arrived
+  pre-populated on an external drive, which is why older notes assume it is
+  simply already there.
+- **`~/src/claude`.** The real Claude config directory, and the target of the
+  `~/.claude` symlink. Create it before linking or the symlink dangles.
+- **GPG keys.** In the macOS Keychain, not in this repo — see
+  [GPG Key Backup](#gpg-key-backup-macos-keychain). Migration Assistant or a
+  manual export is needed when moving to a new Mac.
+- **Secretive SSH keys.** Secure-Enclave-bound and non-transferable by design;
+  they must be re-created and re-registered per machine.

@@ -5,7 +5,7 @@
 The shell is bash (Homebrew's modern version, not macOS system bash).
 
 ```
-~/.bash_profile          # Login shell: env vars, PATH, OrbStack init
+~/.bash_profile          # Login shell: env vars, PATH
   └─ sources ~/.bashrc
 
 ~/.bashrc                # Interactive shell: aliases, history, modular sources

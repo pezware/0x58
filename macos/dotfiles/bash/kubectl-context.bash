@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Kubernetes context management
-# Supports: EKS, GKE (fleet/connect gateway), Kind (OrbStack), OrbStack native
+# Supports: EKS, GKE (fleet/connect gateway), Kind (local CLI or a remote node)
 #
 # Per-window isolation: In kitty, each panel maintains its own active context.
 # All panels see all contexts, but `kubectx`/`kube-use` only changes the current panel.
@@ -16,7 +16,11 @@ KUBECONFIG_DIR="${HOME}/.kube/configs"
 # Precedence:
 #   1. $TMUX_PANE       → per-tmux-pane isolation (works in any host terminal)
 #   2. $KITTY_WINDOW_ID → per-kitty-window isolation when tmux is not in play
-KUBE_DEFAULT_CONTEXT="${KUBE_DEFAULT_CONTEXT:-orbstack}"
+# Was 'orbstack' until OrbStack was removed (2026-08-09). A default naming a
+# context that no longer exists is worse than useless: every new pane stamps it
+# into a fresh overlay, so kubectl fails on a cluster you cannot reach. Defaults
+# to the read-only staging context; override per-shell with KUBE_DEFAULT_CONTEXT.
+KUBE_DEFAULT_CONTEXT="${KUBE_DEFAULT_CONTEXT:-gke-stg-ro}"
 _KUBE_WINDOW_FILE=""
 _kube_overlay_id=""
 if [[ -n "$TMUX_PANE" ]]; then
@@ -163,7 +167,6 @@ kube-setup-gke() {
   kube-refresh
 }
 
-# --- Setup: Kind (OrbStack-managed or standalone) ---
 # --- Setup: Kind on a REMOTE node (the on-demand k8s box) ---
 # The cluster lives on a separate Linode, so `kind get kubeconfig` has to run
 # there -- it needs kind and a docker socket, neither of which exist locally.
@@ -209,19 +212,15 @@ kube-setup-kind() {
   local config_dir="$KUBECONFIG_DIR/kind-$name"
   mkdir -p "$config_dir"
 
-  if command -v kind &>/dev/null; then
-    # Standalone kind CLI
-    kind export kubeconfig --name "$name" --kubeconfig "$config_dir/config"
-  else
-    # OrbStack-managed kind: extract from default kubeconfig
-    KUBECONFIG="$HOME/.kube/config" kubectl config view \
-      --minify --flatten --context="kind-$name" > "$config_dir/config" 2>/dev/null
-    if [[ ! -s "$config_dir/config" ]]; then
-      echo "Error: context 'kind-$name' not found in ~/.kube/config"
-      rm -f "$config_dir/config"
-      return 1
-    fi
+  # Requires the kind CLI. The old fallback -- scraping a `kind-*` context out of
+  # ~/.kube/config -- existed only for OrbStack-managed kind, which is gone; with
+  # no local container runtime there is nothing for it to find. For a cluster on
+  # the k8s node, use kube-setup-kind-remote instead.
+  if ! command -v kind &>/dev/null; then
+    echo "Error: kind CLI not found. For a remote cluster: kube-setup-kind-remote"
+    return 1
   fi
+  kind export kubeconfig --name "$name" --kubeconfig "$config_dir/config"
   echo "Kind $name -> $config_dir/config"
   kube-refresh
 }
@@ -264,21 +263,6 @@ kube-refresh-kind() {
   kube-clean-overlay        # removes stale cluster/context/user from overlay
   kubectl config use-context "kind-${name}" >/dev/null
   echo "Kind '${name}' refreshed and active. kubectl now points to kind-${name}."
-}
-
-# --- Setup: OrbStack native Kubernetes ---
-kube-setup-orbstack() {
-  local config_dir="$KUBECONFIG_DIR/orbstack"
-  mkdir -p "$config_dir"
-  KUBECONFIG="$HOME/.kube/config" kubectl config view \
-    --minify --flatten --context=orbstack > "$config_dir/config" 2>/dev/null
-  if [[ ! -s "$config_dir/config" ]]; then
-    echo "Error: orbstack context not found. Is OrbStack running?"
-    rm -f "$config_dir/config"
-    return 1
-  fi
-  echo "OrbStack -> $config_dir/config"
-  kube-refresh
 }
 
 # --- Aliases ---

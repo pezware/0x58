@@ -24,7 +24,11 @@ install_packages() {
             eval "$(/opt/homebrew/bin/brew shellenv)"
         fi
         echo "==> Installing packages from Brewfile"
-        HOMEBREW_NO_AUTO_UPDATE=1 brew bundle install --file="$SCRIPT_DIR/Brewfile" --no-lock
+        # No --no-lock: Homebrew dropped the Brewfile lock-file concept, and 6.x
+        # exits 1 with `invalid option: --no-lock`. Under `set -e` that aborted
+        # the entire run at the first phase -- no dotfiles, no keymaster, no PAM,
+        # no defaults -- while looking like a package-install problem.
+        HOMEBREW_NO_AUTO_UPDATE=1 brew bundle install --file="$SCRIPT_DIR/Brewfile"
     else
         # apt owns only the base system; dev tools come from mise
         # (dotfiles/mise/config.toml, already cross-platform). Keeping the two
@@ -104,8 +108,9 @@ place_dotfiles() {
             chmod +x ~/.config/tmux/notify-bell.sh
         fi
         # `prefix + C` capture binding writes to ~/tmp — make sure it exists.
-        # (On the primary macOS box ~/tmp is a symlink to the external drive;
-        #  mkdir -p is a no-op when the target already exists.)
+        # mkdir -p is a no-op when it already exists. Note it is a plain
+        # directory now: it used to be a symlink onto the external drive, which
+        # left it dangling the moment that drive was unplugged.
         mkdir -p ~/tmp
     fi
 
@@ -176,8 +181,8 @@ place_dotfiles() {
         # Agent instructions. Without these, Claude on a remote box runs generic —
         # no worktree rule, no commit conventions, none of the Operations Runbook.
         #
-        # Linux only, and deliberately so: on the Mac ~/.claude is a symlink to the
-        # external drive and IS the source of truth, so writing this copy there
+        # Linux only, and deliberately so: on the Mac ~/.claude is a symlink to
+        # ~/src/claude and IS the source of truth, so writing this copy there
         # would overwrite live content with a repo snapshot.
         #
         # NOTE: the tracked copy is SANITIZED — the iden2-com ticket runbook is
@@ -595,15 +600,7 @@ SSHCFG
         fi
     fi
 
-    # ~/bin scripts (macOS only — external-drives-mount.sh is the boot-time mounter for AchtungAndy)
-    if [[ "$PLATFORM" == "macos" ]] && [[ -f "$SCRIPT_DIR/external-drives-mount.sh" ]]; then
-        mkdir -p ~/bin
-        cp -v "$SCRIPT_DIR/external-drives-mount.sh" ~/bin/external-drives-mount.sh
-        chmod +x ~/bin/external-drives-mount.sh
-        # Login Item registration is GUI-only (BTM database) — see macos/external-drives.md
-    fi
-
-    # kube (README + exec-based GKE/EKS configs; kind/orbstack regenerated via kube-setup-* commands)
+    # kube (README + exec-based GKE/EKS configs; kind regenerated via kube-setup-* commands)
     if [[ -d "$DOTFILES/kube" ]]; then
         mkdir -p ~/.kube/configs
         [[ -f "$DOTFILES/kube/README.md" ]] && cp -v "$DOTFILES/kube/README.md" ~/.kube/README.md
@@ -786,6 +783,71 @@ setup_dev_tools() {
     fi
 }
 
+# --- Phase 3c: keymaster (Touch ID-gated keychain CLI) ---
+# Compiled from source rather than shipped as a binary: it is a credential tool,
+# so the thing on PATH should be reproducible from what is in this repo. See
+# macos/keymaster/README.md.
+setup_keymaster() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    local src="$SCRIPT_DIR/keymaster/keymaster.swift"
+    [[ -f "$src" ]] || return
+    if ! command -v swiftc &>/dev/null; then
+        echo "==> keymaster: skipped (no swiftc — run: xcode-select --install)"
+        return
+    fi
+    mkdir -p ~/.local/bin
+    # Build to a temp path in the same directory, then rename. Compiling straight
+    # to the destination would risk clobbering a working keymaster if the link
+    # step dies partway (disk full, interrupt) -- and this is the tool that reads
+    # your credentials, so "no binary" is a worse outcome than "old binary".
+    local tmp=~/.local/bin/.keymaster.$$
+    if swiftc -O "$src" -o "$tmp" 2>/dev/null; then
+        mv -f "$tmp" ~/.local/bin/keymaster
+        echo "    keymaster: built and installed to ~/.local/bin/keymaster"
+    else
+        rm -f "$tmp"
+        echo "    keymaster: BUILD FAILED (existing binary left untouched)"
+    fi
+}
+
+# --- Phase 3d: remove state left by retired setups ---
+# restore.sh is re-run on working machines, so it has to converge them onto the
+# current design, not just add to it. A machine provisioned before 2026-08-09
+# still has the external-drive mounter and a dead OrbStack kubeconfig; neither is
+# removed by simply not installing them any more.
+prune_retired_state() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+
+    # Login Item + script for the retired external-drive auto-mount. The Login
+    # Item lives in the BTM database, not in LaunchAgents -- see macos/login-items.md.
+    if [[ -f ~/bin/external-drives-mount.sh ]]; then
+        rm -f ~/bin/external-drives-mount.sh
+        echo "    pruned: ~/bin/external-drives-mount.sh (external drive retired)"
+    fi
+    if sfltool dumpbtm 2>/dev/null | grep -q "external-drives-mount"; then
+        osascript -e 'tell application "System Events" to delete login item "external-drives-mount.sh"' 2>/dev/null \
+            && echo "    pruned: external-drives-mount Login Item" \
+            || echo "    NOTE: remove the external-drives-mount Login Item in System Settings"
+    fi
+
+    # KUBECONFIG is glob-built from ~/.kube/configs/*/, so a leftover orbstack
+    # directory keeps a dead context in the merge list forever.
+    if [[ -d ~/.kube/configs/orbstack ]]; then
+        rm -rf ~/.kube/configs/orbstack
+        echo "    pruned: ~/.kube/configs/orbstack (OrbStack removed)"
+    fi
+    # Window overlays are per-pane current-context stubs; any naming a context
+    # that no longer exists will keep selecting it in that pane.
+    if [[ -d ~/.kube/configs/.window-overlays ]]; then
+        local n
+        n=$(grep -rl orbstack ~/.kube/configs/.window-overlays 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$n" != "0" ]]; then
+            grep -rl orbstack ~/.kube/configs/.window-overlays 2>/dev/null | xargs rm -f
+            echo "    pruned: $n kube window overlay(s) pinning orbstack"
+        fi
+    fi
+}
+
 # --- Phase 4a: PAM (Touch ID for sudo, including inside tmux) ---
 # pam-reattach (from Brewfile) is inert until wired into the PAM stack.
 # Without it, Touch ID works for sudo in a fresh terminal but silently
@@ -930,10 +992,10 @@ print_manual_steps() {
      gh auth login
      gcloud init && gcloud auth login
 
-  4. Kubernetes local clusters (TLS-cred configs are NOT tracked):
-     kube-setup-orbstack         # imports OrbStack k8s context (after OrbStack is running)
-     kube-setup-kind iden2-dev   # if you have a kind cluster
-     kube-refresh                # rebuilds merged KUBECONFIG
+  4. Kubernetes clusters (TLS-cred configs are NOT tracked):
+     kube-setup-kind-remote pezware-k8s dev   # cluster on the k8s node
+     kube-setup-kind iden2-dev                # only if kind runs locally
+     kube-refresh                             # rebuilds merged KUBECONFIG
 
   5. macOS Settings (cannot be scripted):
      - Caps Lock → Control (Keyboard → Keyboard Shortcuts → Modifier Keys)
@@ -990,6 +1052,8 @@ install_packages
 place_dotfiles
 setup_dev_tools
 setup_src_sync
+setup_keymaster
+prune_retired_state
 setup_pam_touchid
 setup_linux_server
 apply_macos_defaults
