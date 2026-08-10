@@ -8,7 +8,7 @@ contexts:
     cluster: gke-stg-admin
     user: gke-stg-admin
   name: gke-stg-admin
-current-context: orbstack
+current-context: gke-stg-ro
 kind: Config
 preferences: {}
 users:

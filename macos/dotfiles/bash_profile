@@ -18,7 +18,3 @@ for dir in "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/local/bin" "$H
     [ -d "$dir" ] && NEW_PATH="$dir:$NEW_PATH"
 done
 export PATH="${NEW_PATH}$PATH"
-
-# Added by OrbStack: command-line tools and integration
-# This won't be added again if you remove it.
-source ~/.orbstack/shell/init.bash 2>/dev/null || :

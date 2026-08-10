@@ -16,7 +16,11 @@ KUBECONFIG_DIR="${HOME}/.kube/configs"
 # Precedence:
 #   1. $TMUX_PANE       → per-tmux-pane isolation (works in any host terminal)
 #   2. $KITTY_WINDOW_ID → per-kitty-window isolation when tmux is not in play
-KUBE_DEFAULT_CONTEXT="${KUBE_DEFAULT_CONTEXT:-orbstack}"
+# Was 'orbstack' until OrbStack was removed (2026-08-09). A default naming a
+# context that no longer exists is worse than useless: every new pane stamps it
+# into a fresh overlay, so kubectl fails on a cluster you cannot reach. Defaults
+# to the read-only staging context; override per-shell with KUBE_DEFAULT_CONTEXT.
+KUBE_DEFAULT_CONTEXT="${KUBE_DEFAULT_CONTEXT:-gke-stg-ro}"
 _KUBE_WINDOW_FILE=""
 _kube_overlay_id=""
 if [[ -n "$TMUX_PANE" ]]; then
@@ -264,21 +268,6 @@ kube-refresh-kind() {
   kube-clean-overlay        # removes stale cluster/context/user from overlay
   kubectl config use-context "kind-${name}" >/dev/null
   echo "Kind '${name}' refreshed and active. kubectl now points to kind-${name}."
-}
-
-# --- Setup: OrbStack native Kubernetes ---
-kube-setup-orbstack() {
-  local config_dir="$KUBECONFIG_DIR/orbstack"
-  mkdir -p "$config_dir"
-  KUBECONFIG="$HOME/.kube/config" kubectl config view \
-    --minify --flatten --context=orbstack > "$config_dir/config" 2>/dev/null
-  if [[ ! -s "$config_dir/config" ]]; then
-    echo "Error: orbstack context not found. Is OrbStack running?"
-    rm -f "$config_dir/config"
-    return 1
-  fi
-  echo "OrbStack -> $config_dir/config"
-  kube-refresh
 }
 
 # --- Aliases ---
