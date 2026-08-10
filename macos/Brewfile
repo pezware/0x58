@@ -1,7 +1,7 @@
 tap "bjarneo/cliamp", trusted: true
+tap "gnomeria/tap", "https://github.com/gnomeria/tap.git"
 tap "hashicorp/tap"
 tap "skyhook-io/tap"
-tap "tw93/tap"
 tap "xcodesorg/made"
 brew "act"
 brew "aria2"
@@ -46,11 +46,6 @@ brew "minikube"
 brew "mise"
 brew "mtr"
 brew "ncdu"
-# neovim is macOS-only, and lives here rather than in the shared mise config for
-# exactly the reason that file's header gives. The devbox uses native vim from
-# apt: it is the rescue editor that has to work before anything else does, and a
-# 40 MB editor plus a plugin manager is not something a headless box should be
-# fetching to let an agent read a file.
 brew "neovim"
 brew "nmap"
 brew "openjdk@17"
@@ -62,7 +57,6 @@ brew "pass"
 brew "pinentry-mac"
 brew "podman"
 brew "poppler"
-brew "rclone"
 brew "rust"
 brew "rustup"
 brew "scrcpy"
@@ -72,7 +66,6 @@ brew "telnet"
 brew "terminal-notifier"
 brew "tmux"
 brew "tree"
-brew "tw93/tap/mole", trusted: true
 brew "w3m"
 brew "watch"
 brew "wget"
@@ -80,20 +73,14 @@ brew "wireshark"
 brew "xcodesorg/made/xcodes", trusted: true
 brew "ykman"
 brew "yubico-piv-tool"
-# Android toolchain removed 2026-08-09 along with OrbStack: mobile and container
-# work moved to the devbox, and the SDK + emulator images + Studio were ~29 GB on
-# a 245 GB disk. `flutter` stays for iOS/web/desktop targets; an Android build
-# from here needs the SDK reinstalled first.
 cask "flutter"
 cask "gcloud-cli"
 cask "google-chrome"
 cask "kiro-cli"
 cask "kiro"
-# Terminal. Was a hand-installed .app until 2026-08-09, which meant it silently
-# sat at 0.39.1 while brew had 0.48.2 — listing it here is what makes it upgrade
-# with everything else.
 cask "kitty"
 cask "mitmproxy"
+cask "orbstack"
 cask "rectangle"
 cask "secretive"
 cask "tldraw"

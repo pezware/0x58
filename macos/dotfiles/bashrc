@@ -1,5 +1,22 @@
 # ~/.bashrc - Interactive shell configuration
-# This handles all interactive shell settings
+#
+# OWNERSHIP: this file is SHARED. restore.sh installs it verbatim on both the Mac
+# and the devbox, so nothing platform-specific belongs here. Those live in:
+#
+#   ~/.bash/macos.bash   owned by the Mac
+#   ~/.bash/linux.bash   owned by the devbox
+#
+# Exactly one is sourced, below. Edit a platform file from the machine it
+# describes. Change THIS file only for something both machines genuinely want,
+# and only as a deliberate repo edit.
+#
+# The rule is enforced rather than merely stated: inventory.sh used to copy this
+# machine's ~/.bashrc over the tracked copy. The Mac's copy had not been updated
+# since the devbox work landed, so a routine sync silently deleted 79 lines of
+# Linux-only configuration -- including the SSH agent re-pointing that lets the
+# devbox sign commits with the Mac's Secure Enclave key -- and reinstated a codex
+# profile that had been removed. inventory.sh no longer syncs this file; it warns
+# when live and tracked diverge and leaves the tracked copy authoritative.
 
 # If not running interactively, don't do anything
 case $- in
@@ -17,32 +34,19 @@ shopt -s histappend
 
 # Basic aliases for all environments
 #
-# `vim` is aliased only where nvim actually exists. This file is placed verbatim
-# on both machines, and the devbox deliberately has no nvim as of 2026-08-05 — an
-# unconditional alias there makes every `vim` invocation, including the ones you
-# reach for when something is already broken, fail with "command not found".
-# Probing for the binary rather than the platform keeps this correct if either
-# machine changes its mind.
-if command -v nvim >/dev/null 2>&1; then
-    alias vi=nvim
-    alias vim=nvim
-fi
+# No vi/vim -> nvim aliases (dropped 2026-08-10). This file is placed verbatim on
+# both machines and the devbox deliberately runs apt's vim, so the alias was
+# already guarded by a `command -v nvim` probe. Removed entirely rather than kept:
+# `vi` is what other tools reach for when they need an editor guaranteed to exist,
+# and shadowing it buys nothing over typing `nvim`.
 alias cp="cp -i"
-# `cat` -> bat on macOS only. On a remote box it actively gets in the way: bat
-# paginates and adds line numbers and decorations, so reading a file in an ssh
-# tmux pane produces output you cannot cleanly copy. It also muddies debugging —
-# during sandbox verification `cat` of a denied path returned bat's formatting
-# instead of the plain read failure, which made a working deny look ambiguous.
-# Keep the real cat where you are inspecting things over a wire.
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    alias cat=bat
-fi
 alias less="less -r"
 alias ls="ls --color=auto"
 alias ll="ls --color"
 alias weather='curl wttr.in'
 alias vpn='curl ifconfig.me;echo'
 alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
+
 # Pin codex TUI to a ChatGPT-account-supported model. The TUI otherwise inherits
 # the model from the last thread in the cwd, which stuck on the retired
 # 'gpt-5-codex' and 400s on ChatGPT auth. -m overrides that; codex exec/plugins
@@ -89,82 +93,14 @@ for config in ~/.bash/{aws,go,history,prompt,work_alias,glow,kubectl-context,gpg
     [ -f "$config" ] && source "$config"
 done
 
-# OS-specific configurations
+# --- Platform-specific configuration -----------------------------------------
+# Exactly one of these is sourced, and it owns everything platform-shaped:
+# environment exports, completions, and aliases. Both set PNPM_HOME, which the
+# PATH handling directly below depends on — so this dispatch must stay above it.
 if [[ "$OSTYPE" == "darwin"* ]]; then
     [ -f ~/.bash/macos.bash ] && source ~/.bash/macos.bash
 else
-    # Linux Completion
-    [ -f "/usr/share/bash-completion/bash_completion" ] && . "/usr/share/bash-completion/bash_completion"
-    [ -f "/usr/local/bin/eksctl" ] && source <(eksctl completion bash)
-    [ -f "$HOME/.local/share/bash-completion/completions/deno.bash" ] && source "$HOME/.local/share/bash-completion/completions/deno.bash"
-fi
-
-# --- macOS-only environment -------------------------------------------------
-# restore.sh copies this file verbatim onto Linux boxes, and these exports are
-# hardcoded to macOS paths. Two of them are actively harmful there:
-#   - /usr/libexec/java_home does not exist -> an error on every interactive shell
-#   - pinning SSH_AUTH_SOCK to the Secretive socket CLOBBERS a forwarded agent,
-#     silently breaking git-over-SSH after `ssh -A` into the box
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
-    export SSH_AUTH_SOCK="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh"
-    export PNPM_HOME="$HOME/Library/pnpm"
-    export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:$PATH"
-    # Telemetry opt-out stays ON here. The Mac never needs Remote Control.
-    export DO_NOT_TRACK=1
-else
-    # Leave SSH_AUTH_SOCK untouched so a forwarded agent survives — this is what
-    # lets the devbox sign and push with the Mac's Secure Enclave key, Touch-ID
-    # gated, without any private key ever reaching this machine.
-    #
-    # ...but pin every shell to a STABLE path. The forwarded socket lives at a
-    # per-connection path (/tmp/auth-agentNNNN/listener.sock) that dies with the
-    # connection, so a tmux pane created during one session holds a dead path the
-    # next time you attach, and sign-push then refuses with "no SSH agent keys".
-    # Re-pointing one symlink means long-lived panes keep working across
-    # reconnects without their environment ever being touched: the target moves
-    # underneath them. Fix the indirection rather than chase the value.
-    if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK:-}" ] \
-       && [ "$SSH_AUTH_SOCK" != "$HOME/.ssh/agent.sock" ]; then
-        mkdir -p "$HOME/.ssh" && ln -sfn "$SSH_AUTH_SOCK" "$HOME/.ssh/agent.sock"
-    fi
-    # -S follows the symlink, so a dangling one is simply not adopted.
-    if [ -S "$HOME/.ssh/agent.sock" ]; then
-        export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
-    fi
-    export PNPM_HOME="$HOME/.local/share/pnpm"
-    # The per-boot unit creates the tmux session via `sudo -u`, which has no
-    # login session and therefore no XDG_RUNTIME_DIR. Every shell inside that
-    # session then fails `systemctl --user` with "Failed to connect to user scope
-    # bus" — which reads like systemd is broken rather than like a missing env
-    # var. Set it when absent; systemd --user is already running under this uid.
-    if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
-        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-    fi
-    # Rootless podman speaks the Docker API on a socket under the user runtime
-    # dir, which is what testcontainers-go probes for via DOCKER_HOST. Ryuk, its
-    # reaper sidecar, wants to watch the engine from a privileged container that
-    # rootless podman will not grant, so turn it off and let podman reap.
-    #
-    # Set only when the socket is actually there. Exporting DOCKER_HOST to a
-    # path that does not exist is worse than leaving it unset: testcontainers
-    # then reports a connection failure to a specific socket instead of its far
-    # clearer "could not find a valid Docker environment".
-    #
-    # This serves YOUR shell and CI, never agents. The sandbox's seccomp filter
-    # blocks AF_UNIX wholesale, so a sandboxed `go test -tags=e2e` cannot reach
-    # this socket whatever DOCKER_HOST says — verified, curl exits 7 inside the
-    # sandbox and 0 outside it. That is the same filter that keeps agents off
-    # the forwarded SSH agent, so it is load-bearing, not incidental.
-    if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock" ]; then
-        export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-        export TESTCONTAINERS_RYUK_DISABLED=true
-    fi
-    # DO_NOT_TRACK disables the feature-flag evaluation Claude Code's Remote
-    # Control depends on, so it is 0 here and only here. Scoped to Linux
-    # deliberately: the phone path lives on the devbox, and the Mac's privacy
-    # posture should not change as a side effect of enabling it.
-    export DO_NOT_TRACK=0
+    [ -f ~/.bash/linux.bash ] && source ~/.bash/linux.bash
 fi
 
 case ":$PATH:" in
@@ -173,7 +109,6 @@ case ":$PATH:" in
 esac
 
 export GPG_TTY=$(tty)
-export MEMPAL_HOME="~/src/.mempal"
 export GOOGLE_CLOUD_QUOTA_PROJECT=""
 eval "$(mise activate bash)"
 

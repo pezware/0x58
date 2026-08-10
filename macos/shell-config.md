@@ -8,11 +8,33 @@ The shell is bash (Homebrew's modern version, not macOS system bash).
 ~/.bash_profile          # Login shell: env vars, PATH
   └─ sources ~/.bashrc
 
-~/.bashrc                # Interactive shell: aliases, history, modular sources
+~/.bashrc                # Interactive shell: SHARED, platform-neutral
   └─ sources ~/.bash/*.bash modules
-  └─ sources ~/.bash/macos.bash (macOS-only)
+  └─ sources exactly one of:
+       ~/.bash/macos.bash   (macOS — owned by the Mac)
+       ~/.bash/linux.bash   (Linux — owned by the devbox)
   └─ activates mise, cargo, deno
 ```
+
+## Ownership
+
+`~/.bashrc` is installed **verbatim on both machines**, so nothing platform-specific
+belongs in it. Each platform file is owned by the machine it runs on:
+
+| Change | Where it goes |
+|---|---|
+| macOS-only | `bash/macos.bash`, edited on the Mac |
+| Linux-only | `bash/linux.bash`, edited on the devbox |
+| Genuinely both | `bashrc` — a deliberate repo edit, not a sync |
+
+This is enforced, not just documented. `inventory.sh` syncs `bash/*.bash` back from
+the machine but **no longer syncs `bashrc`**; it reports divergence and leaves the
+tracked copy authoritative. The rule exists because a routine sync once deleted 79
+lines of Linux-only configuration — the Mac's copy was simply stale, and nothing
+arbitrated between `restore.sh` (repo → live) and `inventory.sh` (live → repo).
+
+Where the two platform files make opposite choices — the SSH agent socket and
+`DO_NOT_TRACK` — the reasoning is written on both sides. Read them together.
 
 ## Module breakdown (`~/.bash/`)
 

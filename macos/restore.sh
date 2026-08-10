@@ -573,7 +573,7 @@ SSHCFG
         # so no unit file of ours to copy.
         #
         # --now needs a user bus, which a non-login shell does not have; the
-        # XDG_RUNTIME_DIR fallback in bashrc is what makes this work when restore.sh
+        # XDG_RUNTIME_DIR fallback in bash/linux.bash is what makes this work when restore.sh
         # runs from the per-boot tmux session. Lingering must already be on or the
         # socket dies at logout and tests fail only when nobody is attached — see
         # dev/nodes/README.md.

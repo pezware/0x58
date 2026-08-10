@@ -1,6 +1,6 @@
 # Development Tools
 
-Generated: 2026-07-17
+Generated: 2026-08-10
 
 Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 (symlinked to `~/.config/mise/config.toml`)
@@ -42,7 +42,6 @@ kubectl                                  1.36.2    ~/.config/mise/config.toml  1
 kubectx                                  0.11.0    ~/.config/mise/config.toml  latest
 lefthook                                 2.1.10    ~/.config/mise/config.toml  latest
 mkcert                                   1.4.4     ~/.config/mise/config.toml  latest
-neovim                                   0.12.4    ~/.config/mise/config.toml  latest
 node                                     22.23.1   ~/.config/mise/config.toml  22
 npm:@openapitools/openapi-generator-cli  2.39.1    ~/.config/mise/config.toml  latest
 npm:@redocly/cli                         2.38.0    ~/.config/mise/config.toml  latest
@@ -72,6 +71,7 @@ yq                                       4.53.3    ~/.config/mise/config.toml  l
 
 ```
 /Users/arbeitandy/.local/share/mise/installs/node/22.23.1/lib
+├── @openai/codex@0.147.0
 ├── corepack@0.34.6
 └── npm@10.9.8
 

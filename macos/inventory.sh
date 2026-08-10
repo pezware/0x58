@@ -108,8 +108,27 @@ ls ~/Library/LaunchAgents/ 2>/dev/null > "$SCRIPT_DIR/launch-agents.txt" || echo
 # --- dotfiles (bash) ---
 echo "==> Copying bash dotfiles"
 [[ -f ~/.bash_profile ]] && cp -p ~/.bash_profile "$DOTFILES_DIR/bash_profile"
-[[ -f ~/.bashrc ]] && cp -p ~/.bashrc "$DOTFILES_DIR/bashrc"
 
+# ~/.bashrc is NOT synced back. It is shared verbatim with the devbox, so this
+# machine is not entitled to be its source of truth -- syncing it here once
+# deleted 79 lines of Linux-only configuration that the Mac's stale copy simply
+# did not have, including the SSH agent re-pointing the devbox needs to sign
+# commits. Platform settings belong in bash/{macos,linux}.bash, which ARE synced.
+#
+# Report divergence loudly rather than resolving it: a difference means either a
+# local edit that should move into macos.bash, or a repo change that never
+# reached this machine because restore.sh has not run.
+if [[ -f ~/.bashrc ]] && ! diff -q ~/.bashrc "$DOTFILES_DIR/bashrc" >/dev/null 2>&1; then
+    echo "    !! ~/.bashrc differs from the tracked copy and was NOT synced."
+    echo "       shared file -- resolve deliberately, do not let a sync decide:"
+    echo "         diff ~/.bashrc $DOTFILES_DIR/bashrc"
+    echo "       local-only change?  move it into ~/.bash/macos.bash"
+    echo "       repo is ahead?      ./macos/restore.sh"
+fi
+
+# bash/*.bash ARE synced: each is owned by the platform it runs on. linux.bash
+# does not exist here, and the loop only copies what exists, so the devbox's file
+# is structurally safe from this machine.
 if [[ -d ~/.bash ]]; then
     mkdir -p "$DOTFILES_DIR/bash"
     for f in ~/.bash/*; do
