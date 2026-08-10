@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+#
+# Tests for dotfiles/bash/kubectl-context.bash.
+#
+#   ./macos/kubectl-context-test
+#
+# No test framework, matching linux/devbox-inbox-test. The contract under test is
+# "the shell reports the context you are actually on, and offers only contexts
+# this machine defines" — which is filesystem behaviour from end to end, so a
+# dependency-free runner stays as portable as the file it covers and runs on the
+# devbox with nothing installed.
+#
+# Isolation is $HOME. The module derives KUBECONFIG_DIR from $HOME and nothing
+# else, so a throwaway HOME per test is a complete sandbox: the real ~/.kube is
+# never read and never written.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+MODULE="$HERE/dotfiles/bash/kubectl-context.bash"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]: $2" ;;
+    esac
+}
+assert_not_contains() {
+    case "$2" in
+    *"$3"*) no "$1" "output should not contain [$3]: $2" ;;
+    *) ok "$1" ;;
+    esac
+}
+
+new_home() {
+    local d
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+    mkdir -p "$d/.kube/configs"
+    printf '%s' "$d"
+}
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        [ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
+    done
+}
+trap cleanup EXIT
+
+# A kubeconfig defining exactly one context, in one of the two indentation
+# styles that actually occur in ~/.kube/configs: `kubectl config` writes list
+# items flush left, gcloud writes them indented. Both are exercised on purpose —
+# a parser anchored on a column passes one style and silently fails the other,
+# and the real config directory contains one of each.
+write_config() {
+    local dir=$1 name=$2 style=${3:-kubectl}
+    mkdir -p "$dir"
+    if [ "$style" = "gcloud" ]; then
+        cat >"$dir/config" <<Y
+apiVersion: v1
+clusters:
+  - cluster:
+        server: https://example.invalid:6443
+    name: $name
+contexts:
+  - context:
+        cluster: $name
+        user: $name
+    name: $name
+current-context: $name
+kind: Config
+users:
+  - name: $name
+Y
+    else
+        cat >"$dir/config" <<Y
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://example.invalid:6443
+  name: $name
+contexts:
+- context:
+    cluster: $name
+    user: $name
+  name: $name
+current-context: $name
+kind: Config
+users:
+- name: $name
+Y
+    fi
+}
+
+OVERLAY='.kube/configs/.window-overlays/kitty-1.yaml'
+
+# Simulate a shell starting inside a pane that ALREADY has an overlay. The tmux
+# server exports _KUBE_OVERLAY_INIT into every shell it spawns, so a long-lived
+# pane hits a different code path from a brand-new one — and it is the long-lived
+# pane that outlives a retired cluster.
+PROBE_EXISTING_PANE=0
+
+# Source the module under a throwaway HOME and evaluate a snippet against it.
+# KITTY_WINDOW_ID forces the per-window overlay on; TMUX_PANE is cleared so the
+# result does not depend on whether the test itself runs inside tmux.
+# A third argument sets KUBE_DEFAULT_CONTEXT; omitting it leaves the var unset,
+# which is a distinct case from setting it empty.
+probe() {
+    local home=$1 snippet=$2 has_default=0 default=""
+    if [ $# -ge 3 ]; then has_default=1; default=$3; fi
+    (
+        # The module is sourced by ~/.bashrc, which does not run under `set -u`,
+        # and it reads $TMUX_PANE / $_KUBE_OVERLAY_INIT bare. Inheriting this
+        # runner's `set -u` would abort the source at the first of them and make
+        # every probe return empty — a uniform failure that looks like a broken
+        # parser rather than a broken harness. Match the real environment.
+        set +u
+        export HOME="$home" KITTY_WINDOW_ID=1
+        unset TMUX_PANE KUBECONFIG
+        if [ "$PROBE_EXISTING_PANE" = 1 ]; then
+            export _KUBE_OVERLAY_INIT=1
+        else
+            unset _KUBE_OVERLAY_INIT
+        fi
+        if [ "$has_default" = 1 ]; then
+            export KUBE_DEFAULT_CONTEXT="$default"
+        else
+            unset KUBE_DEFAULT_CONTEXT
+        fi
+        # shellcheck disable=SC1090
+        . "$MODULE" >/dev/null 2>&1
+        eval "$snippet"
+    ) 2>/dev/null
+}
+
+echo "kubectl-context.bash"
+
+# --- The parser: what counts as a defined context -----------------------------
+echo
+echo "context discovery"
+
+h="$(new_home)"
+write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+assert_eq "kubectl-style indentation is parsed" \
+    "$(probe "$h" '_kube_all_contexts')" "kind-iden2-dev"
+
+h="$(new_home)"
+write_config "$h/.kube/configs/gke-stg-ro" gke-stg-ro gcloud
+assert_eq "gcloud-style indentation is parsed" \
+    "$(probe "$h" '_kube_all_contexts')" "gke-stg-ro"
+
+# The whole point of scoping the scan to the `contexts:` block. Cluster and user
+# entries carry `name:` too, and in this repo's configs they are spelled
+# identically to the context — so a parser that scanned the whole file would
+# look correct on every real config and still be wrong.
+h="$(new_home)"
+mkdir -p "$h/.kube/configs/orphan"
+cat >"$h/.kube/configs/orphan/config" <<'Y'
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://example.invalid:6443
+  name: lonely-cluster
+contexts: []
+kind: Config
+users:
+- name: lonely-user
+Y
+assert_eq "a cluster or user name is not mistaken for a context" \
+    "$(probe "$h" '_kube_all_contexts')" ""
+
+h="$(new_home)"
+assert_eq "no config directories means no contexts" \
+    "$(probe "$h" '_kube_all_contexts')" ""
+
+# --- The default for a new pane -----------------------------------------------
+echo
+echo "default context"
+
+h="$(new_home)"
+write_config "$h/.kube/configs/gke-stg-ro" gke-stg-ro gcloud
+assert_contains "a default that exists is pinned into a fresh overlay" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"' gke-stg-ro)" \
+    "current-context: gke-stg-ro"
+
+# The devbox case. gke-stg-ro is not installed there, so the name must not reach
+# the overlay at all — this is the regression that left 23 panes pinned to a
+# cluster the box had no way to reach.
+h="$(new_home)"
+write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+assert_not_contains "a default this machine does not define is never pinned" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"' gke-stg-ro)" \
+    "current-context:"
+
+h="$(new_home)"
+assert_not_contains "with no configs at all the overlay pins nothing" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"')" \
+    "current-context:"
+
+h="$(new_home)"
+write_config "$h/.kube/configs/gke-stg-ro" gke-stg-ro gcloud
+assert_not_contains "an explicitly empty default is honoured, not defaulted" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"' '')" \
+    "current-context:"
+
+# --- Self-healing a survivor ---------------------------------------------------
+echo
+echo "stale overlays"
+
+# An overlay left by an earlier session, pinning a context that has since been
+# retired, in a pane whose _KUBE_OVERLAY_INIT is inherited from the tmux server.
+# Both of the original guards say "leave it alone", which is why the devbox
+# stayed wrong for a week.
+h="$(new_home)"
+write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+mkdir -p "$h/.kube/configs/.window-overlays"
+printf 'apiVersion: v1\nkind: Config\ncurrent-context: orbstack\ncontexts: []\nclusters: []\nusers: []\n' \
+    >"$h/$OVERLAY"
+PROBE_EXISTING_PANE=1
+assert_not_contains "a retired pin is dropped from a surviving pane's overlay" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"')" "orbstack"
+
+# ...but a pin that still resolves is the user's choice and must survive.
+h="$(new_home)"
+write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+mkdir -p "$h/.kube/configs/.window-overlays"
+printf 'apiVersion: v1\nkind: Config\ncurrent-context: kind-iden2-dev\ncontexts: []\nclusters: []\nusers: []\n' \
+    >"$h/$OVERLAY"
+assert_contains "a pin that still resolves is left alone" \
+    "$(probe "$h" 'cat "$HOME/'"$OVERLAY"'"')" "current-context: kind-iden2-dev"
+PROBE_EXISTING_PANE=0
+
+# --- Reporting -----------------------------------------------------------------
+echo
+echo "reporting"
+
+h="$(new_home)"
+write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+mkdir -p "$h/.kube/configs/kind-stub"
+printf 'apiVersion: v1\nkind: Config\n' >"$h/.kube/configs/kind-stub/config"
+out="$(probe "$h" 'kube-list')"
+assert_contains "kube-list names the contexts a directory defines" "$out" "kind-iden2-dev"
+assert_contains "kube-list calls out a directory that defines nothing" \
+    "$out" "(defines no contexts)"
+
+h="$(new_home)"
+assert_contains "kube-list says so plainly when there is nothing" \
+    "$(probe "$h" 'kube-list')" "No contexts"
+
+h="$(new_home)"
+assert_contains "kube-refresh says so plainly too" \
+    "$(probe "$h" 'kube-refresh')" "No contexts"
+
+# --- Merge behaviour, the part that needs a real kubectl -----------------------
+# Skipped rather than faked when kubectl is absent: the claim being checked is
+# about client-go's merge rules, and a stub would only re-assert our own belief.
+echo
+echo "merge semantics"
+
+if command -v kubectl >/dev/null 2>&1; then
+    # An opinionless overlay must not blank the context — it must fall through to
+    # a file that genuinely declares one. This is what makes "pin nothing" safe
+    # to do by default.
+    h="$(new_home)"
+    write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+    assert_eq "an unpinned overlay falls through to a real config" \
+        "$(probe "$h" 'kubectl config current-context' gke-stg-ro)" "kind-iden2-dev"
+
+    h="$(new_home)"
+    assert_eq "with nothing installed, there is no current context" \
+        "$(probe "$h" 'kubectl config current-context')" ""
+
+    h="$(new_home)"
+    write_config "$h/.kube/configs/kind-iden2-dev" kind-iden2-dev kubectl
+    assert_contains "kube-current flags a pin that resolves nowhere" \
+        "$(PROBE_EXISTING_PANE=1
+           mkdir -p "$h/.kube/configs/.window-overlays"
+           printf 'apiVersion: v1\nkind: Config\ncurrent-context: ghost\ncontexts: []\nclusters: []\nusers: []\n' >"$h/$OVERLAY"
+           probe "$h" '_kube_write_overlay ghost; kube-current')" \
+        "DANGLING"
+else
+    printf '  skip  merge semantics (no kubectl on PATH)\n'
+fi
+
+echo
+printf '%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
