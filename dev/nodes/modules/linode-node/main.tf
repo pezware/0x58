@@ -27,6 +27,34 @@ resource "linode_instance" "node" {
   root_pass = random_password.root.result
   swap_size = var.linode_swap_mb
 
+  # A resize is a migration to a different physical host, and the disks are
+  # copied at ~150 MB/sec -- about 9 minutes for the devbox's 79.5 GB root. The
+  # provider defaults this to "cold", which powers the instance down for that
+  # entire window. Warm keeps it up during the copy and only reboots at the end.
+  #
+  # Warm is not free of downtime and it is not infallible: Linode reboots the
+  # instance once the migration completes, and a warm resize that cannot power
+  # the instance down FAILS rather than falling back -- retry it as a cold one.
+  migration_type = var.migration_type
+
+  # NEVER set this true. It is the one-way door in this whole design.
+  #
+  # Linode grows disks but does not shrink them: Cloud Manager only offers Auto
+  # Resize Disk when "the new plan provides more storage space than the current
+  # plan", and the provider is blunt about it -- "This is an irreversible action
+  # as Linode disks cannot be automatically downsized."
+  #
+  # So accepting it once on the way up to g6-standard-4 would grow the root disk
+  # from 79.5 GB to 160 GB, and g6-standard-2 (80 GB of storage) would become
+  # unreachable without a manual resize2fs. Pinned false rather than exposed as
+  # a variable, because the failure is silent at the moment you opt in and only
+  # surfaces months later when you try to scale back down.
+  #
+  # The devbox has exactly the layout that makes Linode offer the checkbox --
+  # one ext4 disk plus a swap disk -- so this is a live footgun, not a
+  # theoretical one. Keeping the disk fixed is what makes resizing REVERSIBLE.
+  resize_disk = false
+
   tags = concat(["tailscale", var.role], var.extra_tags)
 
   metadata {
@@ -64,6 +92,32 @@ resource "linode_instance" "node" {
   }
 
   lifecycle {
+    # user_data is a FIRST-BOOT input, and the Linode API offers no way to update
+    # it on a live instance. So when the bootstrap scripts move on in git,
+    # Terraform's only available remedy is to replace the node -- and it proposes
+    # that for any apply, however unrelated. On the devbox that means losing 32 GB
+    # of container storage, a kind cluster and six manual recovery steps because a
+    # comment block changed.
+    #
+    # Silencing an ACTIONABLE diff would be wrong. This one is not actionable: the
+    # sole fix Terraform has is disproportionate to every cause. So the diff is
+    # ignored here and conformance moves to where it can actually be repaired --
+    # `devbox-drift` compares the installed scripts against the repo byte for byte
+    # (verified lossless: /usr/local/sbin/node-common.sh is identical to
+    # common.sh), and `ts-node <role> sync-bootstrap` reinstalls them in seconds.
+    #
+    # Consequences, both deliberate:
+    #   - A rebuild is now an explicit act: terraform apply -replace=...
+    #     Which is where that decision belongs, not a side effect of an apply.
+    #   - A re-minted Tailscale auth key no longer forces replacement either.
+    #     Desirable -- rotating a key should not destroy the node -- but it does
+    #     mean the key in state can go stale relative to the Keychain.
+    #
+    # Not conditional per role, because Terraform forbids variables in lifecycle.
+    # For k8s that is nearly free: it is cattle, destroyed after every session, so
+    # the next apply builds fresh with current user_data anyway.
+    ignore_changes = [metadata]
+
     precondition {
       condition     = var.role != "k8s" || var.swap_mb == 0
       error_message = "kubelet refuses to start when swap is enabled, so the k8s role must set swap_mb = 0."

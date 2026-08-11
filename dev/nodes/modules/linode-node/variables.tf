@@ -19,6 +19,25 @@ variable "region" {
   default     = "us-east"
 }
 
+variable "migration_type" {
+  description = <<-EOT
+    How a `type` change is carried out: "warm" keeps the instance running during
+    the host migration and reboots once it completes, "cold" powers it down for
+    the whole copy. Defaults to warm; the PROVIDER defaults to cold, so this
+    must be set explicitly or every resize is a full outage.
+
+    Inert on roles that are never resized -- k8s and minimal are destroyed and
+    rebuilt rather than scaled, so this only ever matters for devbox.
+  EOT
+  type        = string
+  default     = "warm"
+
+  validation {
+    condition     = contains(["warm", "cold"], var.migration_type)
+    error_message = "migration_type must be \"warm\" or \"cold\"."
+  }
+}
+
 variable "image" {
   description = "Base image. Debian 13 = trixie, matching linux/setup-guide.md."
   type        = string
