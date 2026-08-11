@@ -13,7 +13,7 @@ dev/nodes/
 ├── modules/linode-node/        # instance + firewall + cloud-init + common.sh
 └── roles/
     ├── devbox/                 # 4 GB, always on  — repos, agents, kubectl
-    ├── k8s/                    # 4 GB, on demand  — docker + kind, disposable
+    ├── k8s/                    # 8 GB, on demand  — docker + kind, disposable
     └── minimal/                # 1 GB             — exit node only, fall-back tier
 ```
 

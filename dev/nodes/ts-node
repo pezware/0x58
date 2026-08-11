@@ -3,7 +3,7 @@
 # Tailscale node orchestrator.  ./ts-node <role> <command>
 #
 #   roles     devbox   Linode 4GB, always on — repos, agents, kubectl
-#             k8s      Linode 4GB, on demand — docker + kind, disposable
+#             k8s      Linode 8GB, on demand — docker + kind, disposable
 #             minimal  Nanode 1GB — exit node only, the fall-back tier
 #
 #   commands  apply destroy plan | start stop resize status | ssh ip
