@@ -6,7 +6,7 @@
 #             k8s      Linode 4GB, on demand — docker + kind, disposable
 #             minimal  Nanode 1GB — exit node only, the fall-back tier
 #
-#   commands  apply destroy plan | start stop status | ssh ip
+#   commands  apply destroy plan | start stop resize status | ssh ip
 #
 # Secrets come from the macOS Keychain into the environment for the duration of
 # this process. Same contract as dev/exit-node/linode/ts-exit, which this
@@ -110,6 +110,98 @@ needs_auth_key() {
     }
 }
 
+# ── Resize safety policy ────────────────────────────────────────────────────
+# A downsize is REJECTED by Linode unless the disks already fit the smaller
+# plan, and there is no automatic way back: Cloud Manager only offers Auto
+# Resize Disk when "the new plan provides more storage space than the current
+# plan", and the Terraform provider is blunt -- "This is an irreversible action
+# as Linode disks cannot be automatically downsized."
+#
+# So this always sends allow_auto_disk_resize=false. Verified on pezware-cuatro
+# 2026-08-11: resized nanode -> g6-standard-1 and the plan allotment doubled to
+# 51200 MB while the actual disk stayed at 25088 MB, which is exactly what let
+# the trip back down be accepted.
+#
+# resize_guard runs BEFORE the API call, so a bad request fails here with a
+# useful message rather than as a failed job in the Linode events feed. All
+# three checks refuse rather than warn: every one of them ends in a reboot you
+# did not want, and a reboot on this fleet costs real work -- agent sessions in
+# tmux, a kind cluster, container state that nothing restarts automatically.
+resize_guard() {
+    local id="$1" target="$2"
+
+    # Root-disk allocation in MB (the sum that must fit the target plan), and
+    # the target plan's storage allotment. Both straight from the API.
+    local disk_mb plan_mb current
+    disk_mb=$(linode_api "https://api.linode.com/v4/linode/instances/$id/disks" \
+        | python3 -c "import sys,json;print(sum(d['size'] for d in json.load(sys.stdin)['data']))")
+    plan_mb=$(linode_api "https://api.linode.com/v4/linode/types/$target" \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)['disk'])")
+    current=$(linode_api "https://api.linode.com/v4/linode/instances/$id" \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)['type'])")
+
+    # ── 1. Already there ────────────────────────────────────────────────────
+    # A same-plan resize is NOT a no-op. Linode still migrates the instance to a
+    # different physical host and still reboots it at the end -- verified on
+    # pezware-cuatro, whose host_uuid changed across a resize. So the cost of a
+    # typo repeated is a full outage for no capacity change.
+    if [ "$target" = "$current" ]; then
+        echo "error: $ROLE is already on $target." >&2
+        echo "       A same-plan resize is not free: Linode migrates to a new host and" >&2
+        echo "       reboots anyway. Refusing." >&2
+        exit 1
+    fi
+
+    # ── 2. Disks must fit the target plan ───────────────────────────────────
+    # Linode grows disks but never shrinks them, and we always send
+    # allow_auto_disk_resize=false to keep the trip reversible. So a downsize is
+    # only legal when the CURRENT allocation already fits. Without this check the
+    # request is accepted and then fails minutes later in the events feed, which
+    # reads as a platform fault rather than a request that was never valid.
+    if [ "$disk_mb" -gt "$plan_mb" ]; then
+        echo "error: disks occupy ${disk_mb} MB but $target allows only ${plan_mb} MB." >&2
+        echo "       Linode does not shrink disks automatically. Shrink the disk first," >&2
+        echo "       then retry — see 'Manage disks and storage on a Linode' in the" >&2
+        echo "       Akamai docs. Refusing." >&2
+        exit 1
+    fi
+
+    # ── 3. Nothing may be running ───────────────────────────────────────────
+    # Warm resize keeps the instance up for the migration but reboots at the end,
+    # and podman is daemonless: restart policies are replayed by
+    # podman-restart.service, which is DISABLED on the devbox. So a reboot with
+    # containers up loses them silently — the kind cluster included.
+    #
+    # Unreachable counts as "running". We cannot see the node's state, and
+    # rebooting a box whose state is unknown is the case this guard exists for.
+    local label running
+    label=$(tf output -raw label 2>/dev/null) || label=""
+    if [ -n "$label" ]; then
+        running=$(tailscale ssh "$label" \
+            'if command -v podman >/dev/null 2>&1; then podman ps -q | wc -l; else echo 0; fi' \
+            2>/dev/null) || running=""
+        running=$(printf '%s' "$running" | tr -d '[:space:]')
+    else
+        running=""
+    fi
+
+    if [ -z "$running" ]; then
+        echo "error: cannot reach '$label' over the tailnet to check for running containers." >&2
+        echo "       Refusing rather than rebooting a node whose state is unknown." >&2
+        echo "       Override with TS_NODE_FORCE_RESIZE=1 if you know it is idle." >&2
+        [ -n "${TS_NODE_FORCE_RESIZE:-}" ] || exit 1
+        echo "       ... TS_NODE_FORCE_RESIZE set, continuing anyway." >&2
+    elif [ "$running" -gt 0 ]; then
+        echo "error: $running container(s) running on $label." >&2
+        echo "       The resize ends in a reboot and nothing restarts them —" >&2
+        echo "       podman-restart.service is disabled on this fleet. Stop them first:" >&2
+        echo "         tailscale ssh $label 'podman stop -a'" >&2
+        echo "       Override with TS_NODE_FORCE_RESIZE=1 to accept losing them." >&2
+        [ -n "${TS_NODE_FORCE_RESIZE:-}" ] || exit 1
+        echo "       ... TS_NODE_FORCE_RESIZE set, continuing anyway." >&2
+    fi
+}
+
 tf() { terraform -chdir="$ROLE_DIR" "$@"; }
 
 instance_id() { tf output -raw instance_id 2>/dev/null; }
@@ -155,6 +247,38 @@ case "$CMD" in
         echo "Powering off $ROLE (id $ID)."
         echo "NOTE: Linode bills a powered-off instance in full. Only 'destroy' stops charges."
         linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/shutdown" >/dev/null
+        ;;
+    resize)
+        # Scale a node up for a heavy test session and back down afterwards,
+        # WITHOUT rebuilding it. This is an API operation, not a Terraform one,
+        # for the same reason start/stop are: Terraform owns what the box IS,
+        # the API owns what it is DOING. It also sidesteps the fact that any
+        # `apply` replaces the instance whenever user_data has drifted.
+        #
+        # Keep roles/<role>/main.tf's `type` in step afterwards, or the next
+        # apply will quietly resize the node back and cost another reboot.
+        #
+        # Measured on pezware-cuatro 2026-08-11: ~107 MB/s against the disk
+        # ALLOCATION (not the used bytes), so a 25 GB disk took ~4 minutes and
+        # the devbox's 79.5 GB root should take ~12. Warm keeps the instance up
+        # for all of it; the only outage is the reboot at the end (~23 s there).
+        needs_linode_token
+        ID=$(instance_id) || { echo "error: run './ts-node $ROLE apply' first" >&2; exit 1; }
+        TARGET="${1:-}"
+        [ -n "$TARGET" ] || {
+            echo "usage: ./ts-node $ROLE resize <plan>   e.g. g6-standard-4" >&2
+            exit 1
+        }
+
+        resize_guard "$ID" "$TARGET"
+
+        echo "Warm-resizing $ROLE (id $ID) to $TARGET."
+        echo "NOTE: the instance stays up during the migration but IS rebooted at the end."
+        echo "      Containers do not come back on their own — podman-restart.service is disabled."
+        linode_api -X POST \
+            -d "{\"type\":\"$TARGET\",\"migration_type\":\"warm\",\"allow_auto_disk_resize\":false}" \
+            "https://api.linode.com/v4/linode/instances/$ID/resize" >/dev/null
+        echo "Accepted. Watch with: ./ts-node $ROLE status"
         ;;
     status)
         needs_linode_token

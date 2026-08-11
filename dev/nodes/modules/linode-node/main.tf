@@ -27,6 +27,34 @@ resource "linode_instance" "node" {
   root_pass = random_password.root.result
   swap_size = var.linode_swap_mb
 
+  # A resize is a migration to a different physical host, and the disks are
+  # copied at ~150 MB/sec -- about 9 minutes for the devbox's 79.5 GB root. The
+  # provider defaults this to "cold", which powers the instance down for that
+  # entire window. Warm keeps it up during the copy and only reboots at the end.
+  #
+  # Warm is not free of downtime and it is not infallible: Linode reboots the
+  # instance once the migration completes, and a warm resize that cannot power
+  # the instance down FAILS rather than falling back -- retry it as a cold one.
+  migration_type = var.migration_type
+
+  # NEVER set this true. It is the one-way door in this whole design.
+  #
+  # Linode grows disks but does not shrink them: Cloud Manager only offers Auto
+  # Resize Disk when "the new plan provides more storage space than the current
+  # plan", and the provider is blunt about it -- "This is an irreversible action
+  # as Linode disks cannot be automatically downsized."
+  #
+  # So accepting it once on the way up to g6-standard-4 would grow the root disk
+  # from 79.5 GB to 160 GB, and g6-standard-2 (80 GB of storage) would become
+  # unreachable without a manual resize2fs. Pinned false rather than exposed as
+  # a variable, because the failure is silent at the moment you opt in and only
+  # surfaces months later when you try to scale back down.
+  #
+  # The devbox has exactly the layout that makes Linode offer the checkbox --
+  # one ext4 disk plus a swap disk -- so this is a live footgun, not a
+  # theoretical one. Keeping the disk fixed is what makes resizing REVERSIBLE.
+  resize_disk = false
+
   tags = concat(["tailscale", var.role], var.extra_tags)
 
   metadata {
