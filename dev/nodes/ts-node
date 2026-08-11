@@ -310,10 +310,32 @@ case "$CMD" in
                 < "$src" || { echo "error: failed to install $dst" >&2; exit 1; }
         done
 
+        # restart, NOT start. The unit is Type=oneshot with RemainAfterExit=yes,
+        # so between boots it sits in active(exited) -- and `systemctl start` on
+        # an already-active unit is a no-op that exits 0. This command would then
+        # copy both files, silently skip the reconcile, and print "active" from
+        # is-active, looking for all the world like it had worked.
+        #
+        # RemainAfterExit is there so a successful oneshot stays distinguishable
+        # from one that never ran. The same property is what makes `start` useless
+        # here, which is why the two must be read together.
+        #
         # --per-boot mode: skips package installs and cluster creation, so this is
-        # the light reconcile and not a re-provision.
+        # the light reconcile and not a re-provision. Safe on a live node --
+        # tailscale is already authenticated so it only reapplies identical flags,
+        # the volume and swapfile are already in place, the unit file is cmp-
+        # guarded, the tmux session is has-session guarded, and KillMode=process
+        # keeps the cgroup teardown off the tmux server. Nothing touches podman.
         echo "→ re-running 0x58-node-boot.service (--per-boot reconcile)"
-        tailscale ssh "$LABEL" 'sudo systemctl start 0x58-node-boot.service && systemctl is-active 0x58-node-boot.service'
+        tailscale ssh "$LABEL" 'sudo systemctl restart 0x58-node-boot.service' || {
+            echo "error: reconcile failed — check: ssh $LABEL journalctl -u 0x58-node-boot.service -n50" >&2
+            exit 1
+        }
+
+        # Prove it actually ran rather than trusting is-active, which reports
+        # "active" for a unit that has not executed since the last boot.
+        tailscale ssh "$LABEL" \
+            'systemctl show 0x58-node-boot.service -p ExecMainStartTimestamp -p Result'
         echo "Synced. Confirm with: ssh $LABEL devbox-drift"
         ;;
     status)
