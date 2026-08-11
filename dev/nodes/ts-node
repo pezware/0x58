@@ -7,6 +7,7 @@
 #             minimal  Nanode 1GB — exit node only, the fall-back tier
 #
 #   commands  apply destroy plan | start stop resize status | ssh ip
+#             sync-bootstrap — reinstall the boot scripts without a rebuild
 #
 # Secrets come from the macOS Keychain into the environment for the duration of
 # this process. Same contract as dev/exit-node/linode/ts-exit, which this
@@ -27,7 +28,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 usage() {
-    sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-1}"
 }
 
@@ -279,6 +280,38 @@ case "$CMD" in
             -d "{\"type\":\"$TARGET\",\"migration_type\":\"warm\",\"allow_auto_disk_resize\":false}" \
             "https://api.linode.com/v4/linode/instances/$ID/resize" >/dev/null
         echo "Accepted. Watch with: ./ts-node $ROLE status"
+        ;;
+    sync-bootstrap)
+        # Converge a RUNNING node onto the repo's current bootstrap scripts,
+        # without the rebuild Terraform would otherwise insist on.
+        #
+        # This is the other half of `ignore_changes = [metadata]` in the module.
+        # user_data only ever runs at first boot; from then on the live artifacts
+        # are these two files, re-run every boot by 0x58-node-boot.service. So
+        # replacing them and re-running the unit is the whole repair -- seconds,
+        # against an hour of rebuild and six manual steps.
+        #
+        # No Linode token needed: this never touches the API.
+        LABEL=$(tf output -raw label 2>/dev/null) || { echo "error: not applied" >&2; exit 1; }
+
+        # Piped to `tee` under sudo rather than scp'd: Tailscale SSH is the only
+        # access path and these land in /usr/local/sbin, which the login user
+        # cannot write. Modes mirror cloud-init.yaml exactly (0755 root:root).
+        for pair in "modules/linode-node/common.sh:/usr/local/sbin/node-common.sh" \
+            "$ROLE_DIR/bootstrap.sh:/usr/local/sbin/node-bootstrap"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            [ -f "$src" ] || { echo "error: $src missing" >&2; exit 1; }
+            echo "→ $dst"
+            tailscale ssh "$LABEL" \
+                "sudo tee $dst >/dev/null && sudo chmod 0755 $dst && sudo chown root:root $dst" \
+                < "$src" || { echo "error: failed to install $dst" >&2; exit 1; }
+        done
+
+        # --per-boot mode: skips package installs and cluster creation, so this is
+        # the light reconcile and not a re-provision.
+        echo "→ re-running 0x58-node-boot.service (--per-boot reconcile)"
+        tailscale ssh "$LABEL" 'sudo systemctl start 0x58-node-boot.service && systemctl is-active 0x58-node-boot.service'
+        echo "Synced. Confirm with: ssh $LABEL devbox-drift"
         ;;
     status)
         needs_linode_token

@@ -96,7 +96,22 @@ while IFS=: read -r repo_rel live_path; do
     fi
 done <<'PAIRS'
 linux/containers-registries.conf:~/.config/containers/registries.conf
+dev/nodes/modules/linode-node/common.sh:/usr/local/sbin/node-common.sh
+dev/nodes/roles/devbox/bootstrap.sh:/usr/local/sbin/node-bootstrap
 PAIRS
+
+# The two node-* entries above are why this section earns its keep beyond
+# restore.sh. Those files arrive in cloud-init's user_data, which only ever runs
+# at FIRST boot -- so once the repo's bootstrap scripts move on, the box keeps
+# running whatever it was built with and nothing says so. Terraform sees it, but
+# its only remedy is replacing the instance, so the module now ignores that diff
+# deliberately (see modules/linode-node/main.tf) and this check is what replaces
+# it. Repair is `ts-node <role> sync-bootstrap`, not a rebuild.
+#
+# A byte comparison is valid here, verified 2026-08-11: the templatefile ->
+# base64gzip -> cloud-init round trip is lossless, and node-common.sh on the box
+# was identical to common.sh in the repo while node-bootstrap differed by exactly
+# the 24 lines that had been added since the instance was built.
 
 # claude-settings.json is deliberately absent from that list. restore.sh MERGES
 # it rather than copying, so the live file legitimately carries UI keys Claude

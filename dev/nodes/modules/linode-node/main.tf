@@ -92,6 +92,32 @@ resource "linode_instance" "node" {
   }
 
   lifecycle {
+    # user_data is a FIRST-BOOT input, and the Linode API offers no way to update
+    # it on a live instance. So when the bootstrap scripts move on in git,
+    # Terraform's only available remedy is to replace the node -- and it proposes
+    # that for any apply, however unrelated. On the devbox that means losing 32 GB
+    # of container storage, a kind cluster and six manual recovery steps because a
+    # comment block changed.
+    #
+    # Silencing an ACTIONABLE diff would be wrong. This one is not actionable: the
+    # sole fix Terraform has is disproportionate to every cause. So the diff is
+    # ignored here and conformance moves to where it can actually be repaired --
+    # `devbox-drift` compares the installed scripts against the repo byte for byte
+    # (verified lossless: /usr/local/sbin/node-common.sh is identical to
+    # common.sh), and `ts-node <role> sync-bootstrap` reinstalls them in seconds.
+    #
+    # Consequences, both deliberate:
+    #   - A rebuild is now an explicit act: terraform apply -replace=...
+    #     Which is where that decision belongs, not a side effect of an apply.
+    #   - A re-minted Tailscale auth key no longer forces replacement either.
+    #     Desirable -- rotating a key should not destroy the node -- but it does
+    #     mean the key in state can go stale relative to the Keychain.
+    #
+    # Not conditional per role, because Terraform forbids variables in lifecycle.
+    # For k8s that is nearly free: it is cattle, destroyed after every session, so
+    # the next apply builds fresh with current user_data anyway.
+    ignore_changes = [metadata]
+
     precondition {
       condition     = var.role != "k8s" || var.swap_mb == 0
       error_message = "kubelet refuses to start when swap is enabled, so the k8s role must set swap_mb = 0."
