@@ -45,10 +45,10 @@ resource "google_compute_instance" "exit_node" {
   }
 
   metadata = {
-    startup-script        = file("${path.module}/startup.sh")
-    enable-oslogin        = "FALSE"
+    startup-script         = file("${path.module}/startup.sh")
+    enable-oslogin         = "FALSE"
     block-project-ssh-keys = "true"
-    serial-port-enable    = "false"
+    serial-port-enable     = "false"
   }
 
   service_account {
