@@ -42,6 +42,16 @@ export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:$PATH"
 # Counterpart: linux.bash sets this to 0 for Claude Code Remote Control. The
 # telemetry opt-out stays ON here; the Mac never needs Remote Control.
 export DO_NOT_TRACK=1
+# kind assumes docker unless told otherwise, and there is no docker on this Mac —
+# the runtime is podman. OrbStack was removed but its docker context outlived it,
+# so `kind get clusters` failed against a socket whose app no longer existed: the
+# error named a missing file, not a missing provider, which reads like a broken
+# install rather than the wrong backend. Podman support is still flagged upstream,
+# so kind will not fall back to it on its own.
+#
+# Deliberately not in bashrc. The devbox runs podman too, but linux.bash is owned
+# by that machine; this is the Mac speaking for the Mac.
+export KIND_EXPERIMENTAL_PROVIDER=podman
 
 
 # completion for macos
