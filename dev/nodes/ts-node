@@ -28,7 +28,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 usage() {
-    sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
+    # basename, not "$0": we already cd'd to the script's own directory above, so
+    # a relative "$0" like dev/nodes/ts-node no longer resolves from here — which
+    # is the invocation the README uses everywhere.
+    sed -n '3,10p' "$(basename "$0")" | sed 's/^# \{0,1\}//'
     exit "${1:-1}"
 }
 
