@@ -40,7 +40,7 @@ Where the two platform files make opposite choices — the SSH agent socket and
 
 | File | Purpose |
 |---|---|
-| `macos.bash` | Homebrew shellenv, macOS aliases, completion sources |
+| `macos.bash` | Homebrew shellenv, macOS aliases, macOS-only exports, completion sources |
 | `prompt.bash` | Custom PS1 prompt |
 | `history.bash` | History configuration |
 | `go.bash` | Go environment setup |
@@ -56,6 +56,8 @@ Where the two platform files make opposite choices — the SSH agent socket and
 - **Version manager**: `mise activate bash` at end of `.bashrc`
 - **GPG**: `GPG_TTY=$(tty)` for commit signing
 - **Privacy**: `DO_NOT_TRACK=1`
+- **Containers**: `KIND_EXPERIMENTAL_PROVIDER=podman` — kind defaults to docker, which
+  is not installed here; podman is the Mac's runtime
 
 ## Dotfiles management
 
