@@ -25,8 +25,30 @@
 # normal case on a working machine and are not failures; the exit code reflects
 # fetch and merge errors only, so a timer only alerts on something real.
 #
-# Worktrees need no special handling and get none. A worktree for task work is on
-# a task branch, so guard 1 skips it; the primary checkout on main is what moves.
+# Worktrees are deliberately NOT synced. `-type d` on the find below is the whole
+# mechanism: a worktree's .git is a FILE, not a directory, as is a submodule's, so
+# one flag excludes both.
+#
+# They were never gaining anything. A worktree holds task-branch work, so guard 1
+# skipped every one of them anyway. What the fetch cost instead was a race: a
+# worktree SHARES the primary checkout's object store and its refs/remotes, so
+# five checkouts of go-monorepo meant five concurrent writers going for one set of
+# ref locks, and four of them lost —
+#
+#   ERROR  iden2/go-monorepo-freeze-plan  cannot lock ref 'refs/remotes/origin/x':
+#          is at 305fb0d but expected cdd6c98      (…and three more, same ref)
+#
+# — with the losing fetch aborted, so those repos silently missed the run and the
+# timer reported failure. It only fired when someone pushed inside the fetch
+# window, since otherwise every racer writes the same value and nothing conflicts.
+# That is why it looked intermittent and only ever bit during working hours:
+# measured on the devbox 2026-08-11, 4-5 errors an hour from 20:00-23:00 UTC, then
+# twelve consecutive clean hours overnight.
+#
+# Their origin/* stay current regardless, because the primary checkout fetches
+# into the very store they share. The one case this gives up is a primary parked
+# on a feature branch while a worktree holds the default one — that tree waits for
+# the human who arranged it, which is the right outcome for a deliberate setup.
 set -uo pipefail
 
 DRY_RUN=0
@@ -64,12 +86,14 @@ case "$JOBS" in ''|*[!0-9]*|0) echo "src-sync: --jobs must be a positive integer
 
 MOVED=0; SKIPPED=0; ERRORS=0
 
-# Repos live at ~/src/<org>/<repo>, and worktrees as siblings of their parent.
-# -maxdepth 3 covers both without descending into vendor/ or node_modules, which
-# on this tree would mean walking several million files to find nothing.
+# Repos live at ~/src/<org>/<repo>, so -maxdepth 3 reaches them without
+# descending into vendor/ or node_modules, which on this tree would mean walking
+# several million files to find nothing.
+#
+# -type d is what excludes worktrees and submodules, for the reasons in the header.
 REPO_LIST="$(mktemp)"; FETCH_FAILED="$(mktemp)"
 trap 'rm -f "$REPO_LIST" "$FETCH_FAILED"' EXIT
-find "$ROOT" -mindepth 2 -maxdepth 3 -name .git -print 2>/dev/null | sort > "$REPO_LIST"
+find "$ROOT" -mindepth 2 -maxdepth 3 -name .git -type d -print 2>/dev/null | sort > "$REPO_LIST"
 
 # ---- pass 1: fetch, concurrently -------------------------------------------
 # Fetches are independent and network-bound, so they parallelise cleanly: ~40
@@ -96,9 +120,6 @@ while read -r gitpath; do
 done < "$REPO_LIST"
 wait
 
-# Repos live at ~/src/<org>/<repo>, and worktrees as siblings of their parent.
-# -maxdepth 3 covers both without descending into vendor/ or node_modules, which
-# on this tree would mean walking several million files to find nothing.
 # ---- pass 2: guard, then move ----------------------------------------------
 # Redirected from a file, NOT piped from find. A `find | while` puts the loop
 # body in a subshell, where every counter below increments a copy that dies with
