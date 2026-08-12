@@ -43,15 +43,21 @@ Priority: testability > readability > consistency > simplicity > reversibility.
 
 ## Process
 
-### Worktree-First (start of any new batch of work)
-When asked to start a **group of new tasks** (a feature, a multi-step change, a fresh batch of work), do NOT code on the current checkout. First create a git worktree branched off `main`:
+### Worktree-First (before the first edit, every time)
+Do NOT code on the current checkout — not for a feature, not for a one-line fix. Before the first edit, create a git worktree branched off `main`:
 
 ```bash
 git -C <repo> fetch origin main
 git -C <repo> worktree add -b <task-slug> ../<repo>-<task-slug> origin/main
 ```
 
-Then work in that worktree. This keeps the primary checkout on whatever it was and isolates the new work on a clean branch from `main`. Exception: only skip this when the user **specifically asks** to work somewhere else (current branch, an existing worktree, a named branch). Tear down with `git worktree remove <path>` when the work has landed.
+Then work in that worktree. "It is only one line" is precisely when this gets skipped and precisely when it costs the most: the primary checkout is now dirty, and everything downstream assumes it is not.
+
+That assumption is load-bearing, not stylistic. `src-sync` skips any repo with modified tracked files, deliberately — a fast-forward into someone's edits is not safe unattended. So an edit made directly on `main` stops that repo pulling, silently, every hour, until a human notices. It went unnoticed for weeks on the devbox (0x58 PR #83). A worktree keeps the primary checkout clean, which keeps it a valid base to branch from and safe to fast-forward.
+
+Worktrees are **siblings** of their parent checkout, never inside it. Exception: only skip this when the user **specifically asks** to work somewhere else (current branch, an existing worktree, a named branch).
+
+Tear down with `git worktree remove <path>` when the work has landed — except on the devbox, where that cannot work and `devbox-worktree-rm` is the only path (see the Operations Runbook).
 
 ### Planning
 Break complex work into 3-5 stages in `IMPLEMENTATION_PLAN.md`. Each stage: goal, success criteria, test cases. Remove when done.

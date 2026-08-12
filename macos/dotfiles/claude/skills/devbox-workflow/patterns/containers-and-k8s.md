@@ -13,6 +13,12 @@ go test -tags=integration ./...     # works now
 go test -tags=e2e ./...             # works now
 ```
 
+These are the capability probe — what the sandbox permits — not the interface you
+should reach for first. `task --list` is: a task carries the env contract these
+bare commands drop. The exception, and why the raw form still appears throughout
+this file, is that per-service tasks are `internal: true` and therefore
+uninvokable; see step 6 of [SKILL.md](../SKILL.md).
+
 ## Getting a Docker-compatible endpoint
 
 Two things are missing in-session, and both look like the runtime is broken:

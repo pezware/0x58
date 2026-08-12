@@ -162,12 +162,38 @@ gh pr create --title "..." --body "..."
 Body formatting is fragile in shell — see the `gh pr create` note in your global
 instructions (plain double-quoted string, not a heredoc).
 
-**6 — Test.** All tiers run in-session as of 2026-08-04:
+**6 — Test. Check `task --list` before running a tool bare.** A task carries the
+env contract — `KEYCLOAK_ENV`, `BUILD_TAGS`, `TEST_TIMEOUT`, the `SOURCE_SECRETS`
+sourcing — and invoking `go test` directly drops all of it silently. That is one
+of the ways a suite reports `ok` having skipped everything.
+
+```bash
+task --list                         # the discovery surface; check it first
+task test                           # unit tests, all services and packages
+task lint                           # all services, packages and e2e
+```
+
+All tiers also run in-session as of 2026-08-04, and raw `go test` remains the
+right tool for the case below:
 
 ```bash
 go test ./...                       # ~96% of the suite
 go test -tags=integration ./...     # works — needs the docker shim first
 ```
+
+**Testing one service is the documented exception.** Every include in
+`go-monorepo/Taskfile.yml` is `internal: true`, which makes those tasks
+*unreachable* rather than merely unlisted — `task vaas:test` answers `Task
+"vaas:test" is internal`, and `task --list` shows zero per-service tasks, even
+though `services/vaas/Taskfile.yml` defines `test`, `test:unit`,
+`test:integration` and `test:coverage`. So the choice is `task test` (everything)
+or `go test ./services/vaas/...`, and the raw command is correct. The gap is in
+the Taskfile.
+
+Where a raw command recurs and **no** task covers it, add one rather than
+normalising the bare invocation — a repeated raw command is a missing task with
+extra steps, and the env contract it drops stays invisible until a run is green
+for the wrong reason.
 
 Container-backed tests used to be impossible here. They are not any more:
 `allowAllUnixSockets` is on and the podman socket answers from inside the
