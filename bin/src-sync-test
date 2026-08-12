@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#
+# Tests for src-sync.
+#
+#   ./bin/src-sync-test
+#
+# No test framework, matching linux/devbox-inbox-test: the contract under test is
+# "which checkouts does it touch, and does it move them", which is git and
+# filesystem behaviour. A dependency-free runner stays as portable as the script
+# it covers and runs on the devbox with nothing installed.
+#
+# The remote is a local bare repo, so this never touches the network and cannot
+# be flaked by GitHub. Isolation is a throwaway directory passed as ROOT, which
+# src-sync accepts as an argument precisely so it need not be run against ~/src.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC_SYNC="$HERE/src-sync"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]" ;;
+    esac
+}
+assert_not_contains() {
+    case "$2" in
+    *"$3"*) no "$1" "output unexpectedly contained [$3]" ;;
+    *) ok "$1" ;;
+    esac
+}
+
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        case "$d" in /tmp/* | /var/folders/*) rm -rf "$d" ;; esac
+    done
+}
+trap cleanup EXIT
+
+# A ROOT holding one primary checkout at <root>/org/repo, cloned from a local
+# bare remote that is one commit AHEAD -- so a correct run has exactly one
+# fast-forward to make and any miss is visible in the summary line.
+new_tree() {
+    local d seed remote root
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+
+    seed="$d/seed"
+    git init -q -b main "$seed"
+    git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
+
+    remote="$d/remote.git"
+    git clone -q --bare "$seed" "$remote"
+
+    root="$d/root"
+    mkdir -p "$root/org"
+    git clone -q "$remote" "$root/org/repo"
+
+    git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m second
+    git -C "$seed" push -q "$remote" main
+
+    printf '%s' "$root"
+}
+
+echo "== a primary checkout on the default branch is fast-forwarded"
+ROOT="$(new_tree)"
+out="$("$SRC_SYNC" "$ROOT" 2>&1)"
+assert_contains "reports the fast-forward" "$out" "ff     org/repo"
+assert_contains "summary counts exactly one" "$out" "1 fast-forwarded"
+
+echo
+echo "== a linked worktree is not visited at all"
+# The regression this exists for. A worktree shares the primary's object store
+# and refs/remotes, so fetching it concurrently raced for the same ref locks:
+#   ERROR org/repo-wt  cannot lock ref 'refs/remotes/origin/...': is at X but expected Y
+# It also never had anything to gain -- guard 1 skipped it for being on a task
+# branch. Before the -type d fix this printed "skip org/repo-wt on wt, not main",
+# so the assertion below is what distinguishes the two versions.
+ROOT="$(new_tree)"
+git -C "$ROOT/org/repo" worktree add -q -b wt "$ROOT/org/repo-wt"
+out="$("$SRC_SYNC" "$ROOT" 2>&1)"
+assert_not_contains "worktree is neither fetched nor named" "$out" "repo-wt"
+assert_contains "the primary still moves" "$out" "ff     org/repo"
+assert_contains "and it is still the only one" "$out" "1 fast-forwarded"
+
+echo
+echo "== the worktree's origin/* is still current afterwards"
+# Skipping the worktree costs it nothing: the primary fetched into the very
+# object store the worktree reads its remote-tracking refs from. If this ever
+# fails, excluding worktrees stopped being free and the header is wrong.
+primary_sha="$(git -C "$ROOT/org/repo" rev-parse origin/main)"
+wt_sha="$(git -C "$ROOT/org/repo-wt" rev-parse origin/main)"
+if [ "$primary_sha" = "$wt_sha" ]; then
+    ok "worktree sees the same origin/main as the primary"
+else
+    no "worktree sees the same origin/main as the primary" "[$wt_sha] != [$primary_sha]"
+fi
+
+echo
+echo "== a repo with no origin remote is skipped, not errored"
+ROOT="$(new_tree)"
+git init -q -b main "$ROOT/org/local-only"
+git -C "$ROOT/org/local-only" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x
+out="$("$SRC_SYNC" "$ROOT" 2>&1)"
+rc=$?
+assert_contains "names it as local-only" "$out" "no origin remote"
+if [ "$rc" -eq 0 ]; then
+    ok "exit code stays 0 (a skip is not a failure)"
+else
+    no "exit code stays 0 (a skip is not a failure)" "got $rc"
+fi
+
+echo
+printf '%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
