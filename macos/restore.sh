@@ -73,6 +73,46 @@ install_packages() {
     fi
 }
 
+# Section headings of a CLAUDE.md, normalised for comparison.
+#
+# `|| true` is load-bearing under `set -euo pipefail`: a grep that matches
+# nothing fails the pipeline, and "this file has no sections" is a legitimate
+# answer rather than an error. Without it, restore.sh would abort here.
+_claude_md_sections() {
+    grep -E '^#{2,3} ' "$1" 2>/dev/null | sed 's/^#\{2,3\} //' | sort || true
+}
+
+# Name the sections that differ between the tracked CLAUDE.md and the live one.
+#
+# The tracked copy is deliberately sanitized (the iden2-com ticket runbook is
+# stripped, because this repository is public), so the two files are EXPECTED to
+# differ and restore.sh must never overwrite the live one. The problem is that a
+# byte count cannot tell "sanitized on purpose" from "we forgot to propagate" —
+# and the second stays invisible: the OrbStack recipe sat in the local copy only,
+# unnoticed, until the two were diffed by hand on 2026-08-13.
+#
+# So: report, never write. Naming the sections turns an invisible divergence into
+# a decision someone can make.
+report_claude_md_drift() {
+    local tracked="$1" live="$2" only_live="" only_tracked=""
+    [[ -f "$tracked" && -f "$live" ]] || return 0
+    cmp -s "$tracked" "$live" && return 0
+
+    only_live=$(comm -13 <(_claude_md_sections "$tracked") <(_claude_md_sections "$live")) || true
+    only_tracked=$(comm -23 <(_claude_md_sections "$tracked") <(_claude_md_sections "$live")) || true
+
+    local section
+    if [[ -n "$only_live" ]]; then
+        echo "            $(wc -l <<<"$only_live" | tr -d ' ') section(s) live-only, absent from the tracked copy:"
+        while IFS= read -r section; do echo "              - $section"; done <<<"$only_live"
+        echo "            sanitized on purpose, or never propagated? the tracked copy is public."
+    fi
+    if [[ -n "$only_tracked" ]]; then
+        echo "            $(wc -l <<<"$only_tracked" | tr -d ' ') section(s) tracked but missing locally — restore.sh will NOT add them:"
+        while IFS= read -r section; do echo "              - $section"; done <<<"$only_tracked"
+    fi
+}
+
 # --- Phase 2: Dotfiles ---
 place_dotfiles() {
     echo "==> Placing dotfiles"
@@ -171,6 +211,20 @@ place_dotfiles() {
         fi
     fi
 
+    # Agent instructions on the Mac: report drift, never write.
+    #
+    # ~/.claude is a symlink to ~/src/claude here and IS the source of truth, so
+    # the tracked copy is DOWNSTREAM of this file — flowing the other way would
+    # overwrite live content with a sanitized snapshot. But downstream is exactly
+    # where propagation gets forgotten, and this is the only machine where anyone
+    # would notice, so the drift is worth naming on every run.
+    if [[ "$PLATFORM" == "macos" ]] && [[ -f "$DOTFILES/claude/CLAUDE.md" ]] && [[ -f ~/.claude/CLAUDE.md ]]; then
+        if ! cmp -s "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md; then
+            echo "    claude: ~/.claude/CLAUDE.md is the source of truth here — not written"
+            report_claude_md_drift "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
+        fi
+    fi
+
     # Agent sandbox hardening — Linux only.
     #
     # On the Mac, Claude Code uses seatbelt and credentials live in the Keychain.
@@ -198,6 +252,7 @@ place_dotfiles() {
                 cp -v "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
             elif ! cmp -s "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md; then
                 echo "    claude: kept existing CLAUDE.md ($(wc -c < ~/.claude/CLAUDE.md) bytes) — tracked copy is sanitized"
+                report_claude_md_drift "$DOTFILES/claude/CLAUDE.md" ~/.claude/CLAUDE.md
             fi
             # Codex reads AGENTS.md where Claude reads CLAUDE.md. Symlink rather
             # than copy so the two can never drift apart on the same machine.
