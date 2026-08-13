@@ -349,6 +349,34 @@ Notes: the broker spawns `codex app-server` from PATH at spawn time (no pinned p
 
 When both layers coexist (gateway in front, adapter in-body as defense-in-depth), review them separately; don't apply the "self-signed proves nothing" caution to the gateway layer. Cheap security checks worth confirming on a gateway HMAC: replay-window is an *independent* layer from the MAC (guard against `time.Duration` saturation on a far-future `t` — `-math.MinInt64 == math.MinInt64`, still negative, slips a naive `|skew|>window`), fixed-length check on the hex digest *before* `hex.DecodeString` (no large-alloc DoS), `hmac.Equal` for constant-time compare, and fail-closed wiring (route unmounts unless every auth dep is non-nil).
 
+### `codex exec` exits 0 and produces nothing — a shadowed binary, not an empty review
+
+Diagnosed 2026-08-13 on the devbox, after two sessions each lost a review run to it. Symptom: `codex exec -s read-only --output-last-message out.md '…'` returns **rc=0**, prints only node circular-dependency warnings, and writes **no** `out.md`. Nothing in that signature says "failure", which is what makes it dangerous — rc=0 with no findings is indistinguishable from a clean review, so the next step "validates" a report that does not exist.
+
+Root cause: an npm package **also named `codex`** — a static-site generator, v0.2.3, last touched 2013 — installs a `codex` bin into node's global prefix. Where both mise's `codex` tool and mise's `node` provide a bin of that name, the shim resolves to the node one:
+
+```bash
+mise ls | grep codex                 # says 0.144.1 — reassuring and irrelevant
+mise which codex                     # …/installs/node/22/bin/codex   ← the impostor
+codex --version                      # 0.2.3            (real one: codex-cli 0.144.1)
+npm ls -g --depth=0                  # codex@0.2.3 sitting next to npm and corepack
+```
+
+```bash
+npm rm -g codex && mise reshim        # removes only the 2013 doc generator
+mise which codex                      # …/installs/codex/0.144.1/bin/codex
+```
+
+Safe to remove: npm's global root held only `codex`, `corepack`, `npm`, so nothing else loses a bin, and mise's real codex lives in its own prefix (`installs/codex/<ver>`, npm backend) that `npm rm -g` cannot reach. Verify with `devbox-drift` — it should report *no* drift afterwards, because a rebuilt box installs codex from the mise config and never had the impostor.
+
+Three general lessons, all of which cost a session each:
+
+- **Assert a tool's identity, not its presence.** `command -v codex` passes for the impostor; `codex --version | grep codex-cli` does not. Any flow depending on an external tool should check the version string, then fall back to the absolute install path (`~/.local/share/mise/installs/<tool>/latest/bin/<tool>` — the `latest` symlink, so it survives version bumps).
+- **Judge a run by its artifact, never by `$?`.** Use `--output-last-message` and require the file to be non-empty and above a byte floor; a 2-byte smoke `OK` and a real report both exit 0.
+- **A release-age gate does not defend against this.** `minimum_release_age` (3d on the devbox) screens version *freshness*; the impostor is twelve years old. Name confusion and typosquats are orthogonal to maturity floors, and a floor can give false comfort against them.
+
+Related but different: if `codex` resolves correctly and the *plugin* still misbehaves after an upgrade, that is the stale broker above, not this.
+
 ---
 
 ## Post-Task Learning Capture
