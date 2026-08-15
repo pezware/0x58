@@ -100,6 +100,22 @@ now exists on the box. Same calls that used to 403, measured 2026-08-04:
 | ghcr tag list for `mirror/vault` | 403 | **200** — `1.18`, `1.20.4` |
 | `docker pull ghcr.io/iden2-com/mirror/vault:1.20.4` through the shim | 403 | **pulled** |
 
+Those 200s were measured by exporting `GHCR_TOKEN` **by hand**. The `gh` wrapper
+selected only by owner until 2026-08-15, so a plain `gh api /orgs/.../packages`
+kept getting a Contents:READ token and kept 403ing — with the token that fixes it
+sitting unused in the same credentials file. A session on 2026-08-15 concluded
+from that 403 that *the box* could not query GHCR and fell back to weaker
+evidence, which is the honest reading of what it saw: from inside a wrapper that
+picks your token silently, "the token I was handed lacks this" and "this box
+cannot do this" are indistinguishable.
+
+The wrapper now selects `GHCR_TOKEN` for `/orgs/*/packages`, `/users/*/packages`
+and `/user/packages`, from any directory, so **just call it**:
+
+```bash
+gh api "/orgs/iden2-com/packages?package_type=container" --jq 'length'   # 30 (of 60)
+```
+
 **You do not need to log in, and you do not need the token.** The login already
 happened, on the other side of the sandbox:
 
