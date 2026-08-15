@@ -18,6 +18,18 @@
 # over HTTPS — verified, GitHub returns 403 — so every push must go through the
 # SSH signing key. That is the gate; the token is not.
 #
+# Packages are a THIRD principal, not a scope on the other two. A fine-grained
+# PAT cannot carry package access at all, so GHCR needs its own classic PAT
+# (`read:packages`, and nothing else) — that is `GHCR_TOKEN`, alongside the other
+# two in the same credentials file.
+#
+# It was there, unused, from 2026-08-04 until 2026-08-15, because this wrapper
+# only ever selected by owner. Every `gh api /orgs/.../packages` therefore got a
+# Contents:READ token and 403'd, and an agent has no way to tell "the token I was
+# handed lacks this" from "this box cannot do this" — it reported the box could
+# not query GHCR and fell back to weaker evidence. Measured on the same call:
+# `GHCR_TOKEN` returns 200 with 60 packages, the owner token returns 403.
+#
 # Honest limit: `gh auth token` prints whatever is selected, so a determined
 # agent can still extract it. Scoping is what bounds the damage, not secrecy.
 set -euo pipefail
@@ -89,15 +101,48 @@ if [ -z "$owner" ]; then
             | sed -E 's#^(git@[^:]+:|https?://[^/]+/)([^/]+)/.*$#\2#' || true)
 fi
 
+# Is this call a Packages endpoint? Those need GHCR_TOKEN rather than an owner
+# token, and they are reachable ONLY through `gh api` — there is no `gh packages`.
+#
+# Every argument is scanned rather than just the first non-flag one, because
+# `gh api -H 'Accept: …' /orgs/x/packages` puts a header value where the path
+# would otherwise be, and matching positionally would silently miss it.
+#
+# The patterns are anchored on the three real path shapes instead of a bare
+# `*packages*`. A repository legitimately named "packages" would otherwise match
+# `/repos/owner/packages`, and be handed a token with NO contents access — a call
+# that works today would start failing.
+packages_endpoint() {
+    [ "${1:-}" = api ] || return 1
+    local a
+    for a in "$@"; do
+        case "$a" in
+            /user/packages*|user/packages*) return 0 ;;
+            /orgs/*/packages*|orgs/*/packages*) return 0 ;;
+            /users/*/packages*|users/*/packages*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 if [ -z "${GH_TOKEN:-}" ] && [ -r "$CREDS" ]; then
     # shellcheck disable=SC1090
     . "$CREDS"
-    case "$owner" in
-        iden2-com) [ -n "${GH_TOKEN_IDEN2:-}" ]   && export GH_TOKEN="$GH_TOKEN_IDEN2" ;;
-        pezware)   [ -n "${GH_TOKEN_PEZWARE:-}" ] && export GH_TOKEN="$GH_TOKEN_PEZWARE" ;;
-    esac
-    # Never leak the other org's token into the child process.
-    unset GH_TOKEN_IDEN2 GH_TOKEN_PEZWARE LINODE_TOKEN TF_VAR_tailscale_auth_key
+    if packages_endpoint "$@" && [ -n "${GHCR_TOKEN:-}" ]; then
+        # Deliberately independent of $owner: GHCR_TOKEN covers both orgs, so a
+        # packages call works from ~/src, outside any checkout, where the
+        # owner-based path has nothing to go on.
+        export GH_TOKEN="$GHCR_TOKEN"
+    else
+        case "$owner" in
+            iden2-com) [ -n "${GH_TOKEN_IDEN2:-}" ]   && export GH_TOKEN="$GH_TOKEN_IDEN2" ;;
+            pezware)   [ -n "${GH_TOKEN_PEZWARE:-}" ] && export GH_TOKEN="$GH_TOKEN_PEZWARE" ;;
+        esac
+    fi
+    # Never leak a token the call did not select into the child process. This
+    # list is a denylist over the credentials file, so it needs an entry for
+    # every secret added there — GHCR_TOKEN was added on 2026-08-04 and missed.
+    unset GH_TOKEN_IDEN2 GH_TOKEN_PEZWARE GHCR_TOKEN LINODE_TOKEN TF_VAR_tailscale_auth_key
 fi
 
 # ── Say what actually went wrong, before gh says something false ─────────────
