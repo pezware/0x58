@@ -92,9 +92,16 @@ eval "$(mise activate bash)" 2>/dev/null || true
 # --- npm-globals.txt ---
 echo "==> Generating npm-globals.txt"
 if command -v npm >/dev/null 2>&1; then
+    # Strip the path, KEEP the scope. `basename` was here until 2026-08-15 and it
+    # dropped the @scope, so `@openai/codex` was recorded as plain `codex` -- and
+    # `codex` on the public registry is an unrelated static-site generator from
+    # 2013. restore.sh reads this file and runs `npm install -g`, so the pair
+    # MANUFACTURED the impostor that shadowed the real codex on PATH. The runbook
+    # entry blamed a stray hand-installed package and recorded that a rebuilt box
+    # never had it; the rebuild is in fact what planted it.
     npm list -g --depth=0 --parseable 2>/dev/null \
         | tail -n +2 \
-        | xargs -I{} basename {} \
+        | sed -E 's#^.*/node_modules/##' \
         | sort \
         > "$SCRIPT_DIR/npm-globals.txt"
 else

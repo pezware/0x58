@@ -1,0 +1,15 @@
+# gh extensions, one owner/repo per line. Blank lines and # comments are ignored.
+#
+# These do NOT live inside the mise prefix. mise owns the gh binary
+# (~/.local/share/mise/installs/gh/...), while gh keeps extensions in the user
+# data directory (~/.local/share/gh/extensions/). A mise upgrade of gh therefore
+# cannot remove them -- and nothing reinstalls them either, which is why they
+# belong here. A rebuilt box came back with gh and zero extensions until
+# 2026-08-15; the devbox had never had a single one.
+#
+# Match the slug gh itself reports, because that is what restore.sh compares
+# against:  gh extension list | awk -F'\t' '{print $2}'
+
+github/gh-stack
+github/gh-gei
+mona-actions/gh-repo-stats

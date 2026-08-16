@@ -1,3 +1,2 @@
-codex
 corepack
 npm
