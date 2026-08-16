@@ -117,7 +117,13 @@ glow     = "latest"   # markdown viewer; was in ~/go/bin; aqua: charmbracelet/gl
 "github:go-acme/lego" = "latest"   # ACME/Let's Encrypt client; was in ~/go/bin
 
 # === AI / cloud SDKs ===
-codex    = "0.144.1"  # @openai/codex (npm backend — mise registry switched from aqua, which lacked codex-code-mode-host; 0.144+ required for gpt-5.6-sol)
+# Upgrade with `mise up codex`, NEVER with `codex update`. That self-updater writes
+# an npm global into the NODE prefix, and installs/node/22/bin sits at PATH position
+# 2 while installs/codex/*/bin sits at 55 -- so it silently shadows this entry. It
+# put 0.147.0 in front of the pinned 0.144.1 on the Mac. `latest` plus `mise up`
+# gives the same freshness with one owner, and minimum_release_age above is the
+# floor that replaces the old 0.144+ pin.
+codex    = "latest"   # @openai/codex (npm backend — mise registry switched from aqua, which lacked codex-code-mode-host)
 firebase = "latest"   # firebase-tools (aqua binary)
 wrangler = "latest"   # cloudflare wrangler (npm only)
 
