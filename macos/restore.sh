@@ -722,6 +722,11 @@ sync_kind_contexts() {
 }
 
 # --- Phase 3: Dev tools ---
+# Extensions that failed to install, collected here so the end of the run can
+# name them. File scope, and initialised, because `set -u` makes an unset
+# variable fatal the first time setup_dev_tools appends to it.
+GH_EXT_FAILED=""
+
 setup_dev_tools() {
     echo "==> Setting up dev tools"
 
@@ -886,6 +891,44 @@ setup_dev_tools() {
     if [[ -f "$SCRIPT_DIR/npm-globals.txt" ]] && command -v npm &>/dev/null; then
         echo "    npm: installing globals"
         xargs npm install -g < "$SCRIPT_DIR/npm-globals.txt" 2>/dev/null || true
+    fi
+
+    # gh extensions
+    #
+    # mise owns the gh BINARY; gh owns its EXTENSIONS, in the user data directory
+    # (~/.local/share/gh/extensions/). Nothing bridged the two, so a rebuilt box
+    # came back with gh and no extensions -- and it degrades quietly, exactly like
+    # the missing skills did: `gh stack` simply reports an unknown command.
+    #
+    # The subshell cd is load-bearing on the devbox. `gh extension install` has no
+    # --repo flag, so ~/.local/bin/gh picks its token from the origin remote of the
+    # WORKING DIRECTORY. Run from $HOME it selects none, and gh then advises
+    # `gh auth login` -- advice that is wrong on that box and that the wrapper does
+    # not correct, because `extension` sits in its quiet list. Run from this
+    # checkout the owner resolves to pezware and a token is handed over.
+    if [[ -f "$SCRIPT_DIR/gh-extensions.txt" ]] && command -v gh &>/dev/null; then
+        # Ask once. One API call per extension would rate-limit for no gain.
+        _gh_have=$(gh extension list 2>/dev/null | awk -F'\t' '{print $2}') || true
+        while read -r _ext || [[ -n "$_ext" ]]; do
+            [[ -z "$_ext" || "$_ext" == \#* ]] && continue
+            if grep -Fxq "$_ext" <<<"$_gh_have"; then
+                echo "    gh: $_ext present"
+                continue
+            fi
+            # Warn and continue -- neither abort nor swallow.
+            #
+            # `set -e` would abort here and strand every phase below (PAM, kube
+            # contexts, keymaster) over one unreachable download, on a script that
+            # is re-run on WORKING machines. A bare `|| true` is the other extreme,
+            # and that is exactly how the missing skills stayed invisible: the run
+            # looked clean. So a failure is named twice -- here, and again at the
+            # end of the run, where a human is still reading.
+            if ! (cd "$SCRIPT_DIR" && gh extension install "$_ext"); then
+                echo "    gh: FAILED $_ext" >&2
+                GH_EXT_FAILED+="$_ext "
+            fi
+        done < "$SCRIPT_DIR/gh-extensions.txt"
+        unset _ext _gh_have
     fi
 }
 
@@ -1115,6 +1158,17 @@ setup_src_sync() {
 }
 
 print_manual_steps() {
+    # Repeat the gh failures here. Phase 3 of twelve scrolls away long before the
+    # run ends, and an extension that never installed is silent afterwards --
+    # `gh stack` just reports an unknown command.
+    if [[ -n "${GH_EXT_FAILED:-}" ]]; then
+        echo ""
+        echo "  !! gh extensions NOT installed: ${GH_EXT_FAILED% }"
+        echo "     Installing one needs network, and on the devbox a token that"
+        echo "     the wrapper picks from the checkout's origin owner. Retry with:"
+        echo "         cd $SCRIPT_DIR && gh extension install <slug>"
+    fi
+
     echo ""
     echo "=========================================="
     echo "  Manual steps remaining"
