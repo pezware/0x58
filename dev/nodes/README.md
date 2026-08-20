@@ -495,7 +495,7 @@ owner and `gh` holds one credential per host:
 | token | owner | repos | expires |
 |---|---|---|---|
 | `gh-pat-devbox-pezware` | pezware | all | 2027-08-03 |
-| `gh-pat-devbox-iden2` | iden2-com | go-monorepo, platform-apis | 2026-11-01 |
+| `gh-pat-devbox-iden2` | iden2-com | 9 of 51, listed below | 2026-11-01 |
 
 Both: Metadata R · **Contents R** · Issues RW · Pull requests RW · Actions R.
 
@@ -504,11 +504,26 @@ HTTPS — verified, GitHub returns `403 Permission denied` — so every push mus
 through the SSH signing key. The token can open PRs and read CI; it cannot put
 code anywhere.
 
+**A repo outside the token's list answers `404`, not `403`.** GitHub hides a
+private repo rather than admit it exists, so `gh` reports *"Could not resolve to
+a Repository"* — which reads as a deleted or misspelled repo, not as a missing
+grant. Measured 2026-08-20, the iden2 token selects nine: `demos`,
+`documentation-website`, `external-documentation`, `go-monorepo`,
+`iden2-roadmap`, `infra-tf`, `platform-apis`, `restful-api-guidelines`,
+`spec-kit`. The other 42 in the org answer 404 by design. Widen the list in the
+token's own settings — the token value does not change, so nothing on the box
+needs an edit and no session needs a restart.
+
 [`gh-token-wrapper`](../../linux/gh-token-wrapper) is installed as
-`~/.local/bin/gh` (ahead of the mise shim) and picks the token from the origin
-remote's owner. It reads `~/.config/0x58/credentials.env`, which agents can also
-read — that is now the deliberate arrangement rather than an asymmetry we were
-relying on.
+`~/.local/bin/gh` (ahead of the mise shim) and picks the token from the
+repository's owner. It reads that owner from three places, in order: an explicit
+`--repo`/`-R`, then the arguments the command already carries (`gh api
+/repos/OWNER/…`, `gh api /orgs/OWNER/…`, `gh repo <verb> OWNER/REPO`), then the
+origin remote. A packages endpoint takes `GHCR_TOKEN` instead, whatever the
+owner. [`gh-token-wrapper-test`](../../linux/gh-token-wrapper-test) covers each
+source, and the shapes that must select nothing. The wrapper reads
+`~/.config/0x58/credentials.env`, which agents can also read — that is now the
+deliberate arrangement rather than an asymmetry we were relying on.
 
 Honest limit: agents can read the tokens, and `gh auth token` prints whichever is
 selected. Scoping is what bounds the damage, and it is doing all of the work here

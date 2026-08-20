@@ -127,8 +127,10 @@ The sandbox masks `~/.config/gh/hosts.yml`. Masking a file under a **missing**
 parent leaves the parent as a *file*, after which every `gh` call dies with
 `not a directory` — which reads like a corrupt install. `mkdir -p ~/.config/gh`.
 
-`gh` also selects its token from the origin remote's owner, so it must be run
-**inside a repo**. Outside one it has no token.
+`gh` also selects its token from the repository's owner. It reads that owner from
+`--repo`, from a `gh api` path (`/repos/OWNER/…`, `/orgs/OWNER/…`), or from the
+origin remote. Name the repo and it works from anywhere; name none of the three
+and it has no token.
 
 ## No Homebrew
 
