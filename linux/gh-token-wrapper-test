@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# Tests for gh-token-wrapper's owner inference.
+#
+#   ./linux/gh-token-wrapper-test
+#
+# No test framework, matching devbox-inbox-test next door. The contract under
+# test is "the token the call needs reaches the child, and no other token does",
+# which a stub gh on PATH can observe directly. A dependency-free runner stays
+# as portable as the script it covers and runs on the devbox with nothing
+# installed.
+#
+# Isolation is PATH plus TS_NODE_CREDS. Every assertion reads what the child
+# process was handed, never the wrapper's internals, because the child's
+# environment is the whole contract.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+WRAPPER="$HERE/gh-token-wrapper"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "expected [$3], got [$(printf '%s' "$2" | head -1)]" ;;
+    esac
+}
+
+new_dir() {
+    local d
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+    printf '%s' "$d"
+}
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        case "$d" in /tmp/* | /var/folders/*) rm -rf "$d" ;; esac
+    done
+}
+trap cleanup EXIT
+
+# A stub gh that reports what the wrapper handed it. It goes first on PATH, so
+# real_gh() resolves to it rather than to any gh installed on this machine.
+STUB="$(new_dir)"
+cat >"$STUB/gh" <<'STUB_EOF'
+#!/usr/bin/env bash
+printf 'TOKEN=%s\n' "${GH_TOKEN:-NONE}"
+printf 'LEAK IDEN2=%s PEZWARE=%s GHCR=%s\n' \
+    "${GH_TOKEN_IDEN2:-unset}" "${GH_TOKEN_PEZWARE:-unset}" "${GHCR_TOKEN:-unset}"
+STUB_EOF
+chmod 755 "$STUB/gh"
+
+CREDS="$(new_dir)/credentials.env"
+cat >"$CREDS" <<'CREDS_EOF'
+GH_TOKEN_IDEN2=tok-iden2
+GH_TOKEN_PEZWARE=tok-pezware
+GHCR_TOKEN=tok-ghcr
+CREDS_EOF
+
+# A directory with no origin remote, so only the arguments can name an owner.
+NOREPO="$(new_dir)"
+
+run() { # run <gh args...>
+    (cd "$NOREPO" && env -u GH_TOKEN PATH="$STUB:$PATH" \
+        TS_NODE_CREDS="$CREDS" "$WRAPPER" "$@" 2>&1)
+}
+
+echo "gh-token-wrapper"
+
+# --- an explicit --repo still outranks everything ----------------------------
+
+out="$(run issue view 61 --repo iden2-com/documentation-website)"
+assert_contains "--repo selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+out="$(run issue list -R pezware/0x58)"
+assert_contains "-R selects the owner's token" "$out" "TOKEN=tok-pezware"
+
+out="$(run issue list --repo=iden2-com/go-monorepo)"
+assert_contains "--repo= selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+out="$(run issue list --repo github.com/pezware/0x58)"
+assert_contains "a HOST/OWNER/REPO argument keeps the owner" "$out" "TOKEN=tok-pezware"
+
+# --- a gh api path names the owner, and the wrapper now reads it -------------
+
+out="$(run api /repos/iden2-com/go-monorepo)"
+assert_contains "api /repos/ selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+out="$(run api repos/pezware/0x58/issues)"
+assert_contains "api path without a leading slash still selects" "$out" "TOKEN=tok-pezware"
+
+out="$(run api /orgs/iden2-com/teams)"
+assert_contains "api /orgs/ selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+out="$(run api --method POST /repos/pezware/0x58/issues)"
+assert_contains "a flag before the path does not hide it" "$out" "TOKEN=tok-pezware"
+
+# --- gh repo takes its target positionally, not as a flag --------------------
+
+out="$(run repo view iden2-com/documentation-website)"
+assert_contains "repo view OWNER/REPO selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+out="$(run repo list pezware)"
+assert_contains "repo list OWNER selects the owner's token" "$out" "TOKEN=tok-pezware"
+
+out="$(run repo view --json name)"
+assert_contains "repo view with no target selects nothing" "$out" "TOKEN=NONE"
+
+# --- the shapes that must NOT select a token --------------------------------
+#
+# Each of these carries a slash where a loose parser would read an owner.
+
+out="$(run api "/search/issues?q=repo:iden2-com/go-monorepo")"
+assert_contains "a search query never selects a token" "$out" "TOKEN=NONE"
+
+out="$(run workflow run ci.yml --ref feature/branch)"
+assert_contains "a flag value with a slash never selects a token" "$out" "TOKEN=NONE"
+
+out="$(run api graphql -f query='{viewer{login}}')"
+assert_contains "a graphql call selects no owner token" "$out" "TOKEN=NONE"
+
+# --- packages remain a third principal, ahead of any owner -------------------
+
+out="$(run api /orgs/iden2-com/packages)"
+assert_contains "a packages endpoint still selects GHCR_TOKEN" "$out" "TOKEN=tok-ghcr"
+
+out="$(run api /users/arbeitandy/packages)"
+assert_contains "a user packages endpoint still selects GHCR_TOKEN" "$out" "TOKEN=tok-ghcr"
+
+# --- the origin remote is still the fallback --------------------------------
+
+REPODIR="$(new_dir)"
+git -C "$REPODIR" init -q
+git -C "$REPODIR" remote add origin git@github.com:iden2-com/go-monorepo.git
+out="$(cd "$REPODIR" && env -u GH_TOKEN PATH="$STUB:$PATH" \
+    TS_NODE_CREDS="$CREDS" "$WRAPPER" issue list 2>&1)"
+assert_contains "the origin remote still selects the owner's token" "$out" "TOKEN=tok-iden2"
+
+# --- no token the call did not select ever reaches the child -----------------
+
+out="$(run api /repos/iden2-com/go-monorepo)"
+assert_contains "unselected tokens never reach the child" "$out" \
+    "LEAK IDEN2=unset PEZWARE=unset GHCR=unset"
+
+echo
+printf '%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

@@ -60,6 +60,61 @@ real_gh() {
 
 GH=$(real_gh) || { echo "gh-wrapper: cannot find the real gh on PATH" >&2; exit 127; }
 
+# Owner out of a `gh api` path.
+#
+# Anchored on the two path shapes that carry an ORG owner, the same way
+# packages_endpoint() below is anchored and for the same reason: a loose
+# `*/OWNER/*` match reads the wrong field. `/search/issues?q=repo:iden2-com/x`
+# would yield "issues?q=repo:iden2-com". Anchoring turns a wrong answer into a
+# miss, and a miss costs only the warning this script already prints.
+#
+# `/users/…` is deliberately absent. It names a person, never one of the two
+# mapped orgs, so no owner token applies — and `/users/*/packages*` already
+# belongs to packages_endpoint().
+#
+# gh accepts a path with or without the leading slash, so both forms match. The
+# query string is cut first, or `/orgs/iden2-com?per_page=1` yields an owner
+# with the query still attached to it.
+owner_from_api_path() {
+    [ "${1:-}" = api ] || return 1
+    local a o
+    for a in "$@"; do
+        a="${a%%\?*}"
+        case "$a" in
+            /repos/*|repos/*|/orgs/*|orgs/*) ;;
+            *) continue ;;
+        esac
+        o=$(printf '%s' "${a#/}" | awk -F/ '{ print $2 }')
+        [ -n "$o" ] || continue
+        printf '%s' "$o"
+        return 0
+    done
+    return 1
+}
+
+# Owner out of `gh repo <verb> <target>` — the one subcommand whose target is
+# positional rather than a --repo flag:
+#
+#     gh repo view OWNER/REPO    gh repo clone OWNER/REPO    gh repo list OWNER
+#
+# Only the argument directly after the verb is read, and only when it is not a
+# flag. Scanning every argument would re-open the trap these two functions
+# exist to avoid: a flag VALUE holding a slash — `--ref feature/branch` — is
+# indistinguishable from OWNER/REPO once it is read out of position.
+#
+# A target naming no mapped org selects no token, which is what happens today.
+owner_from_repo_positional() {
+    [ "${1:-}" = repo ] || return 1
+    local target="${3:-}"
+    case "$target" in
+        ''|-*) return 1 ;;
+    esac
+    # `list` takes a bare OWNER; every other verb takes [HOST/]OWNER/REPO.
+    printf '%s' "$target" \
+        | sed -E 's#^[a-z]+://##; s#/+$##' \
+        | awk -F/ 'NF>=2 { print $(NF-1); next } { print $1 }'
+}
+
 # An explicit --repo/-R wins over the working directory, because it is a
 # STRONGER statement of intent than where the shell happens to be.
 #
@@ -92,6 +147,20 @@ if [ -n "$repo_arg" ]; then
     owner=$(printf '%s' "$repo_arg" \
             | sed -E 's#^[a-z]+://##; s#/+$##' \
             | awk -F/ 'NF>=2 { print $(NF-1) }')
+fi
+
+# Then the owner the command's own arguments already carry. This was the second
+# half of the same gap. Both
+#     gh api /repos/iden2-com/<repo>
+#     gh repo view iden2-com/<repo>
+# name the repository unambiguously, and the wrapper read neither — so from
+# outside a checkout they got no token, and the warning below sent the agent
+# after an auth problem that was not there.
+if [ -z "$owner" ]; then
+    owner=$(owner_from_api_path "$@" || true)
+fi
+if [ -z "$owner" ]; then
+    owner=$(owner_from_repo_positional "$@" || true)
 fi
 
 # Fall back to the origin remote, from either ssh or https form. Falls through
@@ -176,6 +245,7 @@ if [ -z "${GH_TOKEN:-}" ]; then
 gh-wrapper: no token selected — no --repo given and not inside a git repository.
   This wrapper picks a token from the repository's OWNER. Give it one, either way:
       gh <cmd> --repo iden2-com/<repo>      # works from anywhere
+      gh api /repos/iden2-com/<repo>        # the path names the owner too
       cd ~/src/iden2/<repo> && gh <cmd>     # uses the origin remote
   Do NOT run `gh auth login`, and do NOT reach for a PAT: there is no stored
   credential on this box by design. An empty ~/.config/gh is correct here.
