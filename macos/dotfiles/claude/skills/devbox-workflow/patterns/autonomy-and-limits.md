@@ -34,12 +34,18 @@ reachable — it will tell you the wrong thing.
 
 ## Tokens
 
-Two fine-grained PATs, selected automatically by the origin remote's owner:
+Two fine-grained PATs, selected automatically from the repository's owner. The
+wrapper reads that owner from `--repo`, from a `gh api` path, or from the origin
+remote.
 
 | owner | scope |
 |---|---|
 | `pezware` | all repos |
-| `iden2-com` | `go-monorepo`, `platform-apis` only |
+| `iden2-com` | 9 of 51 repos; `dev/nodes/README.md` lists them |
+
+**A repo outside the list answers `404`, not `403`.** GitHub hides a private repo
+rather than admit it exists, so `gh` says *"Could not resolve to a Repository"*.
+Read that as a missing grant, not a missing repo.
 
 Both are **Metadata R · Contents R · Issues RW · Pull requests RW · Actions R**.
 

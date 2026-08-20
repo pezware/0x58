@@ -23,12 +23,12 @@ Keychain. None of the mechanics below apply.
 
 ## The loop
 
-**1 — Read the issue.** `gh` picks its token from the origin remote's owner, so
-run it **inside the repo**. Outside a repo it has no token and fails confusingly.
+**1 — Read the issue.** `gh` picks its token from the repository's owner, and it
+reads that owner from `--repo`, from a `gh api` path, or from the origin remote.
+Name the repo and it works from anywhere. Name none of them and it has no token.
 
 ```bash
-cd ~/src/<org>/<repo>
-~/.local/bin/gh issue view <n> --json title,body,labels,milestone
+~/.local/bin/gh issue view <n> --repo <org>/<repo> --json title,body,labels,milestone
 ```
 
 **`gh` is the one tool that must not come from the mise shim.** `~/.local/bin/gh`
