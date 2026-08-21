@@ -601,6 +601,17 @@ SSHCFG
             cp -v "$LINUX_DIR/containers-registries.conf" ~/.config/containers/registries.conf
         fi
 
+        # Go toolchain defaults. `go` reads this file itself on every run, and
+        # that is the whole reason it lives here rather than in ~/.bashrc: agent
+        # Bash calls source a shell snapshot that exports PATH and nothing else,
+        # so a shell export cannot reach them. Without the -buildvcs=false it
+        # carries, `go build` fails in every worktree under ~/src -- see the
+        # header of the file for the mechanism.
+        if [[ -f "$LINUX_DIR/go-env" ]]; then
+            mkdir -p ~/.config/go
+            cp -v "$LINUX_DIR/go-env" ~/.config/go/env
+        fi
+
         # Stamp the apt baseline once, so drift reports packages someone chose
         # rather than the several hundred a Debian base install ships with.
         if [[ ! -f ~/.config/0x58/apt-baseline ]] && command -v apt-mark >/dev/null 2>&1; then

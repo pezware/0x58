@@ -96,6 +96,7 @@ while IFS=: read -r repo_rel live_path; do
     fi
 done <<'PAIRS'
 linux/containers-registries.conf:~/.config/containers/registries.conf
+linux/go-env:~/.config/go/env
 dev/nodes/modules/linode-node/common.sh:/usr/local/sbin/node-common.sh
 dev/nodes/roles/devbox/bootstrap.sh:/usr/local/sbin/node-bootstrap
 PAIRS
