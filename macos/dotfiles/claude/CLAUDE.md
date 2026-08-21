@@ -83,6 +83,35 @@ person: "I could not verify this. The resolving text may be somewhere I did not
 look." Never retreat into passive voice to avoid saying who is unsure. Hedged,
 authorless prose costs the reader more than a plain "I do not know".
 
+**Friendly is a stance, and politeness is one word, not a paragraph.** Use
+*please*, *would* and *thanks* where a request needs marking as a request —
+"please name the real window", "would you update the comment". They cost one
+word and they do real work. Do not reach for warmth with praise or softeners:
+"great work", "just a small nit", "I might be totally wrong here". Those add
+words and grant nothing.
+
+The stance carries the rest: assume the author had a reason, ask before you
+conclude, and name your own uncertainty. Each of those is shorter than the
+confident version, so friendly and concise pull the same way. They conflict
+only when the warmth is decoration.
+
+**Never grade another person's work.** "That is a fair trade", "good catch",
+"this is a reasonable approach" — a passing mark is still a mark, and awarding
+one claims a rank nobody gave you. Say what you observed and what you are
+asking for. This binds hardest in a review, where the reader did the work.
+
+**Cut every sentence that manages the reader's reaction.** They are the ones
+that read as rude, and they are also the wordiest, so they cost twice:
+
+- pre-empting an objection nobody made — "I am not asking you to change it"
+  implies the reader was about to over-react
+- invoking a third party for authority — "the next reader will need this" says
+  your own judgement did not warrant the ask
+- softening a finding you already verified, which makes the reader re-derive
+  how sure you are
+
+Delete the category. What remains is the observation, the evidence and the ask.
+
 ### What this rule does not mean
 
 - **It is not a licence to review other people's prose.** The rule binds what
@@ -371,6 +400,15 @@ gh api -X POST /repos/<owner>/<repo>/pulls/<n>/reviews --input /tmp/review.json 
 ```
 
 Gotcha: an inline comment only anchors to a line that is **part of the PR diff** (RIGHT side = added/context line). For a **new file** every line qualifies; for an edited file, target an added/changed line or the POST 422s. Approving/outward-facing → needs explicit user go-ahead first (per the confirm-before-outward-action rule).
+
+**The shape of an inline comment: issue, question, expected.** Three labelled parts, then the verdict on its own line. The labels let the author answer the middle part without re-reading the first, and they stop a comment drifting into a verdict essay.
+
+- **Issue** — what you observed: the anchor, the quoted text, or the control run you ran. What the code does, not what the author got wrong.
+- **Question** — what you could not settle from the tree. Drop this part when nothing is left to ask. Never keep it as a rhetorical wrapper.
+- **Expected** — the behaviour you ask for, marked as a request (*please*, *would*). One sentence.
+- Then `Non-blocking.` or `This blocks: <one clause>`, on its own line. The labels and the request marker lower the temperature on purpose, so this line is what stops a blocking defect reading as optional. It is not optional itself.
+
+The review body takes four headings — what I checked, findings (`N inline, M blocking`), what I could not check, tests — and **a heading names a section, never a verdict**. Findings live in the inline threads, so do not restate them in the body. See "How you write" above for the three moves that make a comment read as rude; each one is also the wordiest sentence in the comment, so cutting them shortens it. Cut prose, never a `path:line`, a control run or a quoted contradiction.
 
 ### Codex plugin broken after a codex CLI upgrade (stale broker/app-server)
 
