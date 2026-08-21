@@ -1,0 +1,39 @@
+# 0x58 — Go toolchain defaults for the devbox, installed to ~/.config/go/env
+#
+# The `go` binary reads this file itself on every invocation. That is why it is
+# the right channel here: it needs no shell. A Claude Code agent's Bash call
+# sources a shell snapshot that exports PATH and nothing else, so an
+# `export GOFLAGS=...` in ~/.bashrc never reaches an agent. mise `[env]` misses
+# them too, because the snapshot bakes PATH to mise `installs/` paths and mise
+# never activates in that shell.
+#
+# Format: KEY=value, one per line. Go ignores '#' lines, and `go env -w` appends
+# without stripping them, so this reason survives a later write.
+#
+# Consumed by macos/restore.sh (Linux branch). Checked by linux/devbox-drift.
+
+# === GOFLAGS: -buildvcs=false ===
+#
+# Without it, `go build` fails in EVERY git worktree under ~/src.
+#
+# The Linux sandbox (bubblewrap) blocks a path by binding /dev/null over it, and
+# a bind mount needs a destination. bwrap creates missing destinations on the
+# host, so masking ~/src/.git/config first runs `mkdir -p ~/src/.git`. The
+# session then unlinks the files it created and leaves the directory. ~/src/.git
+# is that residue: an empty directory that returns seconds after any delete.
+#
+# Go's VCS detection requires .git to be a DIRECTORY. A worktree's .git is a
+# FILE holding a gitdir pointer, so Go walks past it, reaches ~/src/.git,
+# concludes it found a repository, runs `git status` in ~/src, and gets
+# `fatal: not a git repository` — exit 128. The build stops with "error
+# obtaining VCS status". The main checkout is safe: its real .git directory
+# stops the walk first. Only worktrees break, which is what makes it confusing.
+#
+# The dropped stamp costs nothing. No file in go-monorepo calls
+# debug.ReadBuildInfo. internal/buildinfo resolves identity from ldflags
+# (-X main.Version) or from SERVICE_VERSION/GIT_COMMIT/RELEASE_TIME at deploy,
+# and nine .air.toml files already pass -buildvcs=false for the same reason.
+#
+# Linux only. macOS enforces its sandbox by policy rather than by mounts, so it
+# creates no such directory and needs no flag.
+GOFLAGS=-buildvcs=false

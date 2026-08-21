@@ -39,6 +39,7 @@ map_dest() {
     case "$1" in
         "$HOME/.config/containers/registries.conf") echo "linux/containers-registries.conf" ;;
         "$HOME/.claude/settings.json")              echo "linux/claude-settings.json" ;;
+        "$HOME/.config/go/env")                     echo "linux/go-env" ;;
         *) return 1 ;;
     esac
 }
