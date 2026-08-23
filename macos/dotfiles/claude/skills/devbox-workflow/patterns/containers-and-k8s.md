@@ -116,15 +116,35 @@ and `/user/packages`, from any directory, so **just call it**:
 gh api "/orgs/iden2-com/packages?package_type=container" --jq 'length'   # 30 (of 60)
 ```
 
-**The shim is podman, so YOU authenticate.** `macos/restore.sh` installs it as
-`ln -sf podman ~/.local/share/kind-shims/docker`, so `docker` and `podman` are one
-binary. It reads credentials from files on your side of the sandbox. No service
-authenticates for you.
+**The client supplies the credential, so YOU authenticate.** The shim is not the
+podman binary. `~/.local/share/kind-shims/podman` is a script, and `docker` is a
+symlink to it. It ends in:
+
+```bash
+exec /usr/bin/podman --remote --url "unix://${sock}" "$@"
+```
+
+So every pull is **remote** to the rootless service. The service does not
+authenticate on your behalf. Measured on 2026-08-23 with an empty client auth
+file, which makes the client send nothing:
+
+```
+podman pull --authfile /tmp/empty-auth.json ghcr.io/iden2-com/mirror/caddy:2.11.4-alpine
+  -> unable to retrieve auth token: invalid username/password: unauthorized
+```
+
+That is the control that settles it. `--remote` moves the *container work* out of
+the sandbox, not the *authentication*.
 
 An earlier version of this section said the opposite — that the podman **service**
 holds the login, and that a `docker pull` through the shim carries no credentials.
 That was wrong. On 2026-08-23 it cost a session: told not to log in, and given no
 working alternative, it logged in with the first iden2 token it found.
+
+PR #93 then corrected the conclusion with the wrong reason. It said `docker` is a
+symlink to the podman *binary*. It is a symlink to the forced-remote *script*
+above. The conclusion held; the mechanism did not, and the control run is what
+should have decided it either way.
 
 **Which file podman reads, in order.** It stops at the first file holding an entry
 for the registry:
@@ -216,13 +236,34 @@ done
 podman login --get-login ghcr.io          # expect: arbeitandy
 ```
 
-**Open question: what the sandbox sees.** On 2026-08-23 a sandboxed session got
-`denied` while an unsandboxed `podman pull` of the same tag succeeded, before any
-fix. The sandbox is therefore the difference, and I did not prove the mechanism.
-Claude Code treats `~/.docker/config.json` as a credential file and has no
-awareness of `containers/auth.json`, which points at masking. I did not measure
-it. If you meet this, run the loop above **inside** the sandbox and record which
-files are readable.
+**Settled: the sandbox is not the differentiator.** The kindtest session measured
+this from inside the sandbox on 2026-08-23. Everything is readable:
+
+```
+~/.config/0x58/credentials.env             READABLE  438 bytes
+~/.cache/podman-run/containers/auth.json   READABLE  119 bytes
+~/.config/containers/auth.json             READABLE  119 bytes
+~/.docker/config.json                      READABLE   17 bytes
+GHCR_TOKEN visible in-sandbox, fingerprint matches
+bare `podman pull` -> OK
+```
+
+A bare pull works in the sandbox. No sandbox-config change is needed, and no
+`--creds` is needed. An earlier draft of this section guessed at masking, on the
+strength of Claude Code knowing `~/.docker/config.json` and not
+`containers/auth.json`. The guess was wrong, and it was labelled a guess.
+
+**The real trap: do not override `$XDG_RUNTIME_DIR` again.** `kind-shims/env.sh`
+already points it at `~/.cache/podman-run`, and podman reads
+`$XDG_RUNTIME_DIR/containers/auth.json` **first**. A session that overrides it a
+second time — a scratch dir, the usual reflex after a read-only error —
+silently relocates the credential lookup to an empty file. That session then runs
+`podman login`, which fills the scratch file with whatever token it has, and every
+retry re-confirms its own broken state. That is the whole of the 2026-08-23
+failure. The box credential was correct throughout.
+
+So when a pull is denied: check what `$XDG_RUNTIME_DIR` is before you check
+anything else.
 
 The upstream fallback many Dockerfiles document (e.g. the did-sync init container
 taking `BASE_IMAGE=hashicorp/vault:1.20.4`) still works and is still a reasonable
