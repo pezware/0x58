@@ -200,9 +200,10 @@ Container-backed tests used to be impossible here. They are not any more:
 sandbox. You still need a `docker` shim before anything pulls — it is in
 [containers and the k8s tier](patterns/containers-and-k8s.md), along with what
 that open socket costs. Read it before your first container command; skipping it
-turns a five-minute setup into an hour of misattributed errors. You do **not**
-need a ghcr login: that happened server-side, and private `ghcr.io` mirrors pull
-without any credential of yours.
+turns a five-minute setup into an hour of misattributed errors. The `ghcr.io`
+mirrors are `internal`, and the shim is podman, so **your** process presents the
+credential. Use `GHCR_TOKEN`; the two `GH_TOKEN_*` values are fine-grained PATs
+and ghcr refuses them.
 
 **7 — Comment on the issue or PR.** Report what actually happened, including
 failures and skipped steps.
@@ -330,7 +331,7 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
 | container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
-| ghcr pull 403s | the podman **service** holds the login, not you — check `podman login --get-login ghcr.io` from an unsandboxed shell before suspecting scopes. A rebuild wipes it. Do NOT try to log in with a token yourself |
+| ghcr pull says `denied` | the shim IS podman, so **you** authenticate from auth files — read them in precedence order first. Use `GHCR_TOKEN` (classic `ghp_`); `GH_TOKEN_IDEN2` and `GH_TOKEN_PEZWARE` are fine-grained and carry no packages permission. `Login Succeeded!` proves nothing. See `patterns/containers-and-k8s.md` |
 | `kubectl` cannot reach a kind cluster | loopback TCP is still blocked (separate from AF_UNIX) → drive the cluster from a toolbox container on the `kind` network, not by fixing the kubeconfig |
 | `pnpm install` refuses a fresh version | the 7-day supply-chain cooldown, working as intended → add a dated `minimumReleaseAgeExclude` entry, never lower the floor |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
