@@ -154,6 +154,36 @@ Measured against `mirror/waltid-issuer-api:0.20.0` on 2026-08-23:
 credential, including one that it then refuses every pull with. Judge a login by a
 pull, never by its own output.
 
+**Name the token you hold, in one request.** The response headers separate the two
+kinds:
+
+```bash
+curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user \
+  | grep -iE '^(x-oauth-scopes|x-accepted-github-permissions)'
+```
+
+| header you get back | token kind | ghcr pull |
+|---|---|---|
+| `x-oauth-scopes: read:packages` | classic | works |
+| `x-accepted-github-permissions: allows_permissionless_access=true`, no `x-oauth-scopes` | fine-grained | `denied` |
+
+**`--creds` settles it with no precedence ambiguity.** It bypasses every auth
+file, so it separates "wrong token" from "podman read the wrong file":
+
+```bash
+set -a; . ~/.config/0x58/credentials.env; set +a
+podman pull --creds "arbeitandy:$GHCR_TOKEN" ghcr.io/iden2-com/mirror/postgres:17.2
+```
+
+If `--creds` works and a bare `docker pull` does not, the credential is fine and
+an auth file is the problem. Read them in the order above.
+
+**Do not run `podman login` to fix a denial.** It writes the credential you pass
+to `$XDG_RUNTIME_DIR/containers/auth.json`, which podman reads **first**. A login
+with a fine-grained PAT therefore overwrites a working credential and guarantees
+the denial. On 2026-08-23 a session did exactly this, then read the resulting
+403 as proof that the box had no packages access.
+
 **podman prints the error code, not the message.** Both 403 rows above reach you
 as `reading manifest 0.20.0 in ghcr.io/...: denied`, so the terminal cannot
 separate a scope-less token from no token. Read the manifest directly to see
@@ -213,13 +243,26 @@ carry into that conversation if it reopens. Scope any flip to the images that
 mirror open-source upstreams; `mirror/dhi-*` are Docker Hardened Images, a paid
 product, so their visibility is a licensing question rather than a config one.
 
-**A green kind stack proves nothing about ghcr.** walt.id is the **only**
-`ghcr.io` reference in `dev/kind`. redis comes from `docker.io/bitnami`, postgres
-from `mirror.gcr.io`, keycloak from `quay.io`, vault from `docker.io/hashicorp`,
-and every iden2 service is built locally as `docker.io/iden2-kind/*:dev`. So
-`mirror/waltid-{issuer,wallet,verifier}-api` are the only images that can expose a
-ghcr credential fault. "The other mirrors are fine" means only that nothing else
-asked.
+**A denial is per-token, never per-package.** One bad credential denies **every**
+`ghcr.io/iden2-com/*` ref at once. So do not read a single failing image as a
+problem with that image, and do not read a passing stack as proof that ghcr works.
+
+**What in `dev/kind` needs ghcr.** Two things: the warm node image
+`mirror/kind-node-warm:<key>`, which `task kind:up` pulls before anything else
+runs, and the three `mirror/waltid-*` images. The helm-deployed infra does not —
+redis comes from `docker.io/bitnami`, postgres from `mirror.gcr.io`, keycloak from
+`quay.io`, vault from `docker.io/hashicorp`, and every iden2 service builds
+locally as `docker.io/iden2-kind/*:dev`.
+
+Outside `dev/kind`, `docker-compose/infra.yml` and `synth-obs.yml` also pull
+`mirror/vault`, `mirror/waltid-wallet-api` and
+`mirror/opentelemetry-collector-contrib`, and `.github/actions/docker-bootstrap`
+pulls `mirror/buildkit`.
+
+I got this wrong on 2026-08-23 and it reached `main`. I wrote that walt.id was the
+only ghcr reference in `dev/kind`, having grepped the charts and missed
+`kind-node-warm` in the Taskfile. The kindtest session then measured what I should
+have: `mirror/postgres`, `mirror/vault` and `mirror/buildkit` were denied too.
 
 ## kind
 
