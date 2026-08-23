@@ -116,15 +116,35 @@ and `/user/packages`, from any directory, so **just call it**:
 gh api "/orgs/iden2-com/packages?package_type=container" --jq 'length'   # 30 (of 60)
 ```
 
-**The shim is podman, so YOU authenticate.** `macos/restore.sh` installs it as
-`ln -sf podman ~/.local/share/kind-shims/docker`, so `docker` and `podman` are one
-binary. It reads credentials from files on your side of the sandbox. No service
-authenticates for you.
+**The client supplies the credential, so YOU authenticate.** The shim is not the
+podman binary. `~/.local/share/kind-shims/podman` is a script, and `docker` is a
+symlink to it. It ends in:
+
+```bash
+exec /usr/bin/podman --remote --url "unix://${sock}" "$@"
+```
+
+So every pull is **remote** to the rootless service. The service does not
+authenticate on your behalf. Measured on 2026-08-23 with an empty client auth
+file, which makes the client send nothing:
+
+```
+podman pull --authfile /tmp/empty-auth.json ghcr.io/iden2-com/mirror/caddy:2.11.4-alpine
+  -> unable to retrieve auth token: invalid username/password: unauthorized
+```
+
+That is the control that settles it. `--remote` moves the *container work* out of
+the sandbox, not the *authentication*.
 
 An earlier version of this section said the opposite — that the podman **service**
 holds the login, and that a `docker pull` through the shim carries no credentials.
 That was wrong. On 2026-08-23 it cost a session: told not to log in, and given no
 working alternative, it logged in with the first iden2 token it found.
+
+PR #93 then corrected the conclusion with the wrong reason. It said `docker` is a
+symlink to the podman *binary*. It is a symlink to the forced-remote *script*
+above. The conclusion held; the mechanism did not, and the control run is what
+should have decided it either way.
 
 **Which file podman reads, in order.** It stops at the first file holding an entry
 for the registry:
