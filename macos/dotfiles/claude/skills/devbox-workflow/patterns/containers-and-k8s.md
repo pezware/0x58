@@ -116,32 +116,83 @@ and `/user/packages`, from any directory, so **just call it**:
 gh api "/orgs/iden2-com/packages?package_type=container" --jq 'length'   # 30 (of 60)
 ```
 
-**You do not need to log in, and you do not need the token.** The login already
-happened, on the other side of the sandbox:
+**The shim is podman, so YOU authenticate.** `macos/restore.sh` installs it as
+`ln -sf podman ~/.local/share/kind-shims/docker`, so `docker` and `podman` are one
+binary. It reads credentials from files on your side of the sandbox. No service
+authenticates for you.
 
-- `~/.config/containers/auth.json` (0600) holds it, written once by `podman login`.
-- The podman **service** runs outside the sandbox, so *it* is the process that
-  authenticates. Your `docker pull` through the shim carries no credentials and
-  does not need to.
+An earlier version of this section said the opposite — that the podman **service**
+holds the login, and that a `docker pull` through the shim carries no credentials.
+That was wrong. On 2026-08-23 it cost a session: told not to log in, and given no
+working alternative, it logged in with the first iden2 token it found.
 
-That is the same property that lets `gh` use a token you cannot read: the work is
-done by something the sandbox does not contain. Verified end to end on
-2026-08-04 — a raw `POST /images/create` on the socket with **no**
-`X-Registry-Auth` header pulled a private image, and so did `docker pull` through
-the shim above.
+**Which file podman reads, in order.** It stops at the first file holding an entry
+for the registry:
 
-So just pull:
+1. `$REGISTRY_AUTH_FILE`, or `--authfile`
+2. `$XDG_RUNTIME_DIR/containers/auth.json` — that is
+   `~/.cache/podman-run/containers/auth.json` once `kind-shims/env.sh` is sourced,
+   **not** `/run/user/1000/...`
+3. `~/.config/containers/auth.json`
+4. `~/.docker/config.json`
+
+A wrong credential high in that list beats a correct one below it. That is how a
+`podman login` makes a working box stop working.
+
+**Use `GHCR_TOKEN`. Never `GH_TOKEN_IDEN2` or `GH_TOKEN_PEZWARE`.** Both of those
+are fine-grained (`github_pat_`, 93 characters) and carry no packages permission,
+for the reason given above. `GHCR_TOKEN` is classic (`ghp_`, 40 characters).
+Measured against `mirror/waltid-issuer-api:0.20.0` on 2026-08-23:
+
+| credential | ghcr manifest read |
+|---|---|
+| `GHCR_TOKEN` (classic, `read:packages`) | **200** |
+| `GH_TOKEN_IDEN2` (fine-grained) | 403 `DENIED: requested access to the resource is denied` |
+| no credential | 403 `DENIED: invalid token` |
+
+**`Login Succeeded!` is not evidence.** The ghcr `/v2/` endpoint accepts any
+credential, including one that it then refuses every pull with. Judge a login by a
+pull, never by its own output.
+
+**podman prints the error code, not the message.** Both 403 rows above reach you
+as `reading manifest 0.20.0 in ghcr.io/...: denied`, so the terminal cannot
+separate a scope-less token from no token. Read the manifest directly to see
+which:
+
+```bash
+set -a; . ~/.config/0x58/credentials.env; set +a
+T=$(curl -s -u "arbeitandy:$GHCR_TOKEN" \
+  "https://ghcr.io/token?service=ghcr.io&scope=repository:iden2-com/mirror/vault:pull" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" \
+  https://ghcr.io/v2/iden2-com/mirror/vault/manifests/1.20.4      # expect 200
+```
+
+So pull:
 
 ```bash
 docker pull ghcr.io/iden2-com/mirror/postgres:17.2
 ```
 
-If a pull 403s, do **not** reach for the token. Check the service-side login from
-an unsandboxed shell — a missing login looks exactly like a scope problem:
+If the pull fails, read the auth files in precedence order before you change
+anything:
 
 ```bash
+. ~/.local/share/kind-shims/env.sh
+for f in "$XDG_RUNTIME_DIR/containers/auth.json" ~/.config/containers/auth.json \
+         ~/.docker/config.json; do
+    printf '%s -> ' "$f"; [ -r "$f" ] && wc -c < "$f" || echo UNREADABLE
+done
 podman login --get-login ghcr.io          # expect: arbeitandy
 ```
+
+**Open question: what the sandbox sees.** On 2026-08-23 a sandboxed session got
+`denied` while an unsandboxed `podman pull` of the same tag succeeded, before any
+fix. The sandbox is therefore the difference, and I did not prove the mechanism.
+Claude Code treats `~/.docker/config.json` as a credential file and has no
+awareness of `containers/auth.json`, which points at masking. I did not measure
+it. If you meet this, run the loop above **inside** the sandbox and record which
+files are readable.
 
 The upstream fallback many Dockerfiles document (e.g. the did-sync init container
 taking `BASE_IMAGE=hashicorp/vault:1.20.4`) still works and is still a reasonable
@@ -156,8 +207,19 @@ and a proven rebuild, not on hiding a read-only scope. Do not treat finding it
 there as a vulnerability report.
 
 The packages are `internal` visibility, which is why a token is needed at all.
-Making `mirror/*` public would remove the need entirely — they mirror public
-upstream images — and remains the cleaner fix if it is ever worth the change.
+Making `mirror/*` public would remove the need entirely for most of them, but
+Andy declined it on 2026-08-23: the mirrors stay internal for now. Two things to
+carry into that conversation if it reopens. Scope any flip to the images that
+mirror open-source upstreams; `mirror/dhi-*` are Docker Hardened Images, a paid
+product, so their visibility is a licensing question rather than a config one.
+
+**A green kind stack proves nothing about ghcr.** walt.id is the **only**
+`ghcr.io` reference in `dev/kind`. redis comes from `docker.io/bitnami`, postgres
+from `mirror.gcr.io`, keycloak from `quay.io`, vault from `docker.io/hashicorp`,
+and every iden2 service is built locally as `docker.io/iden2-kind/*:dev`. So
+`mirror/waltid-{issuer,wallet,verifier}-api` are the only images that can expose a
+ghcr credential fault. "The other mirrors are fine" means only that nothing else
+asked.
 
 ## kind
 
