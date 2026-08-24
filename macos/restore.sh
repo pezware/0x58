@@ -1194,19 +1194,41 @@ setup_gh_context() {
     install -m 755 "$BIN_DIR/gh-context" ~/.local/bin/gh-context
     echo "    installed: ~/.local/bin/gh-context (--read, --kind, --scan-only)"
 
-    # The SessionStart hook is what closes the loop: posting only pays off if the
-    # next session is told the comments exist. Linux gets it from
-    # claude-settings.json, which this script merges. macOS keeps its
-    # ~/.claude/settings.json outside this repo -- ~/.claude is a symlink to
-    # ~/src/claude there and is the source of truth -- so say what is missing
-    # rather than writing into it.
-    if [[ "$PLATFORM" == "macos" ]]; then
-        if grep -q 'gh-context --session-json' ~/.claude/settings.json 2>/dev/null; then
-            echo "    hook: SessionStart read-back wired"
+    # worktree-guard and worktree-sweep answer the same class of problem for the
+    # OTHER rule this repo keeps restating: work in a worktree, and clean it up.
+    #
+    # The rule is in three CLAUDE.md files, in the strongest terms any of them
+    # use, and it names its own failure -- an edit on main makes src-sync skip
+    # the repo, silently, hourly. It was skipped again on 2026-08-23: commit
+    # 2d7815d put 117 lines on main in the devbox .claude checkout, with a
+    # Claude-Session trailer on it. Claude Code gates this for BACKGROUND
+    # sessions only (worktree.bgIsolation); the devbox agent is interactive.
+    local _h
+    for _h in worktree-guard worktree-sweep; do
+        if [[ -f "$BIN_DIR/$_h" ]]; then
+            install -m 755 "$BIN_DIR/$_h" ~/.local/bin/"$_h"
         else
-            echo "    hook: SessionStart read-back NOT wired — add to ~/.claude/settings.json:"
-            echo "          SessionStart -> command: \$HOME/.local/bin/gh-context --session-json"
+            echo "    $_h: MISSING from $BIN_DIR — skipped" >&2
         fi
+    done
+    unset _h
+    echo "    installed: ~/.local/bin/worktree-guard (PreToolUse gate), worktree-sweep"
+
+    # Linux gets the hooks from claude-settings.json, which this script merges.
+    # macOS keeps its ~/.claude/settings.json outside this repo -- ~/.claude is a
+    # symlink to ~/src/claude there and is the source of truth -- so say what is
+    # missing rather than writing into it.
+    if [[ "$PLATFORM" == "macos" ]]; then
+        local _s=~/.claude/settings.json
+        grep -q 'gh-context --session-json' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart context read-back wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/gh-context --session-json" >&2
+        grep -q 'worktree-guard' "$_s" 2>/dev/null \
+            && echo "    hook: PreToolUse worktree gate wired" \
+            || echo "    hook: MISSING PreToolUse(Edit|Write) -> \$HOME/.local/bin/worktree-guard" >&2
+        grep -q 'worktree-sweep --session-json' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart worktree sweep wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/worktree-sweep --session-json" >&2
     fi
 }
 

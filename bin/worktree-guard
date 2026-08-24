@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""worktree-guard — refuse an edit to a tracked file in a checkout that sits on
+its default branch. Wired as a PreToolUse hook on Edit, Write and their kin.
+
+WHY THIS EXISTS
+
+The worktree-first rule is written in three CLAUDE.md files, in the strongest
+terms any rule in them gets, and it names its own failure: an edit on `main`
+makes src-sync skip the repo, silently, every hour, until a human notices. It
+went unnoticed for weeks once already (0x58 PR #83).
+
+It was skipped again on 2026-08-23. Commit 2d7815d landed 117 lines on `main`
+in the devbox pezware-claude checkout, carrying a Claude-Session trailer — a
+session read that rule and edited the primary checkout anyway. The repo then
+stopped pulling and the work sat on one disk until someone went looking.
+
+Claude Code already gates this for BACKGROUND sessions (worktree.bgIsolation,
+default "worktree"). An interactive session has no gate, and the devbox agent
+runs interactively. That gap is what this closes.
+
+Skills and rules are elected by the model. A hook is run by the harness. That
+difference is the whole argument, and this repo has now made it three times.
+
+WHAT IT REFUSES, AND WHY EXACTLY THAT
+
+It refuses a write to a file that is TRACKED, in a checkout whose branch is the
+default branch. Nothing else:
+
+  - an untracked file is allowed, because src-sync's own guard 2 tolerates one
+    ("untracked files are fine, they survive"). Refusing those would deny
+    scratch notes and IMPLEMENTATION_PLAN.md for no gain.
+  - a feature branch is allowed. The point is a clean primary checkout, not a
+    ceremony about where you stand.
+  - a detached HEAD is allowed. That is a review worktree, and reading is what
+    it is for.
+  - a path outside any repo is allowed, which is most of ~/.claude.
+
+It FAILS OPEN. Any error — no git, a timeout, unparseable input — allows the
+edit. A gate that breaks editing when it breaks is worse than the problem.
+
+THE ESCAPE HATCH EXPIRES
+
+`touch ~/.claude/allow-main-edit` opens a 60-minute window, and the guard says
+so on every edit it lets through. A permanent off switch would become invisible
+in a week, which is the same failure as the rule nobody runs.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+SENTINEL = os.path.expanduser("~/.claude/allow-main-edit")
+SENTINEL_TTL = 3600  # seconds
+
+
+def allow(message=None):
+    """Say nothing, or say one thing, and let the normal permission flow run."""
+    if message:
+        json.dump({"systemMessage": message}, sys.stdout)
+    sys.exit(0)
+
+
+def deny(reason):
+    json.dump({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}, sys.stdout)
+    sys.exit(0)
+
+
+def git(repo, *args):
+    """Return stdout on rc 0, else None. Never raises."""
+    try:
+        r = subprocess.run(["git", "-C", repo, *args],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def default_branch(repo):
+    """The branch this checkout should stay on, or None when it cannot be told.
+
+    origin/HEAD is the honest answer but it is often unset on a clone. The
+    fallback only claims a default it can corroborate with a remote-tracking
+    ref, so a repo with a branch named `main` and no origin is left alone.
+    """
+    head = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if head and "/" in head:
+        return head.split("/", 1)[1]
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch in ("main", "master") and \
+            git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}"):
+        return branch
+    return None
+
+
+def sentinel_window():
+    """Seconds left on the escape hatch, or 0."""
+    try:
+        left = SENTINEL_TTL - (time.time() - os.path.getmtime(SENTINEL))
+    except OSError:
+        return 0
+    return int(left) if left > 0 else 0
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        allow()
+
+    tool_input = payload.get("tool_input") or {}
+    path = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not path:
+        allow()
+
+    path = os.path.abspath(os.path.expanduser(path))
+
+    # The file may not exist yet, so resolve from the nearest existing parent.
+    probe = os.path.dirname(path)
+    while probe and not os.path.isdir(probe):
+        probe = os.path.dirname(probe)
+    if not probe:
+        allow()
+
+    top = git(probe, "rev-parse", "--show-toplevel")
+    if not top:
+        allow()
+
+    branch = git(top, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":     # detached: a review worktree
+        allow()
+
+    default = default_branch(top)
+    if not default or branch != default:
+        allow()
+
+    # Untracked files do not stop src-sync, so they do not stop here either.
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", top, "ls-files", "--error-unmatch", "--", path],
+            capture_output=True, text=True, timeout=5).returncode == 0
+    except Exception:
+        allow()
+    if not tracked:
+        allow()
+
+    repo = os.path.basename(top)
+    left = sentinel_window()
+    if left:
+        allow(f"worktree-guard: bypassed — editing {repo} on {branch} directly. "
+              f"The window closes in {left // 60}m.")
+
+    deny(
+        f"{repo} is on {branch}, its default branch, and {os.path.basename(path)} "
+        f"is tracked there.\n\n"
+        f"Editing the primary checkout makes src-sync skip this repo: a "
+        f"fast-forward into someone's edits is not safe unattended, so it stops "
+        f"pulling until a human notices. Work in a worktree:\n\n"
+        f"    git -C {top} fetch origin {default}\n"
+        f"    git -C {top} worktree add -b <task-slug> {top}-<task-slug> "
+        f"origin/{default}\n\n"
+        f"Then edit the copy under {top}-<task-slug>.\n\n"
+        f"Deliberate? `touch ~/.claude/allow-main-edit` opens a 60-minute window."
+    )
+
+
+if __name__ == "__main__":
+    main()

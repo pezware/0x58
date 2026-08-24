@@ -138,7 +138,25 @@ That assumption is load-bearing, not stylistic. `src-sync` skips any repo with m
 
 Worktrees are **siblings** of their parent checkout, never inside it. Exception: only skip this when the user **specifically asks** to work somewhere else (current branch, an existing worktree, a named branch).
 
-Tear down with `git worktree remove <path>` when the work has landed — except on the devbox, where that cannot work and `devbox-worktree-rm` is the only path (see the Operations Runbook).
+**A hook enforces this now.** `worktree-guard` runs on every Edit and Write. It refuses a write to a **tracked** file in a checkout sitting on its default branch, and names the worktree command for that repo. An untracked file passes, because src-sync tolerates one. A feature branch and a detached review worktree pass. Anything it cannot decide passes: it fails open, so a broken guard never stops you working.
+
+Claude Code's own `worktree.bgIsolation` covers background sessions only. This covers the interactive ones, which is where the rule kept breaking.
+
+Deliberate exception: `touch ~/.claude/allow-main-edit` opens a **60-minute** window, and every edit through it says so on screen. The window closes itself — a permanent off switch goes invisible within a week.
+
+**Clean up when the PR merges, and check against main often.** `worktree-sweep` does both:
+
+```bash
+worktree-sweep                 # merged worktrees, distance from origin/main, fetch age
+worktree-sweep --fetch         # re-read origin first
+worktree-sweep --remove        # remove the merged, clean ones; delete their branches
+```
+
+"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. A branch sitting exactly on `origin/main` reads as `fresh`, not merged: that is a worktree somebody just made.
+
+It removes through `devbox-worktree-rm` on Linux when that exists, because a sandboxed session bind-masks the worktree metadata and plain `git worktree remove` cannot work there (see the Operations Runbook). On the Mac, `git worktree remove <path>` is fine.
+
+The SessionStart hook reports the same three facts, so a stale worktree and a branch drifting behind main both surface before the first edit.
 
 ### Planning
 Break complex work into 3-5 stages. Each stage: goal, success criteria, test cases.
