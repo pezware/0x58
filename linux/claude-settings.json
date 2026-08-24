@@ -179,6 +179,29 @@
             "statusMessage": "Reading agent context from the PR..."
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/worktree-sweep --session-json",
+            "timeout": 15,
+            "statusMessage": "Checking worktrees against main..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/worktree-guard",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
