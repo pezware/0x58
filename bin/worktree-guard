@@ -38,6 +38,23 @@ default branch. Nothing else:
 It FAILS OPEN. Any error — no git, a timeout, unparseable input — allows the
 edit. A gate that breaks editing when it breaks is worse than the problem.
 
+WHY THE REMEDY IS TWO COMMANDS
+
+The obvious one-liner, `worktree add -b <slug> <path> origin/main`, cannot work
+in a sandboxed devbox session. `worktree add -b` writes upstream tracking into
+.git/config, the sandbox masks that write, and git aborts AFTER creating the
+branch and BEFORE creating the directory. The agent is left holding a branch and
+no worktree, and a retry then fails on the branch that already exists.
+
+So the message says `git branch --no-track` first, which writes no config at
+all, then `worktree add <path> <existing-branch>`, which writes none either.
+That form works on both machines, so there is one recipe, not two.
+
+Reported by a devbox session (prd-07) on 2026-08-24. It also found the sibling
+case: `git push -u` PUSHES successfully and then fails on the same masked
+config write, so the exit status describes the tracking, not the push. Confirm
+with `git ls-remote origin <branch>`, never with `$?`.
+
 THE ESCAPE HATCH EXPIRES
 
 `touch ~/.claude/allow-main-edit` opens a 60-minute window, and the guard says
@@ -159,11 +176,16 @@ def main():
         f"is tracked there.\n\n"
         f"Editing the primary checkout makes src-sync skip this repo: a "
         f"fast-forward into someone's edits is not safe unattended, so it stops "
-        f"pulling until a human notices. Work in a worktree:\n\n"
+        f"pulling until a human notices. Work in a worktree — branch first, "
+        f"then add it:\n\n"
         f"    git -C {top} fetch origin {default}\n"
-        f"    git -C {top} worktree add -b <task-slug> {top}-<task-slug> "
-        f"origin/{default}\n\n"
+        f"    git -C {top} branch --no-track <task-slug> origin/{default}\n"
+        f"    git -C {top} worktree add {top}-<task-slug> <task-slug>\n\n"
         f"Then edit the copy under {top}-<task-slug>.\n\n"
+        f"Two steps because `worktree add -b` cannot work in a sandboxed devbox "
+        f"session: the sandbox masks the .git/config write it makes for upstream "
+        f"tracking, and it aborts AFTER creating the branch — a branch and no "
+        f"worktree. If that already happened, the branch exists: skip step 2.\n\n"
         f"Deliberate? `touch ~/.claude/allow-main-edit` opens a 60-minute window."
     )
 

@@ -129,8 +129,13 @@ Do NOT code on the current checkout — not for a feature, not for a one-line fi
 
 ```bash
 git -C <repo> fetch origin main
-git -C <repo> worktree add -b <task-slug> ../<repo>-<task-slug> origin/main
+git -C <repo> branch --no-track <task-slug> origin/main
+git -C <repo> worktree add ../<repo>-<task-slug> <task-slug>
 ```
+
+**Branch first, then add it — one recipe for both machines.** The one-liner `worktree add -b <slug> <path> origin/main` cannot work in a sandboxed devbox session: `-b` writes upstream tracking into `.git/config`, the sandbox masks that write, and git aborts **after** creating the branch and **before** creating the directory. You are left with a branch and no worktree, and the retry then fails because the branch exists. `git branch --no-track` writes no config, and `worktree add <path> <existing-branch>` writes none either. If a half-failed run already made the branch, skip step 2.
+
+The same mask hits `git push -u`: the push **succeeds** and only the tracking write fails, so the exit status describes the wrong thing. Confirm with `git ls-remote origin <branch>`, never with `$?`. (Found by a devbox session, 2026-08-24.)
 
 Then work in that worktree. "It is only one line" is precisely when this gets skipped and precisely when it costs the most: the primary checkout is now dirty, and everything downstream assumes it is not.
 
