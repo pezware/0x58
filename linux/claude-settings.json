@@ -168,6 +168,17 @@
             "statusMessage": "Probing devbox environment..."
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/arbeitandy/.local/bin/gh-context --session-json",
+            "timeout": 15,
+            "statusMessage": "Reading agent context from the PR..."
+          }
+        ]
       }
     ],
     "PostToolUse": [
