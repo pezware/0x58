@@ -1168,6 +1168,48 @@ setup_src_sync() {
     fi
 }
 
+# --- Phase 3f: agent context goes to the ticket ---
+#
+# Both machines, deliberately. The devbox agent and the Mac session work the same
+# tickets, so a command that exists on one of them is a rule that holds half the
+# time.
+#
+# What it fixes: an agent writes its plan, its measurements and its post-merge
+# gaps into ~/.claude memory, which no reviewer and no later agent can read. The
+# instruction to post them to the PR instead already lived in two CLAUDE.md files
+# and in a per-project memory note, and the go-monorepo memory directory still
+# reached 121 files -- one of them carrying a merge-order hazard between two open
+# PRs, labelled "not in either PR" by its own author.
+#
+# A prose rule loses to friction. This makes the right thing one command, and
+# idempotent, so re-posting edits one comment instead of stacking a ninth.
+setup_gh_context() {
+    echo "==> gh-context (agent context lands on the PR, not in memory)"
+
+    if [[ ! -f "$BIN_DIR/gh-context" ]]; then
+        echo "    gh-context: MISSING from $BIN_DIR — skipped" >&2
+        return
+    fi
+    mkdir -p ~/.local/bin
+    install -m 755 "$BIN_DIR/gh-context" ~/.local/bin/gh-context
+    echo "    installed: ~/.local/bin/gh-context (--read, --kind, --scan-only)"
+
+    # The SessionStart hook is what closes the loop: posting only pays off if the
+    # next session is told the comments exist. Linux gets it from
+    # claude-settings.json, which this script merges. macOS keeps its
+    # ~/.claude/settings.json outside this repo -- ~/.claude is a symlink to
+    # ~/src/claude there and is the source of truth -- so say what is missing
+    # rather than writing into it.
+    if [[ "$PLATFORM" == "macos" ]]; then
+        if grep -q 'gh-context --session-json' ~/.claude/settings.json 2>/dev/null; then
+            echo "    hook: SessionStart read-back wired"
+        else
+            echo "    hook: SessionStart read-back NOT wired — add to ~/.claude/settings.json:"
+            echo "          SessionStart -> command: \$HOME/.local/bin/gh-context --session-json"
+        fi
+    fi
+}
+
 print_manual_steps() {
     # Repeat the gh failures here. Phase 3 of twelve scrolls away long before the
     # run ends, and an extension that never installed is silent afterwards --
@@ -1265,6 +1307,7 @@ install_packages
 place_dotfiles
 setup_dev_tools
 setup_src_sync
+setup_gh_context
 setup_keymaster
 # Import before pruning: the prune asks "is this context defined anywhere?", so
 # the kind configs have to be in place first or it would delete the overlays

@@ -141,9 +141,42 @@ Worktrees are **siblings** of their parent checkout, never inside it. Exception:
 Tear down with `git worktree remove <path>` when the work has landed — except on the devbox, where that cannot work and `devbox-worktree-rm` is the only path (see the Operations Runbook).
 
 ### Planning
-Break complex work into 3-5 stages in `IMPLEMENTATION_PLAN.md`. Each stage: goal, success criteria, test cases. Remove when done.
+Break complex work into 3-5 stages. Each stage: goal, success criteria, test cases.
+
+**When the work has an issue or a PR, the plan lives there.** Post it with `gh-context --kind plan` before the first edit, and update that comment as stages land. See "Context goes to the ticket, not to memory" below. With no ticket, keep the plan in `IMPLEMENTATION_PLAN.md` and remove it when done.
 
 `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_PLAN-*.md` are **local-only working contracts**. Gitignore them; never `git add` (don't bypass with `-f`). Never reference them in commit messages, code comments, or PR descriptions — they don't exist for collaborators, and references rot fast as work progresses. Sprint context lives in the PR description; commit messages explain the change directly.
+
+### Context goes to the ticket, not to memory
+
+The PR or the issue is the home for the context around it. The comment holds the content. Memory holds a pointer to the comment.
+
+Post to the ticket when you:
+
+- plan the work, before the first edit
+- finish a stage, or park the work mid-way
+- measure something the next person cannot re-derive — a control run, a merge order, a gap the tests cannot see
+- end a branch — the follow-ups, the known gaps, what the next person must watch
+
+`gh-context` does the posting. Each (ticket, kind) owns **one** comment, and a re-run edits that comment instead of stacking another:
+
+```bash
+gh-context --read                        # what earlier sessions posted. Read this first.
+gh-context --kind plan      -F -         # kinds: plan | status | findings | followups
+gh-context --kind status    -m 'one line'
+gh-context --kind followups -F notes.md  # post-merge considerations, before you call it done
+gh-context --scan-only      -F draft.md  # check the text, post nothing
+```
+
+It resolves the pull request from the current branch. Name an issue explicitly (`--issue N`) — a branch name is a guess, and a work log on the wrong ticket is worse than a question.
+
+**It scans the body before anything leaves the machine.** A secret-shaped match refuses on every repo, and `--public` does not override it. On a public repo a home path, a username, an internal hostname or an email address also refuses; `--public` is how you say you meant to publish it. The scan names the line and never rewrites your text.
+
+Memory then keeps three things: a one-line pointer to the ticket that holds the state, machine-local gotchas no ticket wants, and private preferences. When you touch a fat project memory note, shrink it to a pointer and move the content to the ticket.
+
+**Why:** a note in `~/.claude` is invisible to the reviewer, to the team and to the next agent. A go-monorepo memory note carried a merge-order hazard between two open PRs and labelled it, in its own text, "not in either PR" (2026-08-03).
+
+Work with no ticket keeps its context in memory. That is what memory is for. Open an issue when the work deserves one.
 
 ### Implementation
 1. Study existing patterns → 2. Write failing test → 3. Minimal code to pass → 4. Refactor with tests green → 5. Commit (explain "why")
