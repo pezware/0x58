@@ -112,6 +112,34 @@ that read as rude, and they are also the wordiest, so they cost twice:
 
 Delete the category. What remains is the observation, the evidence and the ask.
 
+### Length is a number too
+
+Every rule above governs a **sentence**. None governs a **document**, and that
+gap is where the writing rule fails silently. Measured on one internal ticket:
+a 19,675-char plan comment beside an 11,236-char issue body — 38 KB of prose on
+one ticket, with every sentence obeying the rules above.
+
+| what | ceiling |
+|---|---|
+| `plan` comment | 4,000 chars |
+| `findings` comment | 1,500 |
+| `followups` comment | 1,200 |
+| `status` comment | 800 |
+| PR description | 1,500 |
+| one inline review comment | 600 |
+| one code comment | one or two sentences |
+
+`gh-context` enforces the first four: it exits 3 and posts nothing. `--long`
+posts anyway and stamps the override into the comment footer.
+
+**The detail belongs in the issue body. A comment points at it, and a PR
+description links its issue rather than restating it.** Two copies drift within a
+day, and the reader cannot tell which one is current.
+
+**A code comment says why, in one or two sentences.** Write more only when the
+context altered the decision — the constraint that made the obvious approach
+wrong. The code already says what it does.
+
 ### What this rule does not mean
 
 - **It is not a licence to review other people's prose.** The rule binds what
@@ -166,6 +194,24 @@ The SessionStart hook reports the same three facts, so a stale worktree and a br
 ### Planning
 Break complex work into 3-5 stages. Each stage: goal, success criteria, test cases.
 
+**The stages ship as one pull request.** One issue, one branch, one PR. Stages order the work inside that branch; they are not a licence to open five. Measured once: a single issue produced six PRs for one fix, and the reviewer then held six queues for it.
+
+Split only for a reason on this closed list:
+
+- **Cross-repo** — one change cannot span two repositories. Name the merge order in both descriptions.
+- **A merge-order dependency** — B cannot pass CI until A applies.
+- **A blocking hazard found mid-work** that must ship before the rest.
+
+"It is cleaner as two" is not on that list, and neither is "this part is ready now". Everything else you notice goes into **one `followups` comment on the current ticket** — not a new issue, not a new branch, not this PR.
+
+**Opening a new issue needs the user's go-ahead.** Filing is free and reads as diligence, which is how 40 issues landed in five weeks. Ask, and name the one issue you would file and why a `followups` comment cannot hold it.
+
+**Finish the issue you were given before you look for the next one.** A partial fix that closes its issue is the worst outcome: one issue was closed by a merge, reopened, and its own follow-up said the count went from six repos to three — "That is a reduction, not a fix." If the work is not done, say so in `status` and keep the issue open.
+
+**When the work has an issue or a PR, the plan lives there.** Post it with `gh-context --kind plan` before the first edit, and update that comment as stages land. See "Context goes to the ticket, not to memory" below. With no ticket, keep the plan in `IMPLEMENTATION_PLAN.md` and remove it when done.
+
+`IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_PLAN-*.md` are **local-only working contracts**. Gitignore them; never `git add` (don't bypass with `-f`). Never reference them in commit messages, code comments, or PR descriptions — they don't exist for collaborators, and references rot fast as work progresses. Sprint context lives in the PR description; commit messages explain the change directly.
+
 **When the work has an issue or a PR, the plan lives there.** Post it with `gh-context --kind plan` before the first edit, and update that comment as stages land. See "Context goes to the ticket, not to memory" below. With no ticket, keep the plan in `IMPLEMENTATION_PLAN.md` and remove it when done.
 
 `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_PLAN-*.md` are **local-only working contracts**. Gitignore them; never `git add` (don't bypass with `-f`). Never reference them in commit messages, code comments, or PR descriptions — they don't exist for collaborators, and references rot fast as work progresses. Sprint context lives in the PR description; commit messages explain the change directly.
@@ -184,7 +230,7 @@ Post to the ticket when you:
 `gh-context` does the posting. Each (ticket, kind) owns **one** comment, and a re-run edits that comment instead of stacking another:
 
 ```bash
-gh-context --read                        # what earlier sessions posted. Read this first.
+gh-context --read                        # EVERY comment and review body. Read this first.
 gh-context --kind plan      -F -         # kinds: plan | status | findings | followups
 gh-context --kind status    -m 'one line'
 gh-context --kind followups -F notes.md  # post-merge considerations, before you call it done
@@ -194,6 +240,17 @@ gh-context --scan-only      -F draft.md  # check the text, post nothing
 It resolves the pull request from the current branch. Name an issue explicitly (`--issue N`) — a branch name is a guess, and a work log on the wrong ticket is worse than a question.
 
 **It scans the body before anything leaves the machine.** A secret-shaped match refuses on every repo, and `--public` does not override it. On a public repo a home path, a username, an internal hostname or an email address also refuses; `--public` is how you say you meant to publish it. The scan names the line and never rewrites your text.
+
+**It also refuses a body over its budget** (exit 3, nothing posted) — see "Length is a number too" above. `--long` posts anyway and records the override in the footer.
+
+**`--read` prints every comment and every review body**, not only the ones carrying its own marker: the agent-context ones in full, then a listing of the rest with author, time, size and first line. It used to filter on the marker, and on one PR it reported "1 of 7 comments" — a session missed a post-deployment validation posted six minutes after the merge, and posted a second one.
+
+So, before you plan and again before you post:
+
+- **Read what the humans wrote, not only what agents wrote.** A finding already on the ticket is not yours to post again.
+- **If a report already holds, say so and stop.** New evidence goes in an addendum that links the original and carries only the delta. Never a second full report.
+- **A decision you disagree with is context, not noise.** Someone chose it. Find out why before you change it back — an undo you cannot explain is a regression wearing a fix's clothes.
+- **A review body creates no thread**, so a thread count of zero is not silence. The review listing is what knows.
 
 Memory then keeps three things: a one-line pointer to the ticket that holds the state, machine-local gotchas no ticket wants, and private preferences. When you touch a fat project memory note, shrink it to a pointer and move the content to the ticket.
 
