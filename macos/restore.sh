@@ -1192,7 +1192,7 @@ setup_gh_context() {
     fi
     mkdir -p ~/.local/bin
     install -m 755 "$BIN_DIR/gh-context" ~/.local/bin/gh-context
-    echo "    installed: ~/.local/bin/gh-context (--read, --kind, --scan-only)"
+    echo "    installed: ~/.local/bin/gh-context (--read, --kind, --scan-only, --long)"
 
     # worktree-guard and worktree-sweep answer the same class of problem for the
     # OTHER rule this repo keeps restating: work in a worktree, and clean it up.

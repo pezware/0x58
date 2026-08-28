@@ -3,12 +3,13 @@
 # gh-context — put a session's context on the pull request or the issue, where
 # the next agent and the team can read it.
 #
-#   gh-context --read                              # what earlier sessions posted
+#   gh-context --read                              # every voice on the ticket
 #   gh-context --kind plan     -F plan.md          # upsert the plan comment
 #   gh-context --kind status   -m 'one line'       # upsert the status comment
 #   gh-context --kind findings -F -                # body from stdin
 #   gh-context --kind followups -F notes.md --new  # a second comment, not an edit
-#   gh-context --scan-only -F draft.md             # check for secrets, post nothing
+#   gh-context --scan-only -F draft.md             # check the text, post nothing
+#   gh-context --kind plan -F plan.md --long       # over budget, on purpose
 #
 # WHY THIS EXISTS
 #
@@ -41,12 +42,12 @@ set -uo pipefail
 die() { printf 'gh-context: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-1}"
 }
 
 KIND="" BODY_SRC="" BODY_TEXT="" TARGET_KIND="" TARGET_NUM=""
-READ_MODE=0 SCAN_ONLY=0 NEW=0 PUBLIC_OK=0 DRY_RUN=0 SESSION_JSON=0
+READ_MODE=0 SCAN_ONLY=0 NEW=0 PUBLIC_OK=0 DRY_RUN=0 SESSION_JSON=0 LONG_OK=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         -m|--message)   BODY_TEXT="${2:-}"; shift 2 ;;
         --new)          NEW=1; shift ;;
         --public)       PUBLIC_OK=1; shift ;;
+        --long)         LONG_OK=1; shift ;;
         --scan-only)    SCAN_ONLY=1; shift ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --session-json) SESSION_JSON=1; shift ;;
@@ -240,34 +242,76 @@ API="/repos/$SLUG/issues/$TARGET_NUM/comments"
 
 # ---------------------------------------------------------------------- read
 if [[ $READ_MODE -eq 1 ]]; then
-    tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    tmp=$(mktemp); rev=$(mktemp); trap 'rm -f "$tmp" "$rev"' EXIT
     gh api --paginate "$API" > "$tmp" 2>/dev/null || die "cannot read comments on $SLUG#$TARGET_NUM"
-    python3 - "$tmp" "$SLUG" "$TARGET_NUM" "${TARGET_KIND:-pr}" <<'PY'
+    # Review bodies live on a different endpoint, and a review posted as a body
+    # with no inline comment creates no thread at all. iden2-pr-review names that
+    # trap: a thread count of zero reads as silence while a whole review sits on
+    # the PR. An issue number here 404s, which is why the failure is tolerated.
+    if [[ "${TARGET_KIND:-pr}" == "pr" ]]; then
+        gh api --paginate "/repos/$SLUG/pulls/$TARGET_NUM/reviews" > "$rev" 2>/dev/null || : > "$rev"
+    fi
+    python3 - "$tmp" "$SLUG" "$TARGET_NUM" "${TARGET_KIND:-pr}" "$rev" <<'PY'
 import json, re, sys
-raw = open(sys.argv[1]).read().strip()
-# --paginate concatenates JSON arrays; parse each and flatten.
-pages, dec = [], json.JSONDecoder()
-i = 0
-while i < len(raw):
-    obj, end = dec.raw_decode(raw, i)
-    pages.append(obj)
-    i = end
-    while i < len(raw) and raw[i] in ' \n\r\t':
-        i += 1
-comments = [c for p in pages for c in p]
-marked = [c for c in comments if re.search(r'<!-- agent-context: ', c['body'])]
-print(f"# agent-context on {sys.argv[2]}#{sys.argv[3]} — {len(marked)} of {len(comments)} comments\n")
+
+def load(path):
+    """--paginate concatenates JSON arrays; parse each and flatten."""
+    raw = open(path).read().strip()
+    if not raw:
+        return []
+    pages, dec, i = [], json.JSONDecoder(), 0
+    while i < len(raw):
+        obj, end = dec.raw_decode(raw, i)
+        pages.append(obj)
+        i = end
+        while i < len(raw) and raw[i] in ' \n\r\t':
+            i += 1
+    return [c for p in pages for c in p if isinstance(c, dict)]
+
+slug, num, tkind = sys.argv[2], sys.argv[3], sys.argv[4]
+comments = load(sys.argv[1])
+reviews = [r for r in load(sys.argv[5]) if (r.get('body') or '').strip()]
+
+MARK = re.compile(r'<!-- agent-context: ([a-z]+) -->')
+
+def who(d):
+    return ((d.get('user') or {}).get('login')) or '?'
+
+def first_line(body):
+    for ln in (body or '').strip().splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith('<!--'):
+            return ln[:90]
+    return ''
+
+marked = [c for c in comments if MARK.search(c.get('body') or '')]
+other = [c for c in comments if not MARK.search(c.get('body') or '')]
+
+print(f"# {slug}#{num} — {len(comments)} comment(s), {len(reviews)} review body(ies), "
+      f"{len(marked)} agent-context\n")
+
 for c in marked:
-    kind = re.search(r'<!-- agent-context: ([a-z]+) -->', c['body']).group(1)
-    body = re.sub(r'<!-- agent-context: [a-z]+ -->\n?', '', c['body'])
-    print(f"--- {kind}  ({c['user']['login']}, updated {c['updated_at']})")
-    print(body.strip(), "\n")
-other = len(comments) - len(marked)
-if other:
+    kind = MARK.search(c['body']).group(1)
+    body = MARK.sub('', c['body']).strip()
+    print(f"--- {kind}  ({who(c)}, updated {c.get('updated_at','')[:16]}, {len(body)} chars)")
+    print(body, "\n")
+
+# Everything a human wrote. This listing IS the point of --read. Filtering on
+# the agent-context marker made this command blind to every other voice: on
+# infra-tf#450 it reported "1 of 7 comments", a session missed a validation
+# report posted six minutes after the merge, and posted a second one.
+if other or reviews:
+    print("--- other voices on this ticket. Read these before you write.\n")
+for c in other:
+    print(f"  comment   {c.get('created_at','')[:16]}  {who(c):16.16}  "
+          f"{len(c.get('body') or ''):>6} chars  | {first_line(c.get('body'))}")
+for r in reviews:
+    print(f"  {r.get('state','').lower():9.9} {(r.get('submitted_at') or '')[:16]}  {who(r):16.16}  "
+          f"{len(r['body']):>6} chars  | {first_line(r['body'])}")
+if other or reviews:
     # The hint has to name the right subcommand: `gh pr view` on an issue number
     # prints a different thread, or nothing at all.
-    print(f"({other} other comment(s) — read them with: "
-          f"gh {sys.argv[4]} view {sys.argv[3]} --comments)")
+    print(f"\n  full text: gh {tkind} view {num} --comments")
 PY
     exit 0
 fi
@@ -307,8 +351,55 @@ if [[ $scan_rc -eq 3 ]]; then
     printf 'gh-context: note — identity-shaped matches, posting anyway (%s):\n%s\n' \
         "$VISIBILITY" "$findings_out" >&2
 fi
+# --- the budget, so a comment stays a pointer and the detail stays in the issue
+#
+# Measured on infra-tf#454 (2026-08-27): an 11,236-char issue body, then a
+# 19,675-char plan comment, a 4,648-char status and a 2,877-char followups.
+# 38 KB of prose on one ticket, and six pull requests off it.
+#
+# Every sentence in there obeyed the writing rule. That is the whole point: the
+# rule governs the sentence -- one idea, under 20 words, no dead words -- and it
+# has nothing to say about the document. So it could not see this. The budget is
+# the missing half, and it is a byte count because the rule the agent already
+# has says to record numbers, not adjectives.
+#
+# These are ceilings for a POINTER. The issue body holds the detail. A comment
+# that needs more than this is usually the issue body in the wrong place.
+budget_for() {
+    case "$1" in
+        plan)      echo 4000 ;;   # a staged plan is the one that earns room
+        status)    echo 800  ;;
+        findings)  echo 1500 ;;
+        followups) echo 1200 ;;
+        *)         echo 0    ;;
+    esac
+}
+
+BUDGET=$(budget_for "$KIND")
+SIZE=$(wc -c < "$BODY" | tr -d ' ')
+OVER=""
+if [[ $BUDGET -gt 0 && $SIZE -gt $BUDGET ]]; then
+    if [[ $LONG_OK -eq 1 ]]; then
+        # Recorded in the footer too. An override nobody can see becomes the
+        # default within a week -- the same reason allow-main-edit announces
+        # itself on every edit it permits.
+        OVER=" · --long ($SIZE chars, budget $BUDGET)"
+        printf 'gh-context: over budget by %s chars, posting anyway (--long).\n' \
+            "$((SIZE - BUDGET))" >&2
+    elif [[ $SCAN_ONLY -eq 0 ]]; then
+        printf 'gh-context: REFUSING — the body is %s chars, and the budget for %s is %s. Over by %s.\n' \
+            "$SIZE" "$KIND" "$BUDGET" "$((SIZE - BUDGET))" >&2
+        printf 'Move the detail into the issue body and post a pointer to it. Nothing was posted.\n' >&2
+        printf 'Pass --long if this length is earned.\n' >&2
+        exit 3
+    else
+        printf 'gh-context: over budget — %s chars, and the budget for %s is %s.\n' \
+            "$SIZE" "$KIND" "$BUDGET" >&2
+    fi
+fi
+
 if [[ $SCAN_ONLY -eq 1 ]]; then
-    [[ $scan_rc -eq 0 ]] && echo "gh-context: scan clean ($SLUG is $VISIBILITY)"
+    [[ $scan_rc -eq 0 ]] && echo "gh-context: scan clean ($SLUG is $VISIBILITY), $SIZE chars, budget $BUDGET"
     exit 0
 fi
 if [[ "$VISIBILITY" == "PUBLIC" && $PUBLIC_OK -eq 0 ]]; then
@@ -324,7 +415,7 @@ PAYLOAD=$(mktemp); trap 'rm -f "$BODY" "$PAYLOAD"' EXIT
 {
     printf '%s\n' "$MARKER"
     cat "$BODY"
-    printf '\n---\n`%s` · `%s` · %s\n' "$BRANCH" "$SHA" "$STAMP"
+    printf '\n---\n`%s` · `%s` · %s%s\n' "$BRANCH" "$SHA" "$STAMP" "$OVER"
 } > "$PAYLOAD"
 
 EXISTING=""
