@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOTFILES="$SCRIPT_DIR/dotfiles"
 LINUX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/linux"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/bin"
+# The repo-root dotfiles/ is the CROSS-PLATFORM half (mise config, python
+# packages). $DOTFILES above is macos/dotfiles, which is macOS-only.
+SHARED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/dotfiles"
 
 # --- Detect platform ---
 OS="$(uname -s)"
@@ -1181,6 +1184,47 @@ setup_src_sync() {
 # reached 121 files -- one of them carrying a merge-order hazard between two open
 # PRs, labelled "not in either PR" by its own author.
 #
+# Python libraries an agent needs from the default `python3`, on both platforms.
+#
+# Runs AFTER setup_dev_tools, which is what puts mise and its python on PATH.
+# The declaration and the reasoning live in dotfiles/python-packages.txt; this
+# only executes it.
+install_python_packages() {
+    local req="$SHARED_DIR/python-packages.txt"
+    echo "==> Python packages (uv -> mise's python)"
+
+    if [[ ! -f "$req" ]]; then
+        echo "    python-packages.txt: MISSING from $SHARED_DIR — skipped" >&2
+        return
+    fi
+
+    # `mise which`, never the shim and never a bare `python3`: sudo and
+    # non-interactive shells reset PATH, and uv's own managed python would
+    # otherwise win. Installing into the wrong interpreter SUCCEEDS and leaves
+    # `import bcrypt` failing, which is the confusing half of this.
+    local py uv_bin
+    if ! command -v mise &>/dev/null; then
+        echo "    mise not on PATH — skipped (re-run after setup_dev_tools)" >&2
+        return
+    fi
+    py=$(mise which python3 2>/dev/null || true)
+    uv_bin=$(mise which uv 2>/dev/null || command -v uv 2>/dev/null || true)
+    if [[ -z "$py" || -z "$uv_bin" ]]; then
+        echo "    need both python3 and uv from mise — skipped" >&2
+        return
+    fi
+
+    # uv reads pip requirements syntax, comments included, so the file goes in
+    # whole rather than being pre-stripped.
+    if "$uv_bin" pip install --quiet --python "$py" -r "$req"; then
+        local n
+        n=$(grep -cvE '^[[:space:]]*(#|$)' "$req")
+        echo "    installed: $n package(s) into ${py/#$HOME/\~}"
+    else
+        echo "    uv pip install FAILED for $req" >&2
+    fi
+}
+
 # A prose rule loses to friction. This makes the right thing one command, and
 # idempotent, so re-posting edits one comment instead of stacking a ninth.
 setup_gh_context() {
@@ -1328,6 +1372,8 @@ echo ""
 install_packages
 place_dotfiles
 setup_dev_tools
+# After setup_dev_tools: it is what sources bashrc and puts mise on PATH.
+install_python_packages
 setup_src_sync
 setup_gh_context
 setup_keymaster

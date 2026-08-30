@@ -1,0 +1,56 @@
+# 0x58 — Python packages installed into mise's python, on every machine.
+#
+# Scope: libraries an AGENT or a shell one-liner needs from the default
+# `python3`. Not a project's dependencies — those belong to the project, in its
+# own lockfile. If only one repo needs it, it does not go here.
+#
+# WHY NOT apt, AND WHY NOT pip
+#
+# Debian trixie marks the system python EXTERNALLY-MANAGED (PEP 668), so a bare
+# `pip install` there fails or needs --break-system-packages. apt would work, but
+# it pins you to whatever the distribution froze — python3-bcrypt on trixie is
+# 4.2.0, from 2024-07-22 — and it gives macOS nothing. Worse, an apt package
+# pulled in as a DEPENDENCY is marked `auto`, and devbox-drift only compares
+# `apt-mark showmanual`, so it never sees it. bcrypt reached the devbox exactly
+# that way, as a dependency of python3-cryptography, where an `apt autoremove`
+# could have taken it silently.
+#
+# mise's python carries no EXTERNALLY-MANAGED marker, and `uv` is already a
+# declared mise tool on both platforms. So one file and one command cover macOS
+# and Debian, with the same version on each.
+#
+# THE TARGET INTERPRETER IS EXPLICIT, AND THAT MATTERS
+#
+# `uv python find` resolves to uv's OWN managed python, not mise's. Installing
+# there succeeds and changes nothing: the shell's `python3` is mise's shim, so
+# `import bcrypt` still fails. restore.sh passes `--python "$(mise which
+# python3)"` for that reason. Do not drop it.
+#
+# ON THE DEVBOX, A NON-INTERACTIVE SHELL DOES NOT SEE THIS
+#
+# `mise activate` runs from ~/.bashrc, which returns early when the shell is not
+# interactive. So `python3` resolves two different ways on that box (measured
+# 2026-08-29):
+#
+#   bash -ic   -> ~/.local/share/mise/installs/python/3.12/bin/python3   bcrypt 5.0.0
+#   bash -lc   -> /usr/bin/python3                                       bcrypt 4.2.0
+#
+# The second is Debian's python with the apt python3-bcrypt that came in under
+# python3-cryptography. It is not ours and this file does not manage it.
+#
+# This is the same condition the devbox already has for go, task and kubectl, and
+# the remedy is the same: reach for ~/.local/share/mise/shims/python3 when a
+# shell is not interactive. macOS has no split — mise's python is the only one on
+# PATH there.
+#
+# Format: pip requirements syntax. PIN EVERY VERSION — an unpinned line means a
+# rebuilt box and a running box disagree, and neither one tells you.
+# Consumed by macos/restore.sh -> install_python_packages().
+#
+# Verify what is live:  python3 -c 'import bcrypt; print(bcrypt.__version__)'
+
+# Hashes a Basic-auth htpasswd line (`user:$2b$10$...`) for the demo gate. The
+# rotation workflow in iden2-com/demos does the same thing on its runner, and
+# generating or checking a hash by hand is what you reach for when that job's
+# output looks wrong. 5.0.0 released 2025-09-25; needs python >= 3.8.
+bcrypt==5.0.0
