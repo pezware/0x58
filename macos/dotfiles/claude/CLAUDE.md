@@ -112,6 +112,34 @@ that read as rude, and they are also the wordiest, so they cost twice:
 
 Delete the category. What remains is the observation, the evidence and the ask.
 
+### Length is a number too
+
+Every rule above governs a **sentence**. None governs a **document**, and that
+gap is where the writing rule fails silently. Measured on one internal ticket:
+a 19,675-char plan comment beside an 11,236-char issue body — 38 KB of prose on
+one ticket, with every sentence obeying the rules above.
+
+| what | ceiling |
+|---|---|
+| `plan` comment | 4,000 chars |
+| `findings` comment | 1,500 |
+| `followups` comment | 1,200 |
+| `status` comment | 800 |
+| PR description | 1,500 |
+| one inline review comment | 600 |
+| one code comment | one or two sentences |
+
+`gh-context` enforces the first four: it exits 3 and posts nothing. `--long`
+posts anyway and stamps the override into the comment footer.
+
+**The detail belongs in the issue body. A comment points at it, and a PR
+description links its issue rather than restating it.** Two copies drift within a
+day, and the reader cannot tell which one is current.
+
+**A code comment says why, in one or two sentences.** Write more only when the
+context altered the decision — the constraint that made the obvious approach
+wrong. The code already says what it does.
+
 ### What this rule does not mean
 
 - **It is not a licence to review other people's prose.** The rule binds what
@@ -129,8 +157,13 @@ Do NOT code on the current checkout — not for a feature, not for a one-line fi
 
 ```bash
 git -C <repo> fetch origin main
-git -C <repo> worktree add -b <task-slug> ../<repo>-<task-slug> origin/main
+git -C <repo> branch --no-track <task-slug> origin/main
+git -C <repo> worktree add ../<repo>-<task-slug> <task-slug>
 ```
+
+**Branch first, then add it — one recipe for both machines.** The one-liner `worktree add -b <slug> <path> origin/main` cannot work in a sandboxed devbox session: `-b` writes upstream tracking into `.git/config`, the sandbox masks that write, and git aborts **after** creating the branch and **before** creating the directory. You are left with a branch and no worktree, and the retry then fails because the branch exists. `git branch --no-track` writes no config, and `worktree add <path> <existing-branch>` writes none either. If a half-failed run already made the branch, skip step 2.
+
+The same mask hits `git push -u`: the push **succeeds** and only the tracking write fails, so the exit status describes the wrong thing. Confirm with `git ls-remote origin <branch>`, never with `$?`. (Found by a devbox session, 2026-08-24.)
 
 Then work in that worktree. "It is only one line" is precisely when this gets skipped and precisely when it costs the most: the primary checkout is now dirty, and everything downstream assumes it is not.
 
@@ -138,12 +171,92 @@ That assumption is load-bearing, not stylistic. `src-sync` skips any repo with m
 
 Worktrees are **siblings** of their parent checkout, never inside it. Exception: only skip this when the user **specifically asks** to work somewhere else (current branch, an existing worktree, a named branch).
 
-Tear down with `git worktree remove <path>` when the work has landed — except on the devbox, where that cannot work and `devbox-worktree-rm` is the only path (see the Operations Runbook).
+**A hook enforces this now.** `worktree-guard` runs on every Edit and Write. It refuses a write to a **tracked** file in a checkout sitting on its default branch, and names the worktree command for that repo. An untracked file passes, because src-sync tolerates one. A feature branch and a detached review worktree pass. Anything it cannot decide passes: it fails open, so a broken guard never stops you working.
+
+Claude Code's own `worktree.bgIsolation` covers background sessions only. This covers the interactive ones, which is where the rule kept breaking.
+
+Deliberate exception: `touch ~/.claude/allow-main-edit` opens a **60-minute** window, and every edit through it says so on screen. The window closes itself — a permanent off switch goes invisible within a week.
+
+**Clean up when the PR merges, and check against main often.** `worktree-sweep` does both:
+
+```bash
+worktree-sweep                 # merged worktrees, distance from origin/main, fetch age
+worktree-sweep --fetch         # re-read origin first
+worktree-sweep --remove        # remove the merged, clean ones; delete their branches
+```
+
+"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. A branch sitting exactly on `origin/main` reads as `fresh`, not merged: that is a worktree somebody just made.
+
+It removes through `devbox-worktree-rm` on Linux when that exists, because a sandboxed session bind-masks the worktree metadata and plain `git worktree remove` cannot work there (see the Operations Runbook). On the Mac, `git worktree remove <path>` is fine.
+
+The SessionStart hook reports the same three facts, so a stale worktree and a branch drifting behind main both surface before the first edit.
 
 ### Planning
-Break complex work into 3-5 stages in `IMPLEMENTATION_PLAN.md`. Each stage: goal, success criteria, test cases. Remove when done.
+Break complex work into 3-5 stages. Each stage: goal, success criteria, test cases.
+
+**The stages ship as one pull request.** One issue, one branch, one PR. Stages order the work inside that branch; they are not a licence to open five. Measured once: a single issue produced six PRs for one fix, and the reviewer then held six queues for it.
+
+Split only for a reason on this closed list:
+
+- **Cross-repo** — one change cannot span two repositories. Name the merge order in both descriptions.
+- **A merge-order dependency** — B cannot pass CI until A applies.
+- **A blocking hazard found mid-work** that must ship before the rest.
+
+"It is cleaner as two" is not on that list, and neither is "this part is ready now". Everything else you notice goes into **one `followups` comment on the current ticket** — not a new issue, not a new branch, not this PR.
+
+**Opening a new issue needs the user's go-ahead.** Filing is free and reads as diligence, which is how 40 issues landed in five weeks. Ask, and name the one issue you would file and why a `followups` comment cannot hold it.
+
+**Finish the issue you were given before you look for the next one.** A partial fix that closes its issue is the worst outcome: one issue was closed by a merge, reopened, and its own follow-up said the count went from six repos to three — "That is a reduction, not a fix." If the work is not done, say so in `status` and keep the issue open.
+
+**When the work has an issue or a PR, the plan lives there.** Post it with `gh-context --kind plan` before the first edit, and update that comment as stages land. See "Context goes to the ticket, not to memory" below. With no ticket, keep the plan in `IMPLEMENTATION_PLAN.md` and remove it when done.
 
 `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_PLAN-*.md` are **local-only working contracts**. Gitignore them; never `git add` (don't bypass with `-f`). Never reference them in commit messages, code comments, or PR descriptions — they don't exist for collaborators, and references rot fast as work progresses. Sprint context lives in the PR description; commit messages explain the change directly.
+
+**When the work has an issue or a PR, the plan lives there.** Post it with `gh-context --kind plan` before the first edit, and update that comment as stages land. See "Context goes to the ticket, not to memory" below. With no ticket, keep the plan in `IMPLEMENTATION_PLAN.md` and remove it when done.
+
+`IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_PLAN-*.md` are **local-only working contracts**. Gitignore them; never `git add` (don't bypass with `-f`). Never reference them in commit messages, code comments, or PR descriptions — they don't exist for collaborators, and references rot fast as work progresses. Sprint context lives in the PR description; commit messages explain the change directly.
+
+### Context goes to the ticket, not to memory
+
+The PR or the issue is the home for the context around it. The comment holds the content. Memory holds a pointer to the comment.
+
+Post to the ticket when you:
+
+- plan the work, before the first edit
+- finish a stage, or park the work mid-way
+- measure something the next person cannot re-derive — a control run, a merge order, a gap the tests cannot see
+- end a branch — the follow-ups, the known gaps, what the next person must watch
+
+`gh-context` does the posting. Each (ticket, kind) owns **one** comment, and a re-run edits that comment instead of stacking another:
+
+```bash
+gh-context --read                        # EVERY comment and review body. Read this first.
+gh-context --kind plan      -F -         # kinds: plan | status | findings | followups
+gh-context --kind status    -m 'one line'
+gh-context --kind followups -F notes.md  # post-merge considerations, before you call it done
+gh-context --scan-only      -F draft.md  # check the text, post nothing
+```
+
+It resolves the pull request from the current branch. Name an issue explicitly (`--issue N`) — a branch name is a guess, and a work log on the wrong ticket is worse than a question.
+
+**It scans the body before anything leaves the machine.** A secret-shaped match refuses on every repo, and `--public` does not override it. On a public repo a home path, a username, an internal hostname or an email address also refuses; `--public` is how you say you meant to publish it. The scan names the line and never rewrites your text.
+
+**It also refuses a body over its budget** (exit 3, nothing posted) — see "Length is a number too" above. `--long` posts anyway and records the override in the footer.
+
+**`--read` prints every comment and every review body**, not only the ones carrying its own marker: the agent-context ones in full, then a listing of the rest with author, time, size and first line. It used to filter on the marker, and on one PR it reported "1 of 7 comments" — a session missed a post-deployment validation posted six minutes after the merge, and posted a second one.
+
+So, before you plan and again before you post:
+
+- **Read what the humans wrote, not only what agents wrote.** A finding already on the ticket is not yours to post again.
+- **If a report already holds, say so and stop.** New evidence goes in an addendum that links the original and carries only the delta. Never a second full report.
+- **A decision you disagree with is context, not noise.** Someone chose it. Find out why before you change it back — an undo you cannot explain is a regression wearing a fix's clothes.
+- **A review body creates no thread**, so a thread count of zero is not silence. The review listing is what knows.
+
+Memory then keeps three things: a one-line pointer to the ticket that holds the state, machine-local gotchas no ticket wants, and private preferences. When you touch a fat project memory note, shrink it to a pointer and move the content to the ticket.
+
+**Why:** a note in `~/.claude` is invisible to the reviewer, to the team and to the next agent. A go-monorepo memory note carried a merge-order hazard between two open PRs and labelled it, in its own text, "not in either PR" (2026-08-03).
+
+Work with no ticket keeps its context in memory. That is what memory is for. Open an issue when the work deserves one.
 
 ### Implementation
 1. Study existing patterns → 2. Write failing test → 3. Minimal code to pass → 4. Refactor with tests green → 5. Commit (explain "why")

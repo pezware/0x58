@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOTFILES="$SCRIPT_DIR/dotfiles"
 LINUX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/linux"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/bin"
+# The repo-root dotfiles/ is the CROSS-PLATFORM half (mise config, python
+# packages). $DOTFILES above is macos/dotfiles, which is macOS-only.
+SHARED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/dotfiles"
 
 # --- Detect platform ---
 OS="$(uname -s)"
@@ -1168,6 +1171,111 @@ setup_src_sync() {
     fi
 }
 
+# --- Phase 3f: agent context goes to the ticket ---
+#
+# Both machines, deliberately. The devbox agent and the Mac session work the same
+# tickets, so a command that exists on one of them is a rule that holds half the
+# time.
+#
+# What it fixes: an agent writes its plan, its measurements and its post-merge
+# gaps into ~/.claude memory, which no reviewer and no later agent can read. The
+# instruction to post them to the PR instead already lived in two CLAUDE.md files
+# and in a per-project memory note, and the go-monorepo memory directory still
+# reached 121 files -- one of them carrying a merge-order hazard between two open
+# PRs, labelled "not in either PR" by its own author.
+#
+# Python libraries an agent needs from the default `python3`, on both platforms.
+#
+# Runs AFTER setup_dev_tools, which is what puts mise and its python on PATH.
+# The declaration and the reasoning live in dotfiles/python-packages.txt; this
+# only executes it.
+install_python_packages() {
+    local req="$SHARED_DIR/python-packages.txt"
+    echo "==> Python packages (uv -> mise's python)"
+
+    if [[ ! -f "$req" ]]; then
+        echo "    python-packages.txt: MISSING from $SHARED_DIR — skipped" >&2
+        return
+    fi
+
+    # `mise which`, never the shim and never a bare `python3`: sudo and
+    # non-interactive shells reset PATH, and uv's own managed python would
+    # otherwise win. Installing into the wrong interpreter SUCCEEDS and leaves
+    # `import bcrypt` failing, which is the confusing half of this.
+    local py uv_bin
+    if ! command -v mise &>/dev/null; then
+        echo "    mise not on PATH — skipped (re-run after setup_dev_tools)" >&2
+        return
+    fi
+    py=$(mise which python3 2>/dev/null || true)
+    uv_bin=$(mise which uv 2>/dev/null || command -v uv 2>/dev/null || true)
+    if [[ -z "$py" || -z "$uv_bin" ]]; then
+        echo "    need both python3 and uv from mise — skipped" >&2
+        return
+    fi
+
+    # uv reads pip requirements syntax, comments included, so the file goes in
+    # whole rather than being pre-stripped.
+    if "$uv_bin" pip install --quiet --python "$py" -r "$req"; then
+        local n
+        n=$(grep -cvE '^[[:space:]]*(#|$)' "$req")
+        echo "    installed: $n package(s) into ${py/#$HOME/\~}"
+    else
+        echo "    uv pip install FAILED for $req" >&2
+    fi
+}
+
+# A prose rule loses to friction. This makes the right thing one command, and
+# idempotent, so re-posting edits one comment instead of stacking a ninth.
+setup_gh_context() {
+    echo "==> gh-context (agent context lands on the PR, not in memory)"
+
+    if [[ ! -f "$BIN_DIR/gh-context" ]]; then
+        echo "    gh-context: MISSING from $BIN_DIR — skipped" >&2
+        return
+    fi
+    mkdir -p ~/.local/bin
+    install -m 755 "$BIN_DIR/gh-context" ~/.local/bin/gh-context
+    echo "    installed: ~/.local/bin/gh-context (--read, --kind, --scan-only, --long)"
+
+    # worktree-guard and worktree-sweep answer the same class of problem for the
+    # OTHER rule this repo keeps restating: work in a worktree, and clean it up.
+    #
+    # The rule is in three CLAUDE.md files, in the strongest terms any of them
+    # use, and it names its own failure -- an edit on main makes src-sync skip
+    # the repo, silently, hourly. It was skipped again on 2026-08-23: commit
+    # 2d7815d put 117 lines on main in the devbox .claude checkout, with a
+    # Claude-Session trailer on it. Claude Code gates this for BACKGROUND
+    # sessions only (worktree.bgIsolation); the devbox agent is interactive.
+    local _h
+    for _h in worktree-guard worktree-sweep; do
+        if [[ -f "$BIN_DIR/$_h" ]]; then
+            install -m 755 "$BIN_DIR/$_h" ~/.local/bin/"$_h"
+        else
+            echo "    $_h: MISSING from $BIN_DIR — skipped" >&2
+        fi
+    done
+    unset _h
+    echo "    installed: ~/.local/bin/worktree-guard (PreToolUse gate), worktree-sweep"
+
+    # Linux gets the hooks from claude-settings.json, which this script merges.
+    # macOS keeps its ~/.claude/settings.json outside this repo -- ~/.claude is a
+    # symlink to ~/src/claude there and is the source of truth -- so say what is
+    # missing rather than writing into it.
+    if [[ "$PLATFORM" == "macos" ]]; then
+        local _s=~/.claude/settings.json
+        grep -q 'gh-context --session-json' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart context read-back wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/gh-context --session-json" >&2
+        grep -q 'worktree-guard' "$_s" 2>/dev/null \
+            && echo "    hook: PreToolUse worktree gate wired" \
+            || echo "    hook: MISSING PreToolUse(Edit|Write) -> \$HOME/.local/bin/worktree-guard" >&2
+        grep -q 'worktree-sweep --session-json' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart worktree sweep wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/worktree-sweep --session-json" >&2
+    fi
+}
+
 print_manual_steps() {
     # Repeat the gh failures here. Phase 3 of twelve scrolls away long before the
     # run ends, and an extension that never installed is silent afterwards --
@@ -1264,7 +1372,10 @@ echo ""
 install_packages
 place_dotfiles
 setup_dev_tools
+# After setup_dev_tools: it is what sources bashrc and puts mise on PATH.
+install_python_packages
 setup_src_sync
+setup_gh_context
 setup_keymaster
 # Import before pruning: the prune asks "is this context defined anywhere?", so
 # the kind configs have to be in place first or it would delete the overlays

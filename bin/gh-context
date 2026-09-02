@@ -1,0 +1,443 @@
+#!/usr/bin/env bash
+#
+# gh-context — put a session's context on the pull request or the issue, where
+# the next agent and the team can read it.
+#
+#   gh-context --read                              # every voice on the ticket
+#   gh-context --kind plan     -F plan.md          # upsert the plan comment
+#   gh-context --kind status   -m 'one line'       # upsert the status comment
+#   gh-context --kind findings -F -                # body from stdin
+#   gh-context --kind followups -F notes.md --new  # a second comment, not an edit
+#   gh-context --scan-only -F draft.md             # check the text, post nothing
+#   gh-context --kind plan -F plan.md --long       # over budget, on purpose
+#
+# WHY THIS EXISTS
+#
+# Agent memory is private to one machine and one project directory. A finding
+# written there is invisible to the reviewer, to the next agent, and to the
+# human who merges. On 2026-08-03 a go-monorepo memory note carried a merge-order
+# hazard between two open PRs and said so in its own text: "not in either PR".
+# The rule to post that to the ticket already existed in two places, and the
+# go-monorepo memory directory still held 121 files. A rule that costs a
+# multi-step `gh` dance loses to a rule that costs one Write call.
+#
+# So this makes the right thing one command, and idempotent: each (target, kind)
+# owns exactly ONE comment, found by a hidden marker and edited in place. Re-run
+# it as the work moves. A thread of nine "status update" comments is the failure
+# mode this avoids -- the reader cannot tell which one is current.
+#
+# WHY IT SCANS THE BODY
+#
+# Some of these repos are public (pezware/0x58 is), and a comment is forever:
+# GitHub keeps edited revisions, and search engines index public threads. So the
+# body is scanned before it goes out. Secret-shaped matches refuse everywhere and
+# --public does not override them. Identity-shaped matches -- real home paths,
+# internal hostnames, email addresses -- refuse on a PUBLIC repo only, and
+# --public is how you say you meant it.
+#
+# The scan names the line and the pattern. It never rewrites the body: a silent
+# redaction teaches you nothing and hides what you were about to publish.
+set -uo pipefail
+
+die() { printf 'gh-context: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-1}"
+}
+
+KIND="" BODY_SRC="" BODY_TEXT="" TARGET_KIND="" TARGET_NUM=""
+READ_MODE=0 SCAN_ONLY=0 NEW=0 PUBLIC_OK=0 DRY_RUN=0 SESSION_JSON=0 LONG_OK=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --read)         READ_MODE=1; shift ;;
+        --kind)         KIND="${2:-}"; shift 2 ;;
+        --pr)           TARGET_KIND="pr"; TARGET_NUM="${2:-}"; shift 2 ;;
+        --issue)        TARGET_KIND="issue"; TARGET_NUM="${2:-}"; shift 2 ;;
+        -F|--body-file) BODY_SRC="${2:-}"; shift 2 ;;
+        -m|--message)   BODY_TEXT="${2:-}"; shift 2 ;;
+        --new)          NEW=1; shift ;;
+        --public)       PUBLIC_OK=1; shift ;;
+        --long)         LONG_OK=1; shift ;;
+        --scan-only)    SCAN_ONLY=1; shift ;;
+        --dry-run)      DRY_RUN=1; shift ;;
+        --session-json) SESSION_JSON=1; shift ;;
+        -h|--help)      usage 0 ;;
+        *)              die "unknown argument: $1 (try --help)" ;;
+    esac
+done
+
+# ---------------------------------------------------------------- the scanner
+#
+# One pass, in python3, because masking a match without printing it is fiddly in
+# grep and this text is about to be published. python3 is already a dependency
+# of this repo's hooks and restore.sh.
+#
+# Exit: 0 clean, 2 a HIGH match, 3 MEDIUM matches only.
+scan_body() {
+    local file="$1"
+    HOME_DIR="$HOME" USER_NAME="$(id -un)" HOST_NAME="$(hostname -s 2>/dev/null || true)" \
+    python3 - "$file" <<'PY'
+import os, re, sys
+
+text = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
+home, user = os.environ['HOME'], os.environ['USER_NAME']
+host = os.environ.get('HOST_NAME', '')
+
+# HIGH: secret-shaped. These refuse on every repo, public or private, and
+# --public does not override them. A credential in a private thread is still a
+# credential in a place it was never meant to live.
+HIGH = [
+    ('github token',   r'gh[pousr]_[A-Za-z0-9]{20,}'),
+    ('github pat',     r'github_pat_[A-Za-z0-9_]{20,}'),
+    ('gitlab pat',     r'glpat-[A-Za-z0-9_\-]{16,}'),
+    ('slack token',    r'xox[baprs]-[A-Za-z0-9\-]{10,}'),
+    ('aws key id',     r'AKIA[0-9A-Z]{16}'),
+    ('google api key', r'AIza[0-9A-Za-z_\-]{35}'),
+    ('model api key',  r'sk-(ant-)?[A-Za-z0-9_\-]{20,}'),
+    ('private key',    r'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
+    ('jwt',            r'eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.'),
+    ('url credential', r'[a-z]+://[^\s/:@]+:[^\s/@]+@'),
+    # A named secret with a literal value. Placeholders are excluded below --
+    # FOO_TOKEN=$BAR, <redacted> and xxxx are how you write about one safely.
+    ('assigned secret',
+     r'(?i)\b[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY|CREDENTIAL)[A-Z0-9_]*'
+     r'\s*[=:]\s*["\']?(?P<val>[^\s"\'<>${}]{8,})'),
+]
+
+# MEDIUM: identity-shaped. Public repos only. These are not credentials; they
+# are the operator's machine, accounts and internal names, and a public thread
+# is a poor place to enumerate them.
+MEDIUM = [
+    ('home path',      re.escape(home)),
+    ('username',       r'\b' + re.escape(user) + r'\b'),
+    ('internal host',  r'[A-Za-z0-9\-]+\.(internal|dev|stg)\.[A-Za-z0-9\-]+\.app\b'),
+    ('tailnet ip',     r'\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b'),
+    ('email',          r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'),
+]
+if host and host not in ('localhost', ''):
+    MEDIUM.append(('hostname', r'\b' + re.escape(host) + r'\b'))
+
+PLACEHOLDER = re.compile(r'^(x+|\*+|<.*>|\.\.\.|redacted|changeme|example|your[-_])', re.I)
+
+def mask(s):
+    """Show enough to find the line, never enough to use the value."""
+    s = s.strip()
+    return s[:4] + '…' + f'[{len(s)} chars]' if len(s) > 8 else '…'
+
+findings = []
+for n, line in enumerate(text, 1):
+    for label, pat in HIGH:
+        m = re.search(pat, line)
+        if not m:
+            continue
+        val = m.groupdict().get('val') if m.groupdict() else None
+        if val and PLACEHOLDER.match(val):
+            continue
+        findings.append(('HIGH', n, label, mask(val or m.group(0))))
+    for label, pat in MEDIUM:
+        m = re.search(pat, line)
+        if m:
+            findings.append(('MEDIUM', n, label, mask(m.group(0))))
+
+for sev, n, label, excerpt in findings:
+    print(f'  {sev:6} line {n:>3}  {label}: {excerpt}')
+
+sys.exit(2 if any(f[0] == 'HIGH' for f in findings) else 3 if findings else 0)
+PY
+}
+
+# ------------------------------------------------------------- session context
+#
+# SessionStart output. Every failure path prints nothing and exits 0: a session
+# preamble that cries wolf is worse than one that stays quiet, and this runs
+# before the operator has typed anything.
+#
+# Network calls are watchdogged. macOS has no timeout(1), so this backgrounds gh
+# and polls -- the same shape the OrbStack runbook uses.
+gh_with_watchdog() {
+    local secs="$1"; shift
+    local out; out=$(mktemp)
+    ( "$@" >"$out" 2>/dev/null ) & local pid=$!
+    local i
+    for ((i = 0; i < secs * 4; i++)); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.25
+    done
+    if kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null; rm -f "$out"; return 1; fi
+    wait "$pid" 2>/dev/null || { rm -f "$out"; return 1; }
+    cat "$out"; rm -f "$out"
+}
+
+emit_session_json() {
+    local ctx="$1"
+    python3 -c '
+import json, sys
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "SessionStart", "additionalContext": sys.argv[1]}}))' "$ctx"
+}
+
+if [[ $SESSION_JSON -eq 1 ]]; then
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -z "$root" ]]; then
+        # A working root (~/src/iden2, ~/src) is not a repo, but every session
+        # there is about to enter one. One line, because the read-back cannot
+        # resolve a PR from here and the reminder is the whole value.
+        if compgen -G "$PWD/*/.git" >/dev/null 2>&1; then
+            emit_session_json 'Working on a PR or an issue? Its context lives on the ticket, not in memory. From the worktree: `gh-context --read` before the first edit, `gh-context --kind status -F -` before you finish.'
+        fi
+        exit 0
+    fi
+    cd "$root" || exit 0
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    pr=$(gh_with_watchdog 5 gh pr view --json number,state,url 2>/dev/null || true)
+    [[ -z "$pr" ]] && exit 0
+    # The slug comes out of the PR url, not a second `gh repo view`. Two network
+    # calls fit the hook's timeout budget; three do not.
+    read -r num state slug < <(printf '%s' "$pr" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(d["number"], d["state"], "/".join(d["url"].split("/")[3:5]))' 2>/dev/null || true)
+    [[ -z "${num:-}" || -z "${slug:-}" ]] && exit 0
+    kinds=$(gh_with_watchdog 6 gh api --paginate "/repos/$slug/issues/$num/comments" \
+                --jq '.[].body' 2>/dev/null |
+            grep -oE '<!-- agent-context: [a-z]+ -->' | sed 's/.*: //; s/ -->//' |
+            sort -u | paste -sd, - || true)
+    if [[ -n "$kinds" ]]; then
+        note="$slug PR #$num ($state) carries agent-context comments: $kinds. Read them before you plan: \`gh-context --read\`."
+    else
+        note="$slug PR #$num ($state) has no agent-context comment yet. Post your plan and your findings there, not to memory: \`gh-context --kind plan -F -\`."
+    fi
+    emit_session_json "Branch \`$branch\` -> $note"
+    exit 0
+fi
+
+# ------------------------------------------------------------------- resolve
+#
+# gh runs from the repo toplevel, always. The devbox wrapper picks its token
+# from the origin remote's OWNER, so a gh call outside a checkout has no token
+# and reports it as "please run gh auth login" -- advice that is wrong there.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repo"
+cd "$ROOT" || die "cannot enter $ROOT"
+
+command -v gh >/dev/null 2>&1 || die "gh not on PATH"
+
+SLUG=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) \
+    || die "gh cannot read this repo. On the devbox, run from inside the checkout."
+VISIBILITY=$(gh repo view --json visibility -q .visibility 2>/dev/null || echo UNKNOWN)
+
+if [[ -z "$TARGET_NUM" ]]; then
+    # Auto-resolution covers the pull request only. A branch name is a guess at
+    # an issue number, and posting a work log to the wrong ticket is worse than
+    # asking for --issue.
+    TARGET_NUM=$(gh pr view --json number -q .number 2>/dev/null || true)
+    [[ -n "$TARGET_NUM" ]] && TARGET_KIND="pr"
+fi
+[[ -n "$TARGET_NUM" ]] || die "no pull request for this branch. Name the target: --pr N or --issue N"
+
+# Issue comments and PR conversation comments are one endpoint. Review comments
+# (anchored to a diff line) are a different one, and are not what this posts.
+API="/repos/$SLUG/issues/$TARGET_NUM/comments"
+
+# ---------------------------------------------------------------------- read
+if [[ $READ_MODE -eq 1 ]]; then
+    tmp=$(mktemp); rev=$(mktemp); trap 'rm -f "$tmp" "$rev"' EXIT
+    gh api --paginate "$API" > "$tmp" 2>/dev/null || die "cannot read comments on $SLUG#$TARGET_NUM"
+    # Review bodies live on a different endpoint, and a review posted as a body
+    # with no inline comment creates no thread at all. iden2-pr-review names that
+    # trap: a thread count of zero reads as silence while a whole review sits on
+    # the PR. An issue number here 404s, which is why the failure is tolerated.
+    if [[ "${TARGET_KIND:-pr}" == "pr" ]]; then
+        gh api --paginate "/repos/$SLUG/pulls/$TARGET_NUM/reviews" > "$rev" 2>/dev/null || : > "$rev"
+    fi
+    python3 - "$tmp" "$SLUG" "$TARGET_NUM" "${TARGET_KIND:-pr}" "$rev" <<'PY'
+import json, re, sys
+
+def load(path):
+    """--paginate concatenates JSON arrays; parse each and flatten."""
+    raw = open(path).read().strip()
+    if not raw:
+        return []
+    pages, dec, i = [], json.JSONDecoder(), 0
+    while i < len(raw):
+        obj, end = dec.raw_decode(raw, i)
+        pages.append(obj)
+        i = end
+        while i < len(raw) and raw[i] in ' \n\r\t':
+            i += 1
+    return [c for p in pages for c in p if isinstance(c, dict)]
+
+slug, num, tkind = sys.argv[2], sys.argv[3], sys.argv[4]
+comments = load(sys.argv[1])
+reviews = [r for r in load(sys.argv[5]) if (r.get('body') or '').strip()]
+
+MARK = re.compile(r'<!-- agent-context: ([a-z]+) -->')
+
+def who(d):
+    return ((d.get('user') or {}).get('login')) or '?'
+
+def first_line(body):
+    for ln in (body or '').strip().splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith('<!--'):
+            return ln[:90]
+    return ''
+
+marked = [c for c in comments if MARK.search(c.get('body') or '')]
+other = [c for c in comments if not MARK.search(c.get('body') or '')]
+
+print(f"# {slug}#{num} — {len(comments)} comment(s), {len(reviews)} review body(ies), "
+      f"{len(marked)} agent-context\n")
+
+for c in marked:
+    kind = MARK.search(c['body']).group(1)
+    body = MARK.sub('', c['body']).strip()
+    print(f"--- {kind}  ({who(c)}, updated {c.get('updated_at','')[:16]}, {len(body)} chars)")
+    print(body, "\n")
+
+# Everything a human wrote. This listing IS the point of --read. Filtering on
+# the agent-context marker made this command blind to every other voice: on
+# infra-tf#450 it reported "1 of 7 comments", a session missed a validation
+# report posted six minutes after the merge, and posted a second one.
+if other or reviews:
+    print("--- other voices on this ticket. Read these before you write.\n")
+for c in other:
+    print(f"  comment   {c.get('created_at','')[:16]}  {who(c):16.16}  "
+          f"{len(c.get('body') or ''):>6} chars  | {first_line(c.get('body'))}")
+for r in reviews:
+    print(f"  {r.get('state','').lower():9.9} {(r.get('submitted_at') or '')[:16]}  {who(r):16.16}  "
+          f"{len(r['body']):>6} chars  | {first_line(r['body'])}")
+if other or reviews:
+    # The hint has to name the right subcommand: `gh pr view` on an issue number
+    # prints a different thread, or nothing at all.
+    print(f"\n  full text: gh {tkind} view {num} --comments")
+PY
+    exit 0
+fi
+
+# ---------------------------------------------------------------------- write
+case "$KIND" in
+    plan|status|findings|followups) ;;
+    "")  die "--kind is required: plan | status | findings | followups" ;;
+    *)   die "unknown kind '$KIND'. Use: plan | status | findings | followups" ;;
+esac
+
+BODY=$(mktemp); trap 'rm -f "$BODY"' EXIT
+if [[ -n "$BODY_SRC" ]]; then
+    if [[ "$BODY_SRC" == "-" ]]; then cat > "$BODY"
+    else [[ -f "$BODY_SRC" ]] || die "no such file: $BODY_SRC"; cat "$BODY_SRC" > "$BODY"; fi
+elif [[ -n "$BODY_TEXT" ]]; then
+    printf '%s\n' "$BODY_TEXT" > "$BODY"
+else
+    die "give a body: -F FILE, -F - (stdin), or -m 'text'"
+fi
+[[ -s "$BODY" ]] || die "the body is empty"
+
+# --- the scan, before anything leaves this machine
+findings_out=$(scan_body "$BODY"); scan_rc=$?
+if [[ $scan_rc -eq 2 ]]; then
+    printf 'gh-context: REFUSING — the body looks like it carries a secret.\n%s\n' "$findings_out" >&2
+    printf 'Nothing was posted. --public does not override this. Remove the value and re-run.\n' >&2
+    exit 2
+fi
+if [[ $scan_rc -eq 3 ]]; then
+    if [[ "$VISIBILITY" == "PUBLIC" && $PUBLIC_OK -eq 0 ]]; then
+        printf 'gh-context: REFUSING — %s is PUBLIC and the body names local identity.\n%s\n' \
+            "$SLUG" "$findings_out" >&2
+        printf 'Nothing was posted. Replace those, or re-run with --public if you meant to publish them.\n' >&2
+        exit 2
+    fi
+    printf 'gh-context: note — identity-shaped matches, posting anyway (%s):\n%s\n' \
+        "$VISIBILITY" "$findings_out" >&2
+fi
+# --- the budget, so a comment stays a pointer and the detail stays in the issue
+#
+# Measured on infra-tf#454 (2026-08-27): an 11,236-char issue body, then a
+# 19,675-char plan comment, a 4,648-char status and a 2,877-char followups.
+# 38 KB of prose on one ticket, and six pull requests off it.
+#
+# Every sentence in there obeyed the writing rule. That is the whole point: the
+# rule governs the sentence -- one idea, under 20 words, no dead words -- and it
+# has nothing to say about the document. So it could not see this. The budget is
+# the missing half, and it is a byte count because the rule the agent already
+# has says to record numbers, not adjectives.
+#
+# These are ceilings for a POINTER. The issue body holds the detail. A comment
+# that needs more than this is usually the issue body in the wrong place.
+budget_for() {
+    case "$1" in
+        plan)      echo 4000 ;;   # a staged plan is the one that earns room
+        status)    echo 800  ;;
+        findings)  echo 1500 ;;
+        followups) echo 1200 ;;
+        *)         echo 0    ;;
+    esac
+}
+
+BUDGET=$(budget_for "$KIND")
+SIZE=$(wc -c < "$BODY" | tr -d ' ')
+OVER=""
+if [[ $BUDGET -gt 0 && $SIZE -gt $BUDGET ]]; then
+    if [[ $LONG_OK -eq 1 ]]; then
+        # Recorded in the footer too. An override nobody can see becomes the
+        # default within a week -- the same reason allow-main-edit announces
+        # itself on every edit it permits.
+        OVER=" · --long ($SIZE chars, budget $BUDGET)"
+        printf 'gh-context: over budget by %s chars, posting anyway (--long).\n' \
+            "$((SIZE - BUDGET))" >&2
+    elif [[ $SCAN_ONLY -eq 0 ]]; then
+        printf 'gh-context: REFUSING — the body is %s chars, and the budget for %s is %s. Over by %s.\n' \
+            "$SIZE" "$KIND" "$BUDGET" "$((SIZE - BUDGET))" >&2
+        printf 'Move the detail into the issue body and post a pointer to it. Nothing was posted.\n' >&2
+        printf 'Pass --long if this length is earned.\n' >&2
+        exit 3
+    else
+        printf 'gh-context: over budget — %s chars, and the budget for %s is %s.\n' \
+            "$SIZE" "$KIND" "$BUDGET" >&2
+    fi
+fi
+
+if [[ $SCAN_ONLY -eq 1 ]]; then
+    [[ $scan_rc -eq 0 ]] && echo "gh-context: scan clean ($SLUG is $VISIBILITY), $SIZE chars, budget $BUDGET"
+    exit 0
+fi
+if [[ "$VISIBILITY" == "PUBLIC" && $PUBLIC_OK -eq 0 ]]; then
+    die "$SLUG is PUBLIC — this comment would be world-readable. Re-run with --public if that is intended."
+fi
+
+MARKER="<!-- agent-context: $KIND -->"
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+SHA=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
+STAMP=$(date -u +%Y-%m-%dT%H:%MZ)
+
+PAYLOAD=$(mktemp); trap 'rm -f "$BODY" "$PAYLOAD"' EXIT
+{
+    printf '%s\n' "$MARKER"
+    cat "$BODY"
+    printf '\n---\n`%s` · `%s` · %s%s\n' "$BRANCH" "$SHA" "$STAMP" "$OVER"
+} > "$PAYLOAD"
+
+EXISTING=""
+if [[ $NEW -eq 0 ]]; then
+    EXISTING=$(gh api --paginate "$API" --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
+                 2>/dev/null | head -1 || true)
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    printf 'gh-context: DRY RUN — would %s on %s#%s (%s)\n' \
+        "$([[ -n "$EXISTING" ]] && echo "edit comment $EXISTING" || echo 'post a new comment')" \
+        "$SLUG" "$TARGET_NUM" "$VISIBILITY"
+    cat "$PAYLOAD"
+    exit 0
+fi
+
+if [[ -n "$EXISTING" ]]; then
+    url=$(gh api -X PATCH "/repos/$SLUG/issues/comments/$EXISTING" \
+            -F body=@"$PAYLOAD" --jq .html_url) || die "the edit failed on comment $EXISTING"
+    printf 'gh-context: updated %s comment on %s#%s\n%s\n' "$KIND" "$SLUG" "$TARGET_NUM" "$url"
+else
+    url=$(gh api -X POST "$API" -F body=@"$PAYLOAD" --jq .html_url) \
+        || die "the post failed on $SLUG#$TARGET_NUM"
+    printf 'gh-context: posted %s comment on %s#%s\n%s\n' "$KIND" "$SLUG" "$TARGET_NUM" "$url"
+fi
