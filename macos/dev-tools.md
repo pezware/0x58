@@ -1,6 +1,6 @@
 # Development Tools
 
-Generated: 2026-08-10
+Generated: 2026-09-02
 
 Source of truth: [`../dotfiles/mise/config.toml`](../dotfiles/mise/config.toml)
 (symlinked to `~/.config/mise/config.toml`)
@@ -17,7 +17,7 @@ bat                                      0.26.1    ~/.config/mise/config.toml  l
 checkov                                  3.3.8     ~/.config/mise/config.toml  latest
 cloud-sql-proxy                          2.23.0    ~/.config/mise/config.toml  latest
 cloudflared                              2026.7.1  ~/.config/mise/config.toml  latest
-codex                                    0.144.1   ~/.config/mise/config.toml  0.144.1
+codex                                    0.147.0   ~/.config/mise/config.toml  latest
 ctop                                     0.7.7     ~/.config/mise/config.toml  latest
 dive                                     0.13.1    ~/.config/mise/config.toml  latest
 fd                                       10.4.2    ~/.config/mise/config.toml  latest
@@ -71,7 +71,6 @@ yq                                       4.53.3    ~/.config/mise/config.toml  l
 
 ```
 /Users/arbeitandy/.local/share/mise/installs/node/22.23.1/lib
-├── @openai/codex@0.147.0
 ├── corepack@0.34.6
 └── npm@10.9.8
 
