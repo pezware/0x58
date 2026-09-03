@@ -98,6 +98,12 @@ needs_linode_token() {
 ts_keychain_item() {
     case "$1" in
         minimal) echo "tailscale-exit-authkey" ;;   # reuse the existing item
+        # The waltid build box registers as tag:k8s and so uses the k8s key.
+        # Both are disposable compute that holds no credentials, and reusing the
+        # tag is what lets the devbox reach it under the ACL rules that already
+        # exist. A tag:waltid would need a minted key and a policy edit in the
+        # browser before the agent could reach anything.
+        waltid)  echo "tailscale-k8s-authkey" ;;
         *)       echo "tailscale-$1-authkey" ;;
     esac
 }

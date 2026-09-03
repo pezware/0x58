@@ -14,6 +14,7 @@ dev/nodes/
 └── roles/
     ├── devbox/                 # 4 GB, always on  — repos, agents, kubectl
     ├── k8s/                    # 8 GB, on demand  — docker + kind, disposable
+    ├── waltid/                 # 16 GB dedicated  — JDK + docker, build box
     └── minimal/                # 1 GB             — exit node only, fall-back tier
 ```
 
@@ -34,6 +35,7 @@ duration of one command.
 |---|---|---|---|---|
 | `devbox` | g6-standard-2 · 4 GB | $24/mo | permanent | 4 GB — safe, never runs kubelet |
 | `k8s` | g6-standard-4 · 8 GB | ~$0.072/hr (~$6.50 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
+| `waltid` | g6-dedicated-8 · 16 GB | ~$0.216/hr (~$5.18/day) | per build campaign | 4 GB — no kubelet, so swap is a safety net |
 | `minimal` | g6-nanode-1 · 1 GB | $5/mo | fall-back | 0 |
 
 Typical steady state is `devbox` alone at $12/mo, plus `k8s` for the hours you
@@ -142,8 +144,50 @@ as well.
 ./ts-node k8s apply          # when you need a cluster (~4 min incl. node image)
 ./ts-node k8s destroy        # when you are done — ONLY this stops the billing
 
+./ts-node waltid apply       # a 16 GB build box (~6 min incl. the JDK)
+./ts-node waltid destroy     # when the PRs are merged — ONLY this stops the billing
+
 ./ts-node <role> plan|start|stop|ip
 ```
+
+### The waltid build box
+
+The devbox has 2 vCPU and 4 GB, which a walt.id Gradle build exhausts — it was
+sitting at load 28 with 3 GB in swap when this role was written. `waltid` is
+where that build goes instead. It is a **remote builder**, not a second
+workstation: no GitHub token, no agent session, no repo of its own. The agent
+stays on the devbox and drives this box over Tailscale SSH.
+
+```bash
+./ts-node waltid apply                       # from the Mac
+ssh pezware-waltid build-env                 # what the box has, with versions
+
+# from the devbox — seed the repo, then build
+rsync -a ~/src/iden2/waltid-identity-mirror/ waltid:~/src/waltid-identity-mirror/
+ssh waltid 'cd ~/src/waltid-identity-mirror && ./gradlew build'
+```
+
+Three things about that handoff are not guessable, and each cost a step to find:
+
+- **MagicDNS does not resolve from the devbox.** Every node here joins with
+  `--accept-dns=false`, so `ssh pezware-waltid` fails with *"Name or service not
+  known"* — which reads as a dead node rather than a naming one. Pin the tailnet
+  IP in the devbox's `~/.ssh/config` and the readable name works everywhere.
+- **Send the parent repo, not a worktree.** A worktree's `.git` is a *file*
+  pointing into the parent's `.git/worktrees/`, so rsyncing the worktree alone
+  lands a repo that no git command will touch. Push
+  `waltid-identity-mirror/` and check the commit out on the far side;
+  `git worktree prune` clears the stale metadata that comes with it.
+- **`rsync`, not `git clone`.** The node holds no credentials, so it cannot
+  reach a private repo on its own, and the ACL is one-directional so it cannot
+  pull from the devbox either. That is the property being kept, not a limitation
+  to work around — do not put a token here to make cloning work.
+
+Measured on the first run: 107 MB in 7.4 s over the tailnet, and rsync is
+incremental afterwards.
+
+Long builds belong in the tmux session the bootstrap leaves ready, or they die
+with the ssh connection: `ssh waltid -t tmux attach -t main`.
 
 ### Attaching from a phone or tablet
 
@@ -403,7 +447,20 @@ them.
 |---|---|---|---|
 | `devbox` | Mac | Mac | it cannot destroy itself mid-apply |
 | `k8s` | devbox | devbox (so: phone) | the on-demand node you want without a laptop |
+| `waltid` | Mac | Mac | the devbox is its client, so it must not also be its owner |
 | `minimal` | Mac | Mac | fallback tier, rarely touched |
+
+`waltid` keeps its state on the Mac even though the devbox is what uses the
+node. The devbox is already the box under pressure — it is why this role exists
+— and giving it the power to destroy the machine its own agent is mid-build on
+adds a failure the Mac does not have. Teardown is one command from here.
+
+**Do not run one of these roles from a git worktree you then delete.**
+`terraform.tfstate` is gitignored, so it lives beside `main.tf` and nowhere
+else. Deleting the directory orphans a running Linode that nothing can now
+destroy and that keeps billing — and `worktree-sweep --remove` deletes merged,
+clean worktrees for a living. Move the state into the primary checkout before
+the branch merges.
 
 `ts-node` **refuses** the `k8s` role on macOS. Running it there would build a
 second, independent state that knows nothing about a node the devbox already
