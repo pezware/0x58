@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# testbox — claim, queue, and release the ONE shared build-and-test node.
+#
+# There is exactly one testbox. That is a capacity decision, not a technical
+# limit, and it means the interesting failure is social rather than mechanical:
+# two agents both need it, or one finishes and forgets to hand it on, and the
+# box either gets fought over or bills all weekend doing nothing.
+#
+#   testbox claim <agent> "<purpose>"    take it, or learn who has it
+#   testbox status                       holder, uptime, cost so far, queue
+#   testbox queue add <agent> "<task>"   park work behind the current holder
+#   testbox queue list
+#   testbox release                      hand to the next in queue, or advise destroy
+#
+# BOTH the claim and the queue live here on the devbox, not on the node. The
+# node is the thing being claimed, so putting the claim on it is tempting and
+# wrong: the claim has to outlive a `destroy`, or the queue is lost exactly when
+# someone needs to know what was waiting. The cost is that a claim can go stale
+# when a node dies -- `status` detects that against the Linode API and says so
+# rather than reporting a holder for a box that no longer exists.
+set -euo pipefail
+
+STATE="${TESTBOX_STATE:-$HOME/.local/state/testbox}"
+CLAIM="$STATE/claim"
+QUEUE="$STATE/queue"
+LABEL="${TESTBOX_LABEL:-pezware-testbox}"
+CREDS="${TESTBOX_CREDS:-$HOME/.config/0x58/credentials.env}"
+
+mkdir -p "$STATE"
+die() { echo "testbox: $*" >&2; exit 1; }
+
+# ── What Linode says, which outranks anything written here ──────────────────
+# Returns "<id> <type> <created>" for the live node, or nothing. Every claim
+# question is answered against this first: a claim file is a note, and a running
+# instance is a fact.
+live_node() {
+    [ -r "$CREDS" ] || return 0
+    # shellcheck disable=SC1090
+    local token; token=$(. "$CREDS" >/dev/null 2>&1; printf '%s' "${LINODE_TOKEN:-}")
+    [ -n "$token" ] || return 0
+    curl -sf -K - "https://api.linode.com/v4/linode/instances" <<CFG 2>/dev/null |
+header = "Authorization: Bearer $token"
+CFG
+    python3 -c "
+import json,sys
+want=sys.argv[1]
+for i in json.load(sys.stdin)['data']:
+    if i['label']==want:
+        print(i['id'], i['type'], i['created']); break
+" "$LABEL" 2>/dev/null || true
+}
+
+# Hourly rate for a plan, from the API. No hardcoded price table: they go stale
+# silently and a wrong cost figure is worse than none, because it gets believed.
+rate_for() {
+    curl -sf "https://api.linode.com/v4/linode/types/$1" 2>/dev/null |
+        python3 -c "import json,sys;print(json.load(sys.stdin)['price']['hourly'])" 2>/dev/null || true
+}
+
+held_by() { [ -s "$CLAIM" ] && head -1 "$CLAIM" | cut -d'|' -f1 || true; }
+
+cmd_claim() {
+    local agent="${1:-}" purpose="${2:-}"
+    [ -n "$agent" ] || die "usage: testbox claim <agent> \"<purpose>\""
+    [ -n "$purpose" ] || die "say what you are claiming it for — the next agent reads this"
+
+    local holder; holder=$(held_by)
+    if [ -n "$holder" ] && [ "$holder" != "$agent" ]; then
+        echo "testbox is held by: $holder"
+        # -f2, not -f2-: field 3 is the claim timestamp, and trailing it onto the
+        # purpose makes the one line another agent actually reads look corrupt.
+        sed -n '1p' "$CLAIM" | cut -d'|' -f2 | sed 's/^/  purpose: /'
+        echo
+        echo "Queue behind them:  testbox queue add $agent \"<task>\""
+        exit 1
+    fi
+
+    printf '%s|%s|%s\n' "$agent" "$purpose" "$(date -Is)" > "$CLAIM"
+    echo "claimed by $agent: $purpose"
+    [ -n "$(live_node)" ] || echo "NOTE: no $LABEL is running. Create one: ts-node testbox apply"
+}
+
+cmd_status() {
+    local node id type created rate holder
+    node=$(live_node)
+
+    if [ -n "$node" ]; then
+        read -r id type created <<<"$node"
+        rate=$(rate_for "$type")
+        echo "node     $LABEL (id $id) — $type"
+        if [ -n "$rate" ] && [ -n "$created" ]; then
+            python3 -c "
+import datetime,sys
+created,rate=sys.argv[1],float(sys.argv[2])
+started=datetime.datetime.fromisoformat(created.replace('Z','+00:00'))
+hrs=(datetime.datetime.now(datetime.timezone.utc)-started).total_seconds()/3600
+print(f'age      {hrs:.1f} h')
+print(f'cost     \${hrs*rate:.2f} so far  (\${rate}/hr, \${rate*24:.2f}/day)')
+" "$created" "$rate" 2>/dev/null || true
+        fi
+    else
+        echo "node     NONE running"
+    fi
+
+    holder=$(held_by)
+    if [ -n "$holder" ]; then
+        echo "held by  $holder"
+        sed -n '1p' "$CLAIM" | cut -d'|' -f2 | sed 's/^/  purpose: /'
+        # A claim naming a node that does not exist is the one inconsistency
+        # this design can produce. Say so plainly instead of reporting a holder.
+        [ -n "$node" ] || echo "  STALE — claim outlives the node. Clear it: testbox release"
+    else
+        echo "held by  nobody"
+    fi
+
+    if [ -s "$QUEUE" ]; then
+        echo "queue    $(wc -l < "$QUEUE" | tr -d ' ') waiting"
+        nl -w4 -s'  ' "$QUEUE" | sed 's/|/ — /'
+    else
+        echo "queue    empty"
+    fi
+}
+
+cmd_queue() {
+    case "${1:-list}" in
+        add)
+            local agent="${2:-}" task="${3:-}"
+            [ -n "$agent" ] && [ -n "$task" ] || die "usage: testbox queue add <agent> \"<task>\""
+            printf '%s|%s\n' "$agent" "$task" >> "$QUEUE"
+            echo "queued for $agent: $task  (position $(wc -l < "$QUEUE" | tr -d ' '))"
+            ;;
+        list) [ -s "$QUEUE" ] && nl -w4 -s'  ' "$QUEUE" | sed 's/|/ — /' || echo "queue empty" ;;
+        *)    die "usage: testbox queue add|list" ;;
+    esac
+}
+
+# The whole point of the tool. Releasing decides the node's fate rather than
+# leaving it to whoever remembers -- an empty queue means the box should go, and
+# saying so at the moment of release is the only time anyone is listening.
+cmd_release() {
+    local holder; holder=$(held_by)
+    [ -n "$holder" ] || { echo "testbox is not claimed."; cmd_status; return 0; }
+    : > "$CLAIM"
+    echo "released by $holder"
+
+    if [ -s "$QUEUE" ]; then
+        local next; next=$(head -1 "$QUEUE")
+        sed -i '1d' "$QUEUE" 2>/dev/null || { tail -n +2 "$QUEUE" > "$QUEUE.tmp"; mv "$QUEUE.tmp" "$QUEUE"; }
+        echo
+        echo "NEXT IN QUEUE: ${next%%|*} — ${next#*|}"
+        echo "KEEP the node. Tell them, then they run:"
+        echo "  testbox claim ${next%%|*} \"${next#*|}\""
+        echo "  devbox-inbox send --to ${next%%|*} 'testbox is yours'"
+    else
+        echo
+        echo "QUEUE IS EMPTY — destroy the node, it bills while idle:"
+        echo "  ~/src/public/0x58/dev/nodes/ts-node testbox destroy"
+        echo "Powering off does NOT stop charges. Only destroy does."
+    fi
+}
+
+case "${1:-status}" in
+    claim)   shift; cmd_claim "$@" ;;
+    status)  cmd_status ;;
+    queue)   shift; cmd_queue "$@" ;;
+    release) cmd_release ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)       die "unknown command '${1}' (try --help)" ;;
+esac

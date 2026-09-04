@@ -14,6 +14,7 @@ dev/nodes/
 └── roles/
     ├── devbox/                 # 4 GB, always on  — repos, agents, kubectl
     ├── k8s/                    # 8 GB, on demand  — docker + kind, disposable
+    ├── testbox/                # 8 GB floor       — build AND test, singleton
     └── minimal/                # 1 GB             — exit node only, fall-back tier
 ```
 
@@ -34,6 +35,7 @@ duration of one command.
 |---|---|---|---|---|
 | `devbox` | g6-standard-2 · 4 GB | $24/mo | permanent | 4 GB — safe, never runs kubelet |
 | `k8s` | g6-standard-4 · 8 GB | ~$0.072/hr (~$6.50 at 90 h) | per session | **0 — kubelet refuses to start with swap** |
+| `testbox` | g6-standard-4 · 8 GB *(floor)* | $0.072/hr parked, $0.288 at build size | per spike, **one at a time** | 4 GB — kind's kubelet sets `failSwapOn: false` |
 | `minimal` | g6-nanode-1 · 1 GB | $5/mo | fall-back | 0 |
 
 Typical steady state is `devbox` alone at $12/mo, plus `k8s` for the hours you
@@ -54,7 +56,15 @@ ACL separation. Hence one key each:
 |---|---|---|---|
 | `devbox` | `tailscale-devbox-authkey` | `tag:devbox` | **single-use** |
 | `k8s` | `tailscale-k8s-authkey` | `tag:k8s` | reusable |
+| `testbox` | `tailscale-k8s-authkey` *(shared with `k8s`)* | `tag:k8s` | reusable |
 | `minimal` | `tailscale-exit-authkey` *(existing)* | `tag:exit-node` | reusable |
+
+`testbox` deliberately reuses the `k8s` key and tag rather than minting its own.
+The policy already grants `tag:devbox -> tag:k8s:6443,22`, which is exactly what
+it needs, so the role works the moment it is applied — no key to mint and no ACL
+edit in a browser first. Both are disposable compute holding no credentials, so
+the tag covers one class rather than two. Split the tag the day either box holds
+a secret.
 
 **Single-use where you can, reusable only where you must.** The key is rendered
 into instance `user_data`, so it lands in tfstate and in cloud-init's
@@ -142,8 +152,145 @@ as well.
 ./ts-node k8s apply          # when you need a cluster (~4 min incl. node image)
 ./ts-node k8s destroy        # when you are done — ONLY this stops the billing
 
+./ts-node testbox apply      # the shared build-and-test box (~6 min incl. JDK + kind)
+./ts-node testbox destroy    # when the queue is empty — ONLY this stops the billing
+
 ./ts-node <role> plan|start|stop|ip
 ```
+
+### The testbox
+
+The devbox has 2 vCPU and 4 GB. A walt.id Gradle build exhausts it — measured at
+load 28 with 3 GB in swap, and the same build OOM-killed repeatedly there while
+succeeding in 6m56s on a bigger box. `testbox` is where build and test both go
+instead.
+
+**Build and test live on the SAME box, deliberately.** Splitting them across two
+machines was tried on 2026-09-03 and every incident that day came from the
+split: a staged-tar disk crisis at 98%, an e2e run voided by `ENOSPC` that
+deployed charts referencing images never built, and an emergency prune that
+deleted the images it was meant to protect. Images are born where they are
+tested, so there is nothing to transfer.
+
+**There is exactly ONE.** Agents claim it, hand it on, or destroy it:
+
+```bash
+testbox claim waltid "PR 11 replica matrix"   # or learn who holds it
+testbox status                                # holder, uptime, cost, queue
+testbox queue add gomono "iaas store tests"   # park work behind them
+testbox release                               # next in queue, or advise destroy
+```
+
+`release` is where the lifetime decision gets made, because that is the only
+moment anyone is paying attention. An empty queue prints the destroy command; a
+non-empty one names the next holder and says to keep the box.
+
+```bash
+ssh devbox '~/src/public/0x58/dev/nodes/ts-node testbox apply'
+sandbox-ssh testbox build-env                # what the box has, with versions
+
+# from the devbox — seed a repo, then build
+rsync -e sandbox-ssh -a ~/src/iden2/<repo>/ testbox:~/src/<repo>/
+sandbox-ssh testbox 'cd ~/src/<repo> && ./gradlew build'
+```
+
+**Sizing is a floor, not a plan.** It is created on `g6-standard-4` and the disk
+is pinned at 160 GB **forever** — Linode grows disks but never shrinks them, and
+we always send `allow_auto_disk_resize=false` to keep the trip reversible. That
+floor is the cheapest state it can return to, and it sets how long a resize
+takes, because duration tracks the disk *allocation* rather than its usage:
+
+| plan | shape | $/hr | when |
+|---|---|---|---|
+| `g6-standard-4` | 4 vCPU · 8 GB | $0.072 | parked |
+| `g6-standard-6` | 6 vCPU · 16 GB | $0.144 | testing |
+| `g6-standard-8` | 8 vCPU · 32 GB | $0.288 | build spike |
+| `g6-dedicated-8` | 8 vCPU · 16 GB | $0.216 | CPU-bound spike |
+
+**Resize at spike boundaries, never per build.** A build is ~7 minutes; a resize
+is ~25 each way at this disk size *and* reboots the box, which does not bring
+containers back on its own.
+
+Three things about that handoff are not guessable, and each cost a step to find:
+
+- **MagicDNS does not resolve from the devbox.** Every node here joins with
+  `--accept-dns=false`, so `ssh pezware-testbox` fails with *"Name or service not
+  known"* — which reads as a dead node rather than a naming one. Pin the tailnet
+  IP in the devbox's `~/.ssh/config` and the readable name works everywhere.
+- **Send the parent repo, not a worktree.** A worktree's `.git` is a *file*
+  pointing into the parent's `.git/worktrees/`, so rsyncing the worktree alone
+  lands a repo that no git command will touch. Push
+  the parent repo and check the commit out on the far side;
+  `git worktree prune` clears the stale metadata that comes with it.
+- **`rsync`, not `git clone`.** The node holds no credentials, so it cannot
+  reach a private repo on its own, and the ACL is one-directional so it cannot
+  pull from the devbox either. That is the property being kept, not a limitation
+  to work around — do not put a token here to make cloning work.
+
+Measured on the first run: 107 MB in 7.4 s over the tailnet, and rsync is
+incremental afterwards.
+
+### Reaching it from inside a Claude Code session
+
+An agent on the devbox cannot open a socket to the node directly. The sandbox
+gives each session a **loopback-only** network namespace, so `ssh 100.88.226.94`
+answers "Network is unreachable" — which reads as a dead node rather than as a
+routing boundary. Every packet has to traverse the session proxy.
+
+[`linux/sandbox-ssh`](../../linux/sandbox-ssh) is the whole answer. Claude Code
+already exports a working `ProxyCommand` in `GIT_SSH_COMMAND` for git's benefit;
+the helper reuses it verbatim, and doubles as an rsync transport:
+
+```bash
+sandbox-ssh testbox build-env
+rsync -e sandbox-ssh -a ~/src/iden2/<repo>/ testbox:~/src/<repo>/
+```
+
+Reusing that variable rather than copying its text is the point: **the proxy
+credentials are minted per session.** A `ProxyCommand` pasted into
+`~/.ssh/config` works today and fails tomorrow with an authentication error that
+names nothing.
+
+**Egress to the node behaves differently by session type**, and the difference
+costs a debugging round if you meet it the wrong way round. Measured 2026-09-03:
+
+| session | result |
+|---|---|
+| interactive | connected on the first try, no prompt raised |
+| headless `claude -p` | every method auto-denied, `CONNECT ... Forbidden` |
+
+The denial covers `git` too, despite it sitting in `sandbox.excludedCommands` —
+so that list does not buy a network bypass. I did not establish *why* the two
+differ; the sandbox logs the headless denials as `deny network-outbound
+100.88.226.94:22 (user denied)`, which is as far as the evidence goes. What
+matters operationally is that `CONNECT ... Forbidden` from a headless session is
+not evidence of a firewall, a dead node, or a broken tunnel.
+
+### Getting a built image back to the devbox
+
+The node builds; the devbox tests. The node holds no credentials, so it cannot
+pull the private `ghcr.io/iden2-com/mirror/*` images the stack needs — and
+should not be given a way to. Stream the built image the other way instead:
+
+```bash
+. ~/.local/share/kind-shims/env.sh          # REQUIRED, see below
+sandbox-ssh testbox 'docker save <image>:<tag>' | podman load
+```
+
+Two things that are not optional:
+
+- **Source `env.sh` first.** Measured in-sandbox: a bare `podman` fails with
+  `set sticky bit on: chmod /run/user/1000/libpod: read-only file system`; with
+  `env.sh` sourced it works.
+- **Stream it, never stage a tar.** The devbox runs near full — 12 GB free
+  against images of 650 MB and up.
+
+The direction is forced by the ACL, and that is the design: the devbox pulls,
+and the node has no path back. Verified — the node cannot open 22 or 6443 to the
+devbox, nor 22 to the Mac.
+
+Long builds belong in the tmux session the bootstrap leaves ready, or they die
+with the ssh connection: `sandbox-ssh testbox -t tmux attach -t main`.
 
 ### Attaching from a phone or tablet
 
@@ -403,7 +550,22 @@ them.
 |---|---|---|---|
 | `devbox` | Mac | Mac | it cannot destroy itself mid-apply |
 | `k8s` | devbox | devbox (so: phone) | the on-demand node you want without a laptop |
+| `testbox` | devbox | devbox | agents must be able to destroy what they claimed |
 | `minimal` | Mac | Mac | fallback tier, rarely touched |
+
+`testbox` state lives on the devbox because the agents that use it must also be
+able to release and destroy it — they cannot destroy what they cannot reach, and
+a box nobody can destroy is a box that bills all weekend. The cost is real and
+worth stating: a devbox rebuild orphans the node, and recovery is then manual
+through the Linode API. `testbox status` reads the API rather than the state
+file for exactly that reason.
+
+**Do not run one of these roles from a git worktree you then delete.**
+`terraform.tfstate` is gitignored, so it lives beside `main.tf` and nowhere
+else. Deleting the directory orphans a running Linode that nothing can now
+destroy and that keeps billing — and `worktree-sweep --remove` deletes merged,
+clean worktrees for a living. Move the state into the primary checkout before
+the branch merges.
 
 `ts-node` **refuses** the `k8s` role on macOS. Running it there would build a
 second, independent state that knows nothing about a node the devbox already
