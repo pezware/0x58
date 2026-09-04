@@ -55,9 +55,10 @@ export TF_VAR_tailscale_auth_key
 # nothing about a node the devbox already made -- terraform would then cheerfully
 # create a duplicate and neither state could clean the other up. Refuse rather
 # than diverge; divergence is silent and expensive, this is neither.
-if [ "$ROLE" = "k8s" ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
-    echo "error: k8s state lives on the devbox — run this there:" >&2
-    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node k8s $CMD'" >&2
+case "$ROLE" in k8s | testbox) DEVBOX_OWNED=1 ;; *) DEVBOX_OWNED=0 ;; esac
+if [ "$DEVBOX_OWNED" -eq 1 ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
+    echo "error: $ROLE state lives on the devbox — run this there:" >&2
+    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node $ROLE $CMD'" >&2
     echo "       (override with TS_NODE_ALLOW_MAC_K8S=1 only if you know why)" >&2
     exit 1
 fi
@@ -98,12 +99,12 @@ needs_linode_token() {
 ts_keychain_item() {
     case "$1" in
         minimal) echo "tailscale-exit-authkey" ;;   # reuse the existing item
-        # The waltid build box registers as tag:k8s and so uses the k8s key.
-        # Both are disposable compute that holds no credentials, and reusing the
-        # tag is what lets the devbox reach it under the ACL rules that already
-        # exist. A tag:waltid would need a minted key and a policy edit in the
-        # browser before the agent could reach anything.
-        waltid)  echo "tailscale-k8s-authkey" ;;
+        # The testbox registers as tag:k8s and so uses the k8s key. Both are
+        # disposable compute holding no credentials, and reusing the tag is what
+        # lets the devbox reach it under ACL rules that already exist. A
+        # tag:testbox would need a minted key and a policy edit in the browser
+        # before any agent could reach the box.
+        testbox) echo "tailscale-k8s-authkey" ;;
         *)       echo "tailscale-$1-authkey" ;;
     esac
 }
@@ -216,6 +217,45 @@ tf() { terraform -chdir="$ROLE_DIR" "$@"; }
 
 instance_id() { tf output -raw instance_id 2>/dev/null; }
 
+# ── One testbox, and a refusal that explains itself ─────────────────────────
+# Linode labels are unique per account, so a duplicate is impossible -- but the
+# error it produces arrives from the provider mid-plan and reads as a Terraform
+# problem rather than "someone else already has the box". Worse is the case
+# where THIS state is empty and the node exists: the operator concludes nothing
+# is running and starts a second one, which is exactly what a singleton must
+# prevent.
+#
+# So ask the API first, and say who holds it. Only the roles that are declared
+# singletons are checked; everything else is untouched.
+singleton_guard() {
+    case "$ROLE" in testbox) ;; *) return 0 ;; esac
+
+    local want live mine
+    want=$(grep -oE 'label *= *"[^"]+"' "$ROLE_DIR/main.tf" | head -1 | cut -d'"' -f2)
+    [ -n "$want" ] || return 0
+
+    live=$(linode_api "https://api.linode.com/v4/linode/instances" \
+        | python3 -c "
+import json,sys
+want=sys.argv[1]
+for i in json.load(sys.stdin)['data']:
+    if i['label']==want: print(i['id']); break
+" "$want" 2>/dev/null) || return 0
+    [ -n "$live" ] || return 0
+
+    mine=$(instance_id)
+    [ "$mine" = "$live" ] && return 0
+
+    echo "error: $want already exists (Linode id $live), and this state does not own it." >&2
+    echo "       Exactly one $ROLE exists at a time. Applying here would either be" >&2
+    echo "       refused by Linode for a duplicate label, or split ownership across" >&2
+    echo "       two states that cannot clean each other up." >&2
+    echo >&2
+    echo "       Find out who holds it:  testbox status" >&2
+    echo "       Queue behind them:      testbox queue add <agent> \"<task>\"" >&2
+    exit 1
+}
+
 # The Authorization header goes in via a stdin config file rather than argv,
 # where any local process could read it out of /proc or `ps` while curl runs.
 linode_api() {
@@ -228,6 +268,7 @@ case "$CMD" in
     apply)
         needs_linode_token
         needs_auth_key
+        singleton_guard
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf apply "$@"
         ;;

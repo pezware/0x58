@@ -569,7 +569,12 @@ SSHCFG
         # devbox-drift reports what no longer matches the repo; devbox-capture
         # makes recording a fix cheap enough to do mid-incident, which is the
         # only moment the reason is still known.
-        for _s in devbox-drift devbox-capture devbox-record-install devbox-inbox devbox-inbox-hook devbox-worktree-rm; do
+        # sandbox-ssh and testbox are the two an AGENT reaches for rather than a
+        # human: one gets it off this box onto the testbox at all, the other
+        # decides whether the testbox should still exist. Both are useless if
+        # they have to be rebuilt by hand each session, which is the same trap
+        # the kind shims fell into below.
+        for _s in devbox-drift devbox-capture devbox-record-install devbox-inbox devbox-inbox-hook devbox-worktree-rm sandbox-ssh testbox; do
             if [[ -f "$LINUX_DIR/$_s" ]]; then
                 mkdir -p ~/.local/bin
                 install -m 755 "$LINUX_DIR/$_s" ~/.local/bin/"$_s"

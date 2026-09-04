@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# waltid role — a disposable BUILD box for the walt.id identity mirror.
+# testbox role — the shared, SINGLETON build-and-test box.
+#
+# One exists at a time. Agents on the devbox claim it, use it, and either hand
+# it to the next agent in the queue or destroy it. `testbox status` says who
+# holds it and what it has cost so far.
 #
 # It holds nothing worth keeping. The repo, the GitHub tokens and the agent
-# session all stay on the devbox; this node receives a working tree over rsync,
-# compiles it, builds images, and is destroyed when the PRs are done. That is
-# what lets it carry no credentials at all.
+# sessions all stay on the devbox; this node receives a working tree over rsync,
+# compiles it, runs the stack against it, and is destroyed when the queue is
+# empty. Carrying no credentials is what makes it safe to throw away, and it is
+# a property to preserve rather than a limitation to route around: this box
+# cannot reach GitHub, and it must not be given a way to.
 #
-# Why it is not the k8s role with a bigger plan: that role installs docker and
-# kind and stops, because a kind host needs nothing else. A Gradle build needs a
-# JDK, a compose provider and rsync, and none of those belong on a cluster node.
+# Why not the k8s role with a bigger plan: that role installs docker and kind
+# and stops, because a kind host needs nothing else. Builds here need a JDK, a
+# compose provider and rsync as well — and this box does both jobs, which is the
+# entire point. Build and test on separate machines cost a staged-tar disk
+# crisis, a void e2e run, and an accidental image deletion on 2026-09-03.
 set -euo pipefail
 
 # shellcheck source=/dev/null
@@ -21,10 +29,10 @@ USER_HOME="/home/$USER_NAME"
 as_user() { sudo -u "$USER_NAME" -H bash -lc "$*"; }
 
 # ── PATH for NON-INTERACTIVE ssh, which is the only way this box is used ─────
-# The handoff is `ssh pezware-waltid 'cd repo && ./gradlew build'`. That runs a
+# The handoff is `ssh testbox 'cd repo && ./gradlew build'`. That runs a
 # non-interactive bash, and Debian's stock ~/.bashrc returns on line 6 when the
 # shell is not interactive -- so anything exported below that line is invisible
-# to every command the waltid agent will ever run. A toolchain that works when
+# to every command any agent will ever run. A toolchain that works when
 # you log in and vanishes when an agent calls it is the failure this avoids.
 #
 # Two mechanisms, because they cover different shells: profile.d serves login
@@ -32,7 +40,7 @@ as_user() { sudo -u "$USER_NAME" -H bash -lc "$*"; }
 # not reliably run PAM, so /etc/environment is not a third option.
 install_build_env() {
     cat > /etc/profile.d/0x58-build-env.sh <<'ENV'
-# 0x58 waltid build node — mise shims plus JAVA_HOME.
+# 0x58 testbox — mise shims plus JAVA_HOME.
 export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
 [ -x "$HOME/.local/bin/mise" ] && export JAVA_HOME="$($HOME/.local/bin/mise where java 2>/dev/null)"
 ENV
@@ -140,14 +148,15 @@ if first_boot; then
     if as_user 'curl -fsSL https://mise.run | sh'; then
         as_user 'mkdir -p ~/.config/mise'
         cat > "$USER_HOME/.config/mise/config.toml" <<'MISE'
-# waltid build node — deliberately minimal; see roles/waltid/bootstrap.sh.
+# testbox — deliberately minimal; see roles/testbox/bootstrap.sh.
 [tools]
 java = "temurin-21"   # the JDK the walt.id build was verified against
 go   = "latest"       # the iden2 services alongside it are Go
 task = "latest"       # Taskfile targets in both repos
 
-# Present so a `task` target that shells out to them does not die three minutes
-# into a run. No cluster exists on this box; these are single binaries.
+# Not optional here: this box RUNS the cluster it tests against, so kind builds
+# it and kubectl/helm drive it. kubectl is pinned; the other two float because a
+# stale pin fails to download long after anyone remembers this file exists.
 kubectl = "1.36"
 helm    = "latest"
 kind    = "latest"
@@ -181,7 +190,7 @@ MISE
     log "writing gradle memory budget for $(nproc) vCPU / $(free -g | awk '/^Mem:/{print $2}') GB"
     as_user 'mkdir -p ~/.gradle'
     cat > "$USER_HOME/.gradle/gradle.properties" <<'GRADLE'
-# 0x58 waltid build node — g6-dedicated-8 (8 vCPU / 16 GB).
+# 0x58 testbox. Sized for the plan it is CURRENTLY on, not the floor.
 # Machine tuning only. Anything the BUILD needs belongs in the repo's own file.
 org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
 kotlin.daemon.jvmargs=-Xmx4g
@@ -200,15 +209,54 @@ GRADLE
     chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.gradle"
 
     as_user 'mkdir -p ~/src' || true
+
+    # ── kind cluster, bound to the TAILNET address ───────────────────────────
+    # This is the step that CANNOT be retrofitted, and the reason it happens at
+    # first boot rather than on demand. kind binds its API server to 127.0.0.1
+    # by default, so the kubeconfig it emits is useless from the devbox and the
+    # serving cert carries no SAN for any other address. Both are settled when
+    # the cluster is created and never afterwards -- fixing it later means
+    # destroying the cluster. Same reasoning, same code, as roles/k8s.
+    #
+    # The devbox reaches 6443 because the ACL already grants
+    # `tag:devbox -> tag:k8s:6443,22`.
+    TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
+    if [ -z "$TS_IP" ]; then
+        log "no tailscale IPv4 yet — skipping cluster creation; rerun node-bootstrap later"
+    else
+        CFG="$USER_HOME/kind-cluster.yaml"
+        cat > "$CFG" <<YAML
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # Tailnet address of this node. Puts the address in the serving cert's SANs
+  # and lets kubectl on the devbox reach the API server.
+  apiServerAddress: "$TS_IP"
+  apiServerPort: 6443
+nodes:
+  - role: control-plane
+YAML
+        chown "$USER_NAME:$USER_NAME" "$CFG"
+
+        # Non-fatal by design: a failure here still leaves a reachable box with
+        # kind installed, which is debuggable. An unreachable box is not.
+        if as_user "kind get clusters 2>/dev/null | grep -qx '${CLUSTER_NAME:-dev}'"; then
+            log "cluster '${CLUSTER_NAME:-dev}' already exists"
+        else
+            log "creating kind cluster '${CLUSTER_NAME:-dev}' (pulls a ~1GB node image)"
+            as_user "kind create cluster --name '${CLUSTER_NAME:-dev}' --config '$CFG'" \
+                || log "kind create FAILED — by hand: kind create cluster --config $CFG"
+        fi
+    fi
 fi
 
 # ── A tmux session waiting to be attached (EVERY boot) ───────────────────────
 # Same reason as the devbox role: a long build must survive the ssh connection
 # that started it, and tmux dies with the machine, so this cannot be first-boot
-# only. `ssh pezware-waltid -t tmux attach -t main` is the way in.
+# only. `sandbox-ssh testbox -t tmux attach -t main` is the way in.
 if ! as_user 'tmux has-session -t main 2>/dev/null'; then
     log "creating detached tmux session 'main'"
     as_user 'tmux new-session -d -s main' || log "tmux session create failed (non-fatal)"
 fi
 
-log "waltid bootstrap done"
+log "testbox bootstrap done"
