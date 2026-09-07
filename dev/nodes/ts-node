@@ -109,12 +109,24 @@ ts_keychain_item() {
     esac
 }
 
+# The TAG a role registers with, which is not always its own name -- testbox
+# wears tag:k8s, and minimal wears tag:exit-node. Telling someone to mint a key
+# tagged tag:testbox produces a key the ACL has no rule for, and the node then
+# comes up unreachable in a way that looks like a network fault.
+ts_tag_for() {
+    case "$1" in
+        minimal) echo "tag:exit-node" ;;
+        testbox) echo "tag:k8s" ;;
+        *)       echo "tag:$1" ;;
+    esac
+}
+
 needs_auth_key() {
     local item; item=$(ts_keychain_item "$ROLE")
     [ -z "${TF_VAR_tailscale_auth_key:-}" ] || return 0
     TF_VAR_tailscale_auth_key=$(keychain_get "$item") || {
         echo "error: keychain item '$item' not found." >&2
-        echo "       Generate a reusable + pre-approved key tagged tag:$ROLE at" >&2
+        echo "       Generate a reusable + pre-approved key tagged $(ts_tag_for "$ROLE") at" >&2
         echo "       https://login.tailscale.com/admin/settings/keys then:" >&2
         echo "         security add-generic-password -U -s $item -a \"\$USER\" -w" >&2
         exit 1
@@ -185,12 +197,24 @@ resize_guard() {
     #
     # Unreachable counts as "running". We cannot see the node's state, and
     # rebooting a box whose state is unknown is the case this guard exists for.
+    # Ask BOTH runtimes, and treat "neither is installed" as unknown rather than
+    # as zero. This ran podman only and fell back to `echo 0`, which made the
+    # guard fail OPEN on the role most likely to be resized: testbox runs docker,
+    # has no podman, and so reported zero containers while a kind cluster was
+    # live. A guard that answers "idle" when it cannot see is worse than no
+    # guard, because the answer gets believed. Found by a Codex review 2026-09-04.
     local label running
     label=$(tf output -raw label 2>/dev/null) || label=""
     if [ -n "$label" ]; then
-        running=$(tailscale ssh "$label" \
-            'if command -v podman >/dev/null 2>&1; then podman ps -q | wc -l; else echo 0; fi' \
-            2>/dev/null) || running=""
+        running=$(tailscale ssh "$label" '
+            total=0; seen=0
+            for rt in podman docker; do
+                command -v "$rt" >/dev/null 2>&1 || continue
+                n=$("$rt" ps -q 2>/dev/null | wc -l) || continue
+                seen=1; total=$((total + n))
+            done
+            [ "$seen" -eq 1 ] && echo "$total"
+        ' 2>/dev/null) || running=""
         running=$(printf '%s' "$running" | tr -d '[:space:]')
     else
         running=""
@@ -206,7 +230,8 @@ resize_guard() {
         echo "error: $running container(s) running on $label." >&2
         echo "       The resize ends in a reboot and nothing restarts them —" >&2
         echo "       podman-restart.service is disabled on this fleet. Stop them first:" >&2
-        echo "         tailscale ssh $label 'podman stop -a'" >&2
+        echo "         tailscale ssh $label 'podman stop -a'                 # devbox" >&2
+        echo "         tailscale ssh $label 'docker stop \$(docker ps -q)'   # testbox" >&2
         echo "       Override with TS_NODE_FORCE_RESIZE=1 to accept losing them." >&2
         [ -n "${TS_NODE_FORCE_RESIZE:-}" ] || exit 1
         echo "       ... TS_NODE_FORCE_RESIZE set, continuing anyway." >&2
@@ -216,45 +241,6 @@ resize_guard() {
 tf() { terraform -chdir="$ROLE_DIR" "$@"; }
 
 instance_id() { tf output -raw instance_id 2>/dev/null; }
-
-# ── One testbox, and a refusal that explains itself ─────────────────────────
-# Linode labels are unique per account, so a duplicate is impossible -- but the
-# error it produces arrives from the provider mid-plan and reads as a Terraform
-# problem rather than "someone else already has the box". Worse is the case
-# where THIS state is empty and the node exists: the operator concludes nothing
-# is running and starts a second one, which is exactly what a singleton must
-# prevent.
-#
-# So ask the API first, and say who holds it. Only the roles that are declared
-# singletons are checked; everything else is untouched.
-singleton_guard() {
-    case "$ROLE" in testbox) ;; *) return 0 ;; esac
-
-    local want live mine
-    want=$(grep -oE 'label *= *"[^"]+"' "$ROLE_DIR/main.tf" | head -1 | cut -d'"' -f2)
-    [ -n "$want" ] || return 0
-
-    live=$(linode_api "https://api.linode.com/v4/linode/instances" \
-        | python3 -c "
-import json,sys
-want=sys.argv[1]
-for i in json.load(sys.stdin)['data']:
-    if i['label']==want: print(i['id']); break
-" "$want" 2>/dev/null) || return 0
-    [ -n "$live" ] || return 0
-
-    mine=$(instance_id)
-    [ "$mine" = "$live" ] && return 0
-
-    echo "error: $want already exists (Linode id $live), and this state does not own it." >&2
-    echo "       Exactly one $ROLE exists at a time. Applying here would either be" >&2
-    echo "       refused by Linode for a duplicate label, or split ownership across" >&2
-    echo "       two states that cannot clean each other up." >&2
-    echo >&2
-    echo "       Find out who holds it:  testbox status" >&2
-    echo "       Queue behind them:      testbox queue add <agent> \"<task>\"" >&2
-    exit 1
-}
 
 # The Authorization header goes in via a stdin config file rather than argv,
 # where any local process could read it out of /proc or `ps` while curl runs.
@@ -268,7 +254,6 @@ case "$CMD" in
     apply)
         needs_linode_token
         needs_auth_key
-        singleton_guard
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf apply "$@"
         ;;

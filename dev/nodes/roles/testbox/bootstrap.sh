@@ -8,9 +8,23 @@
 # It holds nothing worth keeping. The repo, the GitHub tokens and the agent
 # sessions all stay on the devbox; this node receives a working tree over rsync,
 # compiles it, runs the stack against it, and is destroyed when the queue is
-# empty. Carrying no credentials is what makes it safe to throw away, and it is
-# a property to preserve rather than a limitation to route around: this box
-# cannot reach GitHub, and it must not be given a way to.
+# empty.
+#
+# Be precise about what it does NOT hold, because the loose version of this
+# claim was wrong and a Codex review caught it on 2026-09-04:
+#
+#   - No GitHub credential. It can REACH github.com -- common_user fetches the
+#     public keys from there -- but it cannot authenticate, so a private repo is
+#     out of reach. `git ls-remote` answers "Permission denied (publickey)".
+#     That is the property to preserve; do not add a token to make it work.
+#   - No path back. The ACL is one-directional: this box cannot open 22 or 6443
+#     to the devbox, nor 22 to the Mac.
+#   - It DOES hold the Tailscale auth key, unavoidably. It is rendered into
+#     user_data, so it survives in cloud-init's /var/lib/cloud cache where any
+#     build running here can read it -- and this key is REUSABLE and tagged
+#     tag:k8s, so reading it means being able to mint tag:k8s nodes. A
+#     single-use key per creation would close that; it costs minting one per
+#     rebuild. Open decision, deliberately recorded rather than glossed.
 #
 # Why not the k8s role with a bigger plan: that role installs docker and kind
 # and stops, because a kind host needs nothing else. Builds here need a JDK, a
@@ -70,12 +84,19 @@ install_build_env_report() {
 # Print the build toolchain and its versions. Exit 1 if anything required is missing.
 missing=0
 row() {
-    local name="$1" ver
-    shift
-    if ver=$("$@" 2>&1 | head -1); then
-        printf '  %-14s %s\n' "$name" "$ver"
+    local name="$1"; shift
+    local bin="$1" ver
+    if ! command -v "$bin" >/dev/null 2>&1; then
+        printf '  %-14s MISSING\n' "$name"; missing=1; return
+    fi
+    # Capture WITHOUT a pipeline. `ver=$(cmd | head -1)` reports head's exit
+    # status, not the command's -- so "command not found" became the version
+    # string and build-env exited 0 while reporting a tool it did not have.
+    # Trim after capturing, never during.
+    if ver=$("$@" 2>&1); then
+        printf '  %-14s %s\n' "$name" "$(printf '%s\n' "$ver" | head -1)"
     else
-        printf '  %-14s MISSING\n' "$name"
+        printf '  %-14s FAILED: %s\n' "$name" "$(printf '%s\n' "$ver" | head -1)"
         missing=1
     fi
 }
@@ -176,38 +197,6 @@ MISE
             || log "openjdk-21-jdk failed — no JDK on this box"
     fi
 
-    # ── Gradle memory budget for THIS plan ───────────────────────────────────
-    # A user-level gradle.properties, which beats the one in the repo: Gradle
-    # searches GRADLE_USER_HOME before the project directory and takes the first
-    # value it finds. So this tunes the machine without touching the tree, and
-    # nothing here shows up in a `git status` the agent has to explain.
-    #
-    # The split below is a budget, not a maximum. 16 GB has to hold the Gradle
-    # daemon, the Kotlin compile daemon, and a docker build, all resident at the
-    # same time -- so the JVMs are held to 10 GB and the rest is left for the
-    # builder and the page cache. Raising either number past that trades an OOM
-    # kill for a swap storm.
-    log "writing gradle memory budget for $(nproc) vCPU / $(free -g | awk '/^Mem:/{print $2}') GB"
-    as_user 'mkdir -p ~/.gradle'
-    cat > "$USER_HOME/.gradle/gradle.properties" <<'GRADLE'
-# 0x58 testbox. Sized for the plan it is CURRENTLY on, not the floor.
-# Machine tuning only. Anything the BUILD needs belongs in the repo's own file.
-org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError
-kotlin.daemon.jvmargs=-Xmx4g
-
-# 6 of 8 cores, leaving two for dockerd and the OS. Full parallelism starves the
-# image build that usually follows the compile in the same session.
-org.gradle.workers.max=6
-org.gradle.parallel=true
-org.gradle.caching=true
-
-# The daemon is the point on a box that builds all day: it keeps the JIT warm
-# between invocations. Three hours, so an idle overnight box releases the heap.
-org.gradle.daemon=true
-org.gradle.daemon.idletimeout=10800000
-GRADLE
-    chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.gradle"
-
     as_user 'mkdir -p ~/src' || true
 
     # ── kind cluster, bound to the TAILNET address ───────────────────────────
@@ -249,6 +238,51 @@ YAML
         fi
     fi
 fi
+
+# ── Gradle memory budget, DERIVED and rewritten on EVERY boot ────────────────
+# This box changes size. The floor is 4 vCPU / 8 GB and a build spike resizes it
+# to 8 vCPU / 32 GB, so any number written once is wrong for most of its life --
+# and wrong in the dangerous direction, because a first-boot budget of 10 GB of
+# JVM heap on an 8 GB floor is an OOM waiting for the first build. That is
+# exactly the bug a Codex review found on 2026-09-04.
+#
+# A resize ends in a reboot, and this runs on every boot, so the budget follows
+# the plan without anyone remembering to retune it.
+#
+# The split is a budget, not a maximum: RAM has to hold the Gradle daemon, the
+# Kotlin compile daemon, a docker build and the page cache at the same time.
+# 30% and 20% leave half the box for the other three. Raising them trades an OOM
+# kill for a swap storm, which is slower AND harder to read.
+#
+# gradle.properties in GRADLE_USER_HOME beats the one in the project, so this
+# tunes the machine without touching the tree and shows up in nobody's git status.
+mem_mb=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+cpus=$(nproc)
+gradle_mb=$((mem_mb * 30 / 100))
+kotlin_mb=$((mem_mb * 20 / 100))
+# Two cores held back for dockerd and the OS; never fewer than two workers, or a
+# 4 vCPU floor would serialise the build entirely.
+workers=$((cpus - 2)); [ "$workers" -lt 2 ] && workers=2
+
+log "gradle budget: ${gradle_mb}m daemon + ${kotlin_mb}m kotlin, $workers workers (${mem_mb}MB / ${cpus} vCPU)"
+install -d -o "$USER_NAME" -g "$USER_NAME" "$USER_HOME/.gradle"
+cat > "$USER_HOME/.gradle/gradle.properties" <<GRADLE
+# 0x58 testbox — DERIVED at boot from ${mem_mb}MB / ${cpus} vCPU.
+# Machine tuning only; anything the BUILD needs belongs in the repo's own file.
+# Rewritten on every boot, so a resize retunes it. Edits here do not survive one.
+org.gradle.jvmargs=-Xmx${gradle_mb}m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
+kotlin.daemon.jvmargs=-Xmx${kotlin_mb}m
+
+org.gradle.workers.max=${workers}
+org.gradle.parallel=true
+org.gradle.caching=true
+
+# The daemon keeps the JIT warm between invocations, which is the point on a box
+# that builds all day. Three hours, so an idle overnight box releases the heap.
+org.gradle.daemon=true
+org.gradle.daemon.idletimeout=10800000
+GRADLE
+chown "$USER_NAME:$USER_NAME" "$USER_HOME/.gradle/gradle.properties"
 
 # ── A tmux session waiting to be attached (EVERY boot) ───────────────────────
 # Same reason as the devbox role: a long build must survive the ssh connection

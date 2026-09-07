@@ -10,7 +10,7 @@
 #   testbox status                       holder, uptime, cost so far, queue
 #   testbox queue add <agent> "<task>"   park work behind the current holder
 #   testbox queue list
-#   testbox release                      hand to the next in queue, or advise destroy
+#   testbox release <agent>              hand to the next in queue, or advise destroy
 #
 # BOTH the claim and the queue live here on the devbox, not on the node. The
 # node is the thing being claimed, so putting the claim on it is tempting and
@@ -23,11 +23,30 @@ set -euo pipefail
 STATE="${TESTBOX_STATE:-$HOME/.local/state/testbox}"
 CLAIM="$STATE/claim"
 QUEUE="$STATE/queue"
+LOCK="$STATE/lock"
 LABEL="${TESTBOX_LABEL:-pezware-testbox}"
 CREDS="${TESTBOX_CREDS:-$HOME/.config/0x58/credentials.env}"
 
-mkdir -p "$STATE"
+mkdir -p "$STATE"; : >> "$CLAIM"; : >> "$QUEUE"; : >> "$LOCK"
 die() { echo "testbox: $*" >&2; exit 1; }
+
+# ── Every state transition runs under this lock ─────────────────────────────
+# Read-then-write is not atomic, and several agents share one devbox. Without
+# the lock two claims both pass the "is it free" read and the second silently
+# overwrites the first, which is the precise guarantee this tool exists to give.
+# Found by a Codex review, 2026-09-04.
+#
+# flock is util-linux, so it is present on the devbox. Degrade loudly rather
+# than silently if it ever is not: an unlocked run still works for one agent and
+# the warning says why it is not safe for two.
+with_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        flock 9 || die "could not take the lock at $LOCK"
+    else
+        echo "testbox: WARNING — no flock; concurrent claims are unsafe" >&2
+    fi
+    "$@"
+} 9>>"$LOCK"
 
 # ── What Linode says, which outranks anything written here ──────────────────
 # Returns "<id> <type> <created>" for the live node, or nothing. Every claim
@@ -35,7 +54,6 @@ die() { echo "testbox: $*" >&2; exit 1; }
 # instance is a fact.
 live_node() {
     [ -r "$CREDS" ] || return 0
-    # shellcheck disable=SC1090
     local token; token=$(. "$CREDS" >/dev/null 2>&1; printf '%s' "${LINODE_TOKEN:-}")
     [ -n "$token" ] || return 0
     curl -sf -K - "https://api.linode.com/v4/linode/instances" <<CFG 2>/dev/null |
@@ -57,27 +75,31 @@ rate_for() {
         python3 -c "import json,sys;print(json.load(sys.stdin)['price']['hourly'])" 2>/dev/null || true
 }
 
-held_by() { [ -s "$CLAIM" ] && head -1 "$CLAIM" | cut -d'|' -f1 || true; }
+owner()  { [ -s "$CLAIM" ] && head -1 "$CLAIM" | cut -d'|' -f1 || true; }
+# -f2, not -f2-: field 3 is the claim timestamp, and trailing it onto the
+# purpose makes the one line another agent actually reads look corrupt.
+purpose() { [ -s "$CLAIM" ] && head -1 "$CLAIM" | cut -d'|' -f2 || true; }
+
+do_claim() {
+    local agent="$1" purpose="$2" holder
+    holder=$(owner)
+    if [ -n "$holder" ] && [ "$holder" != "$agent" ]; then
+        echo "testbox is held by: $holder"
+        echo "  purpose: $(purpose)"
+        echo
+        echo "Queue behind them:  testbox queue add $agent \"<task>\""
+        return 1
+    fi
+    printf '%s|%s|%s\n' "$agent" "$purpose" "$(date -Is)" > "$CLAIM"
+    echo "claimed by $agent: $purpose"
+    [ -n "$(live_node)" ] || echo "NOTE: no $LABEL is running. Create one: ts-node testbox apply"
+}
 
 cmd_claim() {
     local agent="${1:-}" purpose="${2:-}"
     [ -n "$agent" ] || die "usage: testbox claim <agent> \"<purpose>\""
     [ -n "$purpose" ] || die "say what you are claiming it for — the next agent reads this"
-
-    local holder; holder=$(held_by)
-    if [ -n "$holder" ] && [ "$holder" != "$agent" ]; then
-        echo "testbox is held by: $holder"
-        # -f2, not -f2-: field 3 is the claim timestamp, and trailing it onto the
-        # purpose makes the one line another agent actually reads look corrupt.
-        sed -n '1p' "$CLAIM" | cut -d'|' -f2 | sed 's/^/  purpose: /'
-        echo
-        echo "Queue behind them:  testbox queue add $agent \"<task>\""
-        exit 1
-    fi
-
-    printf '%s|%s|%s\n' "$agent" "$purpose" "$(date -Is)" > "$CLAIM"
-    echo "claimed by $agent: $purpose"
-    [ -n "$(live_node)" ] || echo "NOTE: no $LABEL is running. Create one: ts-node testbox apply"
+    with_lock do_claim "$agent" "$purpose"
 }
 
 cmd_status() {
@@ -102,13 +124,13 @@ print(f'cost     \${hrs*rate:.2f} so far  (\${rate}/hr, \${rate*24:.2f}/day)')
         echo "node     NONE running"
     fi
 
-    holder=$(held_by)
+    holder=$(owner)
     if [ -n "$holder" ]; then
         echo "held by  $holder"
-        sed -n '1p' "$CLAIM" | cut -d'|' -f2 | sed 's/^/  purpose: /'
+        echo "  purpose: $(purpose)"
         # A claim naming a node that does not exist is the one inconsistency
         # this design can produce. Say so plainly instead of reporting a holder.
-        [ -n "$node" ] || echo "  STALE — claim outlives the node. Clear it: testbox release"
+        [ -n "$node" ] || echo "  STALE — claim outlives the node. Clear it: testbox release $holder"
     else
         echo "held by  nobody"
     fi
@@ -121,13 +143,14 @@ print(f'cost     \${hrs*rate:.2f} so far  (\${rate}/hr, \${rate*24:.2f}/day)')
     fi
 }
 
+do_queue_add() { printf '%s|%s\n' "$1" "$2" >> "$QUEUE"; echo "queued for $1: $2  (position $(wc -l < "$QUEUE" | tr -d ' '))"; }
+
 cmd_queue() {
     case "${1:-list}" in
         add)
             local agent="${2:-}" task="${3:-}"
             [ -n "$agent" ] && [ -n "$task" ] || die "usage: testbox queue add <agent> \"<task>\""
-            printf '%s|%s\n' "$agent" "$task" >> "$QUEUE"
-            echo "queued for $agent: $task  (position $(wc -l < "$QUEUE" | tr -d ' '))"
+            with_lock do_queue_add "$agent" "$task"
             ;;
         list) [ -s "$QUEUE" ] && nl -w4 -s'  ' "$QUEUE" | sed 's/|/ — /' || echo "queue empty" ;;
         *)    die "usage: testbox queue add|list" ;;
@@ -137,15 +160,30 @@ cmd_queue() {
 # The whole point of the tool. Releasing decides the node's fate rather than
 # leaving it to whoever remembers -- an empty queue means the box should go, and
 # saying so at the moment of release is the only time anyone is listening.
-cmd_release() {
-    local holder; holder=$(held_by)
-    [ -n "$holder" ] || { echo "testbox is not claimed."; cmd_status; return 0; }
+do_release() {
+    local agent="$1" holder next tmp
+    holder=$(owner)
+    [ -n "$holder" ] || { echo "testbox is not claimed."; return 0; }
+
+    # Requiring the owner is not ceremony. Release hands the box to someone else
+    # or invites its destruction, and an agent that can do that to a claim it
+    # does not hold can cut a running build off at the knees.
+    if [ "$agent" != "$holder" ] && [ "$agent" != "--force" ]; then
+        echo "testbox is held by $holder, not $agent." >&2
+        echo "  purpose: $(purpose)" >&2
+        echo "Release it anyway with: testbox release --force" >&2
+        return 1
+    fi
+
     : > "$CLAIM"
     echo "released by $holder"
 
     if [ -s "$QUEUE" ]; then
-        local next; next=$(head -1 "$QUEUE")
-        sed -i '1d' "$QUEUE" 2>/dev/null || { tail -n +2 "$QUEUE" > "$QUEUE.tmp"; mv "$QUEUE.tmp" "$QUEUE"; }
+        next=$(head -1 "$QUEUE")
+        # mktemp, not a fixed name: two releases racing on one path is the same
+        # class of bug the lock fixes, and the lock is held here anyway.
+        tmp=$(mktemp "$STATE/queue.XXXXXX")
+        tail -n +2 "$QUEUE" > "$tmp" && mv "$tmp" "$QUEUE"
         echo
         echo "NEXT IN QUEUE: ${next%%|*} — ${next#*|}"
         echo "KEEP the node. Tell them, then they run:"
@@ -159,11 +197,17 @@ cmd_release() {
     fi
 }
 
+cmd_release() {
+    local agent="${1:-}"
+    [ -n "$agent" ] || die "usage: testbox release <agent>   (or --force)"
+    with_lock do_release "$agent"
+}
+
 case "${1:-status}" in
     claim)   shift; cmd_claim "$@" ;;
     status)  cmd_status ;;
     queue)   shift; cmd_queue "$@" ;;
-    release) cmd_release ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+    release) shift; cmd_release "$@" ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)       die "unknown command '${1}' (try --help)" ;;
 esac

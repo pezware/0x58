@@ -266,27 +266,32 @@ differ; the sandbox logs the headless denials as `deny network-outbound
 matters operationally is that `CONNECT ... Forbidden` from a headless session is
 not evidence of a firewall, a dead node, or a broken tunnel.
 
-### Getting a built image back to the devbox
+### Moving images — normally you should not have to
 
-The node builds; the devbox tests. The node holds no credentials, so it cannot
-pull the private `ghcr.io/iden2-com/mirror/*` images the stack needs — and
-should not be given a way to. Stream the built image the other way instead:
+The testbox builds and tests, so an image is already where it is needed and
+there is nothing to transfer. That is the whole reason the two jobs share a box.
+
+The exception is seeding: the node holds no GitHub credential, so it cannot pull
+the private `ghcr.io/iden2-com/mirror/*` images the stack depends on. Push them
+**to** it from the devbox, which can:
 
 ```bash
-. ~/.local/share/kind-shims/env.sh          # REQUIRED, see below
-sandbox-ssh testbox 'docker save <image>:<tag>' | podman load
+. ~/.local/share/kind-shims/env.sh          # REQUIRED — see below
+podman save ghcr.io/iden2-com/mirror/vault:1.20.4 | sandbox-ssh testbox 'docker load'
 ```
 
-Two things that are not optional:
+Once per image per spike, then cached. Do not solve this by putting a registry
+credential on the node; not holding one is the property being kept.
 
 - **Source `env.sh` first.** Measured in-sandbox: a bare `podman` fails with
   `set sticky bit on: chmod /run/user/1000/libpod: read-only file system`; with
-  `env.sh` sourced it works.
-- **Stream it, never stage a tar.** The devbox runs near full — 12 GB free
-  against images of 650 MB and up.
+  `env.sh` sourced it works. The cause is an unset `XDG_RUNTIME_DIR`, not a
+  privilege wall.
+- **Stream it, never stage a tar.** Staging one is what put the devbox at 98%
+  disk on 2026-09-03 and voided an e2e run.
 
-The direction is forced by the ACL, and that is the design: the devbox pulls,
-and the node has no path back. Verified — the node cannot open 22 or 6443 to the
+Direction is forced by the ACL and that is deliberate: the devbox reaches the
+node, and the node has no path back. Verified — it cannot open 22 or 6443 to the
 devbox, nor 22 to the Mac.
 
 Long builds belong in the tmux session the bootstrap leaves ready, or they die
