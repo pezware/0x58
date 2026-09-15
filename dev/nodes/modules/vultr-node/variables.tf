@@ -106,18 +106,33 @@ variable "extra_tags" {
 
 variable "volume_gb" {
   description = <<-EOT
-    Persistent Block Storage in GB, 0 for none. Vultr's minimum is 10 GB.
+    Persistent Block Storage in GB. MUST be 0 today — see the validation below.
 
-    Leave at 0 for burst boxes: they are destroyed after every session and hold
+    Burst boxes want 0 anyway: they are destroyed after every session and hold
     nothing worth keeping, while a volume carries prevent_destroy and would turn
     each teardown into a two-step manual state edit.
   EOT
   type        = number
   default     = 0
 
+  # Refused rather than allowed-and-broken, because the failure is silent.
+  #
+  # common.sh discovers the volume at a hard-coded Linode path:
+  #
+  #   local dev="/dev/disk/by-id/scsi-0Linode_Volume_$${VOLUME_LABEL}"
+  #
+  # On Vultr that device never appears. common_volume() then waits its full 60
+  # seconds and SKIPS the mount, so the node boots healthy, Terraform reports
+  # success, the volume is attached and billed, and nothing is mounted at
+  # volume_mount. Anything written there lands on the root disk instead and dies
+  # with the node -- which is the exact outcome the volume exists to prevent.
+  #
+  # Lifting this needs common_volume() to learn Vultr's path
+  # (/dev/disk/by-id/virtio-* by label) and a real attach test. Until then a
+  # loud refusal beats a volume that looks attached and holds nothing.
   validation {
-    condition     = var.volume_gb == 0 || (var.volume_gb >= 10 && floor(var.volume_gb) == var.volume_gb)
-    error_message = "volume_gb must be 0, or a whole number of GB >= 10 (Vultr's minimum block storage size)."
+    condition     = var.volume_gb == 0
+    error_message = "volume_gb must be 0: common.sh discovers volumes at a hard-coded Linode device path, so a Vultr volume attaches, bills, and never mounts. Teach common_volume() the Vultr path before allowing this."
   }
 }
 

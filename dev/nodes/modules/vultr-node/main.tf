@@ -93,6 +93,21 @@ resource "vultr_instance" "node" {
   activation_email = false
   enable_ipv6      = true
 
+  # Attached at CREATE, not bolted on afterwards. linode_firewall is a separate
+  # resource that attaches once the instance exists, which leaves a window;
+  # firewall_group_id is a create argument and Terraform builds the group first,
+  # so Terraform opens no such window here.
+  #
+  # What that does NOT prove: whether Vultr enforces the association before the
+  # first packet reaches the host. If enforcement lags provisioning, Debian's
+  # sshd is briefly reachable with the root password Vultr generates -- no
+  # ssh_key_ids is set -- until common.sh runs common_disable_openssh. Stage 1
+  # should scan the public IP during boot rather than assume this is closed.
+  #
+  # That generated password is also a `default_password` attribute on this
+  # resource, so it lands in state. Remote state therefore holds a root
+  # credential for every node, which is a reason to treat the state bucket as a
+  # secret store and not merely as coordination.
   firewall_group_id = vultr_firewall_group.node.id
 
   lifecycle {
@@ -101,12 +116,26 @@ resource "vultr_instance" "node" {
     # live instance, so Terraform's only remedy for a drifted bootstrap is to
     # REPLACE the node -- and it proposes that for any apply, however unrelated.
     #
-    # Silencing an actionable diff would be wrong. This one is not actionable:
-    # the sole fix is disproportionate to every cause. Conformance moves to
-    # `ts-node <role> sync-bootstrap`, which reinstalls the scripts in seconds.
-    #
     # A rebuild therefore becomes an explicit act:
     #   terraform apply -replace='module.node.vultr_instance.node'
+    #
+    # WHAT THIS HIDES, and it is more than the scripts.
+    #
+    # `ts-node <role> sync-bootstrap` repairs exactly two files -- common.sh to
+    # /usr/local/sbin/node-common.sh, and the role bootstrap to
+    # /usr/local/sbin/node-bootstrap. It does NOT touch /etc/0x58-node.env.
+    # So everything node_env carries is ignored here with no repair path at all:
+    # tailscale_tag, tailscale_flags, swap_mb, volume_label, volume_mount.
+    #
+    # Change a node's TAG and Terraform will report no diff, sync-bootstrap will
+    # not fix it, and the node keeps the ACL identity it first registered with.
+    # That is a security-relevant drift on a PERMANENT node, where linode-node's
+    # equivalent is mostly aimed at cattle that gets rebuilt anyway.
+    #
+    # Left as-is rather than narrowed, because Terraform cannot ignore a subset
+    # of one rendered string -- splitting node_env out of user_data is the real
+    # fix and it belongs with the ts-node work, not here. Until then: changing a
+    # tag or a mount means -replace, and the role docs have to say so.
     ignore_changes = [user_data]
 
     precondition {

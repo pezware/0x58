@@ -30,7 +30,14 @@ output "teardown_check" {
 
     Destroy is the only thing that stops charges here — a stopped Vultr instance
     bills in full — which is what makes a silent leak expensive rather than
-    untidy. Confirm by listing, never by the status code.
+    untidy. Confirm by fetching, never by the status code.
+
+    Addressed by UUID, not by label. An earlier version of this output filtered
+    `instance list` on the label, which contradicts the reason this module
+    exists: labels are not unique on Vultr, so a label match cannot tell you
+    WHICH instance survived, and a second box wearing the same label reads as
+    the first one having failed to die. A 404 on the UUID is the only
+    unambiguous proof.
   EOT
-  value       = "vultr-cli instance list --output json | jq '[.instances[] | select(.label == \"${vultr_instance.node.label}\")] | length'"
+  value       = "vultr-cli instance get ${vultr_instance.node.id} # expect 404 after destroy"
 }
