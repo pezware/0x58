@@ -12,6 +12,9 @@
     "codex@openai-codex": true,
     "gopls-lsp@claude-plugins-official": true
   },
+  "env": {
+    "PATH": "/home/arbeitandy/.local/share/mise/shims:/home/arbeitandy/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games"
+  },
   "permissions": {
     "defaultMode": "auto",
     "allow": [

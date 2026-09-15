@@ -325,6 +325,23 @@ if live.get('sandbox') != repo.get('sandbox'):
     live['sandbox'] = repo['sandbox']
     changed.append('sandbox')
 
+# `env` is owned here, and it exists to carry PATH. A Claude Code Bash call gets
+# a non-login shell, so ~/.bashrc never runs and PATH arrives as the system
+# default: /usr/local/bin:/usr/bin:/bin plus the games dirs. Neither the mise
+# shims nor ~/.local/bin are in it.
+#
+# Measured 2026-09-14: `codex` was installed (codex-cli 0.147.0) and signed in
+# (~/.codex/auth.json written minutes earlier), and every agent shell still said
+# "codex: command not found". kubectl failed the same way in the same session.
+# The symptom points at auth or at the install; the cause is neither, which is
+# what makes this worth a tracked key rather than a note.
+#
+# A full replacement PATH, not a prefix: Claude Code sets these verbatim, so the
+# system entries have to be spelled out or they are lost.
+if repo.get('env') is not None and live.get('env') != repo['env']:
+    live['env'] = repo['env']
+    changed.append('env')
+
 # `autoMode` is wholly owned by this repo, like `sandbox`, so it is replaced
 # rather than merged. Claude Code never writes this key itself.
 if repo.get('autoMode') is not None and live.get('autoMode') != repo['autoMode']:
@@ -865,6 +882,32 @@ setup_dev_tools() {
             fi
         else
             echo "    /tmp: on disk already ($(findmnt -no FSTYPE /tmp 2>/dev/null))"
+        fi
+    fi
+
+    # Cap the journal. Same class of problem as tmp.mount above -- a default
+    # sized by the disk rather than by what this box needs -- and the reason it
+    # lives here rather than in a cleanup timer is in the drop-in's header.
+    #
+    # `sudo -n true || [[ -t 0 ]]` mirrors the lingering check above: an
+    # unattended restore must not block on a password prompt nobody can answer.
+    # Skipping prints the command instead, so the box reports the gap.
+    if [[ "$PLATFORM" == "linux" && -f "$LINUX_DIR/journald-devbox.conf" ]]; then
+        local _jd=/etc/systemd/journald.conf.d/10-devbox.conf
+        if sudo -n true 2>/dev/null || [[ -t 0 ]]; then
+            if sudo install -D -m 644 "$LINUX_DIR/journald-devbox.conf" "$_jd"; then
+                # Restart, not daemon-reload: journald re-reads its config only
+                # on restart, and the running journal keeps its old cap until
+                # then. Safe live -- clients block on the socket and drain after.
+                sudo systemctl restart systemd-journald 2>/dev/null || true
+                echo "    journald: capped at $(awk -F= '/^SystemMaxUse/{print $2}' "$LINUX_DIR/journald-devbox.conf") (now $(journalctl --disk-usage 2>/dev/null | grep -o '[0-9.]*[MG] ' | head -1))"
+            else
+                echo "    WARNING: could not write $_jd; journal stays uncapped" >&2
+            fi
+        else
+            echo "    journald: NOT capped — no sudo. Run:" >&2
+            echo "             sudo install -D -m 644 $LINUX_DIR/journald-devbox.conf $_jd" >&2
+            echo "             sudo systemctl restart systemd-journald" >&2
         fi
     fi
 
