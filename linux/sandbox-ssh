@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# ssh to another tailnet node from inside Claude Code's sandbox.
+#
+# The sandbox gives a session a loopback-only network namespace, so an agent
+# cannot open a TCP connection to anything -- a tailnet address included. Every
+# packet has to traverse the session's own proxy. `ssh 100.88.226.94` therefore
+# fails with "Network is unreachable", which reads as a dead node rather than as
+# a routing boundary, and the next step is usually to go and check the node.
+#
+# Claude Code already solves this for git: it exports GIT_SSH_COMMAND carrying a
+# ProxyCommand through the session proxy on :3128. This reuses that verbatim,
+# which is the whole trick -- the credentials in it are MINTED PER SESSION, so a
+# ProxyCommand copied into ~/.ssh/config works today and fails tomorrow with an
+# authentication error that names nothing.
+#
+#   sandbox-ssh waltid build-env
+#   rsync -e sandbox-ssh -a ~/src/repo/ waltid:~/src/repo/
+#
+# Outside a sandbox GIT_SSH_COMMAND is unset and this is a plain ssh, so the
+# same command works from a login shell on the same box.
+set -euo pipefail
+
+if [ -n "${GIT_SSH_COMMAND:-}" ]; then
+    # eval, because the ProxyCommand is a single quoted argument containing
+    # spaces. Word-splitting it with $(...) hands ssh six broken arguments and
+    # an error about an unknown option, which does not point back to here.
+    eval "ssh_cmd=($GIT_SSH_COMMAND)"
+else
+    ssh_cmd=(ssh)
+fi
+
+exec "${ssh_cmd[@]}" "$@"
