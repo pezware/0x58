@@ -1,0 +1,64 @@
+#cloud-config
+# Templated by terraform's templatefile(). Dollar-brace expressions below are HCL
+# refs, resolved before the guest ever sees this file — note that YAML comments
+# are NOT exempt, the whole file is parsed as a template first. The two shell
+# scripts are embedded raw via file() so their shell vars survive untouched.
+hostname: ${hostname}
+preserve_hostname: false
+
+write_files:
+  # tmpfs — gone on reboot. The auth key is only needed for the first
+  # `tailscale up`; afterwards /var/lib/tailscale state carries the identity.
+  - path: /run/tailscale-bootstrap.key
+    content: "${tailscale_auth_key}"
+    permissions: '0600'
+    owner: root:root
+
+  # Role parameters, sourced by common.sh. Not secret — safe on disk.
+  - path: /etc/0x58-node.env
+    permissions: '0644'
+    owner: root:root
+    content: |
+      ${indent(6, node_env)}
+
+  - path: /usr/local/sbin/node-common.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      ${indent(6, common_script)}
+
+  - path: /usr/local/sbin/node-bootstrap
+    permissions: '0755'
+    owner: root:root
+    content: |
+      ${indent(6, bootstrap_script)}
+
+runcmd:
+  - /usr/local/sbin/node-bootstrap
+
+  # Scrub the auth key from cloud-init's on-disk cache.
+  #
+  # common.sh shreds /run/tailscale-bootstrap.key on exit, but cloud-init keeps
+  # its own verbatim copy of user_data under /var/lib/cloud, and that one
+  # outlives the bootstrap. Every provisioned user has passwordless sudo, so on
+  # a box that runs other people's build code the cached key is readable by the
+  # workload.
+  #
+  # Values are replaced in place rather than the files deleted: cloud-init reads
+  # this cache on later boots to decide what has already run, and removing it
+  # makes a reboot behave like a first boot.
+  - sed -i 's/tskey-[A-Za-z0-9_-]*/REDACTED-BY-BOOTSTRAP/g' /var/lib/cloud/instance/user-data.txt || true
+  - sed -i 's/tskey-[A-Za-z0-9_-]*/REDACTED-BY-BOOTSTRAP/g' /var/lib/cloud/instances/*/user-data.txt || true
+
+  # THIS IS DEFENCE IN DEPTH, NOT A FIX, and the difference matters.
+  #
+  # Vultr's metadata service re-serves the original user_data to anything that
+  # can reach 169.254.169.254 from the instance. Scrubbing the disk does not
+  # touch it, and neither does anything else this module can do. So a burst box
+  # running hostile code can always recover whatever key provisioned it.
+  #
+  # The only real mitigation is a key that is worthless once used: mint
+  # SINGLE-USE auth keys for any role that runs untrusted workloads. A reusable
+  # key here lets a compromised build register arbitrary machines under this
+  # node's tag. roles/burst MUST NOT be handed the reusable tag:k8s key that
+  # roles/k8s uses for rebuild ergonomics.
