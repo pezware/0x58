@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# burst-reaper — destroy forgotten Vultr burst boxes.
+#
+# Usage:
+#   burst-reaper [--ttl-hours N] [--dry-run] [--verbose]
+#
+# WHY THIS EXISTS, and why it is not optional.
+#
+# Vultr has no hard spend cap. Verified 2026-09-18: there is no budget that
+# suspends resources at a dollar figure. The nearest control is an account limit
+# on maximum instances and maximum instance cost, which caps provisioned
+# CAPACITY, not accrued spend, and suspension otherwise happens only on payment
+# failure. Alerts, quotas and card limits are not caps.
+#
+# Meanwhile a stopped instance bills in full -- only destroy stops charges -- and
+# the whole burst design assumes a controller destroys its box at session end. If
+# that controller dies mid-session, nothing else ever does. So the only real
+# ceiling on this design is a process that deletes things, and this is it.
+#
+# RUN IT SOMEWHERE THE CONTROLLER IS NOT. A watchdog sharing a failure domain
+# with the thing it watches is decoration: if devboxdos creates the box and
+# devboxdos dies, a reaper on devboxdos dies with it. The Mac is a fine host, as
+# is the other controller. Running it in both places is safe -- see the
+# concurrency note on the delete below.
+set -euo pipefail
+
+TTL_HOURS=12
+DRY_RUN=0
+VERBOSE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ttl-hours) TTL_HOURS="${2:?--ttl-hours needs a value}"; shift 2 ;;
+        --dry-run)   DRY_RUN=1; shift ;;
+        --verbose|-v) VERBOSE=1; shift ;;
+        -h|--help)   sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+done
+
+case "$TTL_HOURS" in
+    ''|*[!0-9]*) echo "error: --ttl-hours must be a whole number of hours" >&2; exit 2 ;;
+esac
+
+# ── THE SAFETY PROPERTY: every one of these tags must be present ────────────
+#
+# modules/vultr-node sets ["0x58", <role>] and roles/burst adds
+# ["ephemeral", "build"]. Requiring all three of 0x58 + burst + ephemeral means
+# a box has to have been created by THIS design, in the burst role, and marked
+# disposable, before anything here will touch it.
+#
+# Fails closed on purpose. An instance missing any tag is reported and skipped,
+# never destroyed -- including an instance with no tags at all, which is what a
+# hand-made box or another tool's box looks like. A reaper that guesses is worse
+# than no reaper, because it runs unattended against an account that also holds
+# things nobody wants deleted.
+REQUIRED_TAGS=(0x58 burst ephemeral)
+
+log()  { printf '%s\n' "$*"; }
+vlog() { [ "$VERBOSE" -eq 1 ] && printf '  %s\n' "$*" || true; }
+
+# ── Credentials: env, then the shared file, then the Keychain ───────────────
+# Same chain ts-node uses, so the reaper needs no setup of its own on a box that
+# can already drive terraform.
+CREDS_FILE="${TS_NODE_CREDS:-$HOME/.config/0x58/credentials.env}"
+if [ -z "${VULTR_API_KEY:-}" ] && [ -r "$CREDS_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$CREDS_FILE"
+    set +a
+fi
+if [ -z "${VULTR_API_KEY:-}" ] && command -v security >/dev/null 2>&1; then
+    VULTR_API_KEY=$(security find-generic-password -s vultr-api-key-devbox -a "$USER" -w 2>/dev/null) \
+        || VULTR_API_KEY=$(security find-generic-password -s vultr-api-key -a "$USER" -w 2>/dev/null) \
+        || true
+fi
+[ -n "${VULTR_API_KEY:-}" ] || {
+    echo "error: no Vultr API key (env, $CREDS_FILE, or Keychain)." >&2
+    exit 1
+}
+
+# Header via stdin config, never argv, where any local process could read it out
+# of /proc or `ps` while curl runs.
+vultr_api() {
+    curl -s -K - -H "Content-Type: application/json" -w '\n%{http_code}' "$@" <<CFG
+header = "Authorization: Bearer ${VULTR_API_KEY}"
+CFG
+}
+
+split_body() { sed '$d'; }
+split_code() { tail -n1; }
+
+# ── Inventory ───────────────────────────────────────────────────────────────
+resp=$(vultr_api 'https://api.vultr.com/v2/instances?per_page=500')
+code=$(printf '%s' "$resp" | split_code)
+body=$(printf '%s' "$resp" | split_body)
+[ "$code" = "200" ] || { echo "error: listing instances returned HTTP $code" >&2; exit 1; }
+
+# Emits one "id<TAB>age_hours<TAB>label<TAB>matched<TAB>tags" line per instance.
+# Age comes from date_created, the only creation time the API gives -- an
+# instance rebuilt in place keeps its original date, which is the conservative
+# direction for a reaper (it reaps sooner, never later).
+#
+# Written through a FILE with an explicit status check, not `mapfile < <(...)`.
+# Process substitution hides the child's exit status even under `set -e`, so the
+# first version of this printed "no instances — nothing to do" and exited 0 while
+# the parser was in fact dying on a syntax error. A reaper that reports all-clear
+# when it failed to look is the worst possible bug in this script: it is silent,
+# it is indistinguishable from success, and the thing it fails to catch is a box
+# that bills forever. Caught by running it; no test would have been written for
+# a case nobody expects.
+#
+# Only double quotes inside the program text -- it is delivered inside a
+# single-quoted -c argument, so a single quote would end the shell string, and
+# backslash-escaping the doubles is what broke it the first time. Percent
+# formatting keeps the print statement free of nested quotes entirely.
+PARSED=$(mktemp "${TMPDIR:-/tmp}/burst-reaper.XXXXXX")
+trap 'rm -f "$PARSED"' EXIT
+
+if ! printf '%s' "$body" | REQUIRED="${REQUIRED_TAGS[*]}" python3 -c '
+import json, os, sys, datetime
+required = set(os.environ["REQUIRED"].split())
+now = datetime.datetime.now(datetime.timezone.utc)
+for i in json.load(sys.stdin).get("instances", []):
+    tags = set(i.get("tags") or [])
+    try:
+        created = datetime.datetime.fromisoformat(i["date_created"].replace("Z", "+00:00"))
+        age = (now - created).total_seconds() / 3600.0
+    except Exception:
+        # Unparseable timestamp means unknown age. Treat as 0 so it is never
+        # reaped on a guess; a real forgotten box will be caught next run.
+        age = 0.0
+    matched = "yes" if required.issubset(tags) else "no"
+    tagstr = ",".join(sorted(tags)) or "-"
+    print("%s\t%.2f\t%s\t%s\t%s" % (i["id"], age, i.get("label", ""), matched, tagstr))
+' > "$PARSED"; then
+    echo "error: could not parse the instance list — refusing to report all-clear" >&2
+    exit 1
+fi
+
+mapfile -t ROWS < "$PARSED"
+
+[ "${#ROWS[@]}" -gt 0 ] || { log "no instances on the account — nothing to do"; exit 0; }
+
+log "burst-reaper: ${#ROWS[@]} instance(s), ttl=${TTL_HOURS}h$([ "$DRY_RUN" -eq 1 ] && echo ' (DRY RUN)')"
+
+# ── Confirm a delete by fetching, never by the delete's status code ─────────
+#
+# Measured 2026-09-15: DELETE against an instance that is still provisioning
+# returns 409 while `status` already reads "active" -- the blocking field is
+# `server_status: locked`. A retry 12s later returned 204. So a teardown that
+# trusts one call leaves a box billing with nothing on screen to say so, which
+# is the exact failure this script exists to prevent.
+#
+# 404 is success here, not an error: another reaper instance, or the controller
+# itself, may have destroyed the same box a second earlier. That is why running
+# this in two places is safe.
+confirm_gone() {
+    local id="$1" i out code
+    for i in 1 2 3 4 5 6 7 8; do
+        out=$(vultr_api "https://api.vultr.com/v2/instances/$id")
+        code=$(printf '%s' "$out" | split_code)
+        [ "$code" = "404" ] && return 0
+        vlog "still present (HTTP $code), attempt $i/8"
+        sleep 12
+    done
+    return 1
+}
+
+reaped=0 skipped=0 young=0 failed=0
+
+while IFS=$'\t' read -r id age label matched tags; do
+    [ -n "$id" ] || continue
+    if [ "$matched" != "yes" ]; then
+        log "  SKIP  $label ($id) — tags [$tags] do not match all of: ${REQUIRED_TAGS[*]}"
+        skipped=$((skipped + 1))
+        continue
+    fi
+    # Integer compare; bash has no floats, and hours are coarse enough.
+    if [ "${age%.*}" -lt "$TTL_HOURS" ]; then
+        vlog "keep  $label ($id) — ${age}h old, under ${TTL_HOURS}h"
+        young=$((young + 1))
+        continue
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "  WOULD REAP  $label ($id) — ${age}h old"
+        reaped=$((reaped + 1))
+        continue
+    fi
+
+    log "  REAP  $label ($id) — ${age}h old, past ttl"
+    out=$(vultr_api -X DELETE "https://api.vultr.com/v2/instances/$id")
+    code=$(printf '%s' "$out" | split_code)
+    vlog "delete returned HTTP $code"
+    if confirm_gone "$id"; then
+        log "        destroyed and confirmed gone"
+        reaped=$((reaped + 1))
+    else
+        log "        FAILED — $id is STILL PRESENT and BILLING" >&2
+        failed=$((failed + 1))
+    fi
+done < <(printf '%s\n' "${ROWS[@]}")
+
+log "burst-reaper: reaped=$reaped kept=$young skipped=$skipped failed=$failed"
+
+# Non-zero when something survived that should not have, so a cron or launchd
+# job surfaces it instead of logging quietly into a file nobody reads.
+[ "$failed" -eq 0 ] || exit 1
