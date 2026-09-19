@@ -12,6 +12,14 @@
     "codex@openai-codex": true,
     "gopls-lsp@claude-plugins-official": true
   },
+  "pluginConfigs": {
+    "agents-md@builtin": {
+      "options": {
+        "instructionFiles": "claude-md-and-agents-md"
+      }
+    }
+  },
+  "remoteControlAtStartup": true,
   "env": {
     "PATH": "/home/arbeitandy/.local/share/mise/shims:/home/arbeitandy/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games"
   },
