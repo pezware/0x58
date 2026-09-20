@@ -1327,6 +1327,26 @@ setup_gh_context() {
     unset _h
     echo "    installed: ~/.local/bin/worktree-guard (PreToolUse gate), worktree-sweep"
 
+    # agents-md-context answers a third gap prose cannot close: a repo's
+    # AGENTS.md has to reach the agent. Claude Code reads AGENTS.md directly only
+    # where a per-machine feature flag is on. On this Mac it is not -- /config
+    # shows no "Project instructions" row -- so in a repo carrying AGENTS.md and
+    # no CLAUDE.md a session starts with NO repository instructions at all.
+    # go-monorepo is one, and it gitignores CLAUDE.md on purpose, so the fix
+    # cannot live in the repo.
+    #
+    # It points at the file rather than injecting it. Measured 2026-09-20: a
+    # 10,072 B AGENTS.md passed through `additionalContext` was cut to the first
+    # 2 KB by the harness, while a 5,753 B one arrived whole. A truncated
+    # instruction file reads exactly like a complete one, which is the failure
+    # worth avoiding.
+    if [[ -f "$BIN_DIR/agents-md-context" ]]; then
+        install -m 755 "$BIN_DIR/agents-md-context" ~/.local/bin/agents-md-context
+        echo "    installed: ~/.local/bin/agents-md-context (SessionStart AGENTS.md pointer)"
+    else
+        echo "    agents-md-context: MISSING from $BIN_DIR — skipped" >&2
+    fi
+
     # Linux gets the hooks from claude-settings.json, which this script merges.
     # macOS keeps its ~/.claude/settings.json outside this repo -- ~/.claude is a
     # symlink to ~/src/claude there and is the source of truth -- so say what is
@@ -1339,6 +1359,9 @@ setup_gh_context() {
         grep -q 'worktree-guard' "$_s" 2>/dev/null \
             && echo "    hook: PreToolUse worktree gate wired" \
             || echo "    hook: MISSING PreToolUse(Edit|Write) -> \$HOME/.local/bin/worktree-guard" >&2
+        grep -q 'agents-md-context' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart AGENTS.md pointer wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/agents-md-context --session-json" >&2
         grep -q 'worktree-sweep --session-json' "$_s" 2>/dev/null \
             && echo "    hook: SessionStart worktree sweep wired" \
             || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/worktree-sweep --session-json" >&2
