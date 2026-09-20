@@ -348,6 +348,32 @@ if repo.get('autoMode') is not None and live.get('autoMode') != repo['autoMode']
     live['autoMode'] = repo['autoMode']
     changed.append('autoMode')
 
+# `remoteControlAtStartup` is owned here and replaced. This box runs agents
+# unattended and the human steers them from a phone, so a session that starts
+# without Remote Control is unreachable until somebody opens a terminal.
+#
+# Claude Code writes this key itself when you toggle Remote Control in /config.
+# The replace is deliberate: turning it off for one session still works, and the
+# devbox answer goes back to on at the next restore. It was never in this file
+# before, so no restore run ever put it back, and new sessions started detached.
+if repo.get('remoteControlAtStartup') is not None and \
+        live.get('remoteControlAtStartup') != repo['remoteControlAtStartup']:
+    live['remoteControlAtStartup'] = repo['remoteControlAtStartup']
+    changed.append('remoteControlAtStartup')
+
+# Under `pluginConfigs` we own ONLY the entries this file names. `/plugin` writes
+# sibling entries for other plugins, so replacing the block wholesale would
+# discard them -- the same class of bug as `permissions.defaultMode` below.
+#
+# `claude-md-and-agents-md` loads a repo's AGENTS.md alongside its CLAUDE.md.
+# Measured 2026-09-19: the default reads AGENTS.md only when no CLAUDE.md sits at
+# or above the working directory, so a repo carrying both left its AGENTS.md
+# unread. A user-level ~/.claude/AGENTS.md is never read, at any setting.
+for plugin, cfg in repo.get('pluginConfigs', {}).items():
+    if live.get('pluginConfigs', {}).get(plugin) != cfg:
+        live.setdefault('pluginConfigs', {})[plugin] = cfg
+        changed.append(f'pluginConfigs.{plugin}')
+
 # Under `permissions` we own ONLY defaultMode. `allow`/`deny`/`ask` accumulate
 # entries Claude Code writes as the human answers prompts, and replacing the
 # block wholesale would silently discard them -- the same class of bug the
