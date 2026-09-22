@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Hand a repository's AGENTS.md to Claude Code at session start.
+
+USAGE
+
+  agents-md-context                 # say what would be injected, and why
+  agents-md-context --session-json  # one SessionStart payload, silent when idle
+
+WHY THIS EXISTS
+
+Claude Code reads AGENTS.md directly only where a per-machine feature flag is
+on. Measured 2026-09-20 on 2.1.278: devbox loads it, this Mac does not, with
+the same version and the same `instructionFiles` setting. On the Mac the
+`/config` panel shows no "Project instructions" row at all, which is how the
+docs say an unavailable session presents.
+
+The consequence is not "AGENTS.md is ignored". In a repo that carries AGENTS.md
+and no CLAUDE.md -- go-monorepo is one -- a session starts with NO repository
+instructions whatsoever. Only the user's global CLAUDE.md and the memory index
+arrive.
+
+The obvious fix, a CLAUDE.md holding `@AGENTS.md`, is not available everywhere.
+go-monorepo gitignores CLAUDE.md on purpose: AGENTS.md is the shared source and
+CLAUDE.md is per-developer config. A tracked CLAUDE.md there would reverse a
+decision the team already made.
+
+So the machine that lacks the feature supplies it, and no repo changes.
+
+WHAT IT DOES NOT DO
+
+It never injects a file Claude is already going to load. A CLAUDE.md at the
+repo root that imports or symlinks AGENTS.md means the harness has it covered,
+and this hook stays quiet -- that is what keeps infra-tf from being loaded
+twice once its `@AGENTS.md` import merges.
+
+It cannot detect the feature flag. When the flag reaches this Mac the harness
+will load AGENTS.md itself, and a session then holds the file and this pointer
+at it. That is harmless -- the file is already there to read -- and the pointer
+naming itself is how you notice the hook has become redundant.
+
+It fails open. Any error exits 0 with no output: a broken context hook must
+never stop a session starting.
+
+WHY A POINTER AND NOT THE FILE
+
+The first version injected the whole file. Measured 2026-09-20: infra-tf's
+5,753 B arrived intact, and go-monorepo's 10,072 B was cut to the first 2 KB,
+with the remainder spilled to a tool-results file the session never opens. The
+hook emits the full text either way, so the cap belongs to the harness reading
+`additionalContext`, not to this script.
+
+A silently truncated instruction file is worse than none: it reads as complete,
+so nothing signals that four fifths of the repo's rules are missing. Sizing the
+payload under some threshold would only move the cliff, because the threshold is
+not ours and the files grow.
+
+A pointer costs about forty tokens, never truncates, and stays correct at any
+file size. Claude reads the file with the Read tool, which is the same way this
+setup already handles runbooks and the knowledge book.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+DIRECTIVE = (
+    "This repository's instructions live in {path} ({size:,} B). Claude Code "
+    "did not load that file on this machine, and it is NOT optional reading: "
+    "it is the shared instruction file every coding agent working in this repo "
+    "follows. Read it now, before your first edit or your first answer about "
+    "this repository. It was surfaced by the agents-md-context hook."
+)
+
+
+def git_root(cwd):
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def already_covered(root, agents):
+    """True when Claude loads AGENTS.md without help.
+
+    Checks both files that count as a project CLAUDE.md at the repo root. A
+    symlink is resolved rather than read, because `CLAUDE.md -> AGENTS.md`
+    carries no import line and is still the same file.
+    """
+    target = os.path.realpath(agents)
+    for rel in ("CLAUDE.md", os.path.join(".claude", "CLAUDE.md")):
+        path = os.path.join(root, rel)
+        if not os.path.exists(path):
+            continue
+        if os.path.realpath(path) == target:
+            return True, f"{rel} is a symlink to AGENTS.md"
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.strip() in ("@AGENTS.md", "@./AGENTS.md"):
+                        return True, f"{rel} imports AGENTS.md"
+        except OSError:
+            continue
+    return False, ""
+
+
+def emit(payload):
+    json.dump({"hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": payload,
+    }}, sys.stdout)
+
+
+def main():
+    session = "--session-json" in sys.argv
+
+    root = git_root(os.getcwd())
+    if not root:
+        if not session:
+            print("agents-md-context: not inside a git repo")
+        return 0
+
+    agents = os.path.join(root, "AGENTS.md")
+    if not os.path.isfile(agents):
+        if not session:
+            print(f"agents-md-context: no AGENTS.md at {root}")
+        return 0
+
+    covered, why = already_covered(root, agents)
+    if covered:
+        if not session:
+            print(f"agents-md-context: quiet — {why}")
+        return 0
+
+    size = os.path.getsize(agents)
+
+    if not session:
+        print(f"agents-md-context: would point at {agents} ({size} B)")
+        return 0
+
+    emit(DIRECTIVE.format(path=agents, size=size))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:  # noqa: BLE001 - a context hook never blocks a session
+        sys.exit(0)
