@@ -374,6 +374,32 @@ and that trap has sprung more than once. If you catch yourself `apt-get
 install`-ing this list, the image is missing: build it rather than working
 around it.
 
+### Three parts, one Bash call — and not under tmux
+
+The recipe above is necessary and **not sufficient**, which cost a session on
+2026-09-03. Getting `kubectl` to answer needs three things *together*:
+`kind get kubeconfig` (because `~/.kube` is in the sandbox `denyRead`), the
+`kind-api-bridge` unix socket, and `socat` — **all in the same Bash call**.
+
+**Do not host it under tmux.** The tmux server predates the sandbox and lives in
+the host netns, so a port bound there is unreachable from the session and reads
+as a dead apiserver — sending you back to debugging the kubeconfig, which this
+section already told you is not the problem.
+
+**Check `kind-api-bridge` is not stale before trusting it.** Found stale on
+2026-09-03: it pointed at `10.89.1.22` while the live control-plane was on
+`10.89.1.81`. It had been broken for **every** session, not one, and nothing
+announced it — a bridge that resolves to a dead address fails exactly like a
+cluster that is not running.
+
+```bash
+podman inspect kind-api-bridge --format '{{.Args}}'       # what it points at
+podman inspect iden2-dev-control-plane \
+  --format '{{.NetworkSettings.Networks.kind.IPAddress}}' # what is live
+```
+
+Recreate it when those disagree.
+
 ## Tear down when the work is done — this is your job, not the human's
 
 **Order matters: tests green → PR/issue updated → then tear down.** Not before.
@@ -384,6 +410,50 @@ report is posted, destroy it without being asked.
 A cluster left running is not free on this box. Measured on 2026-08-04, teardown
 returned **1.6 GB of RAM and 8 GB of disk** on a 4 GB machine — worth reclaiming
 on its own terms.
+
+### Reclaiming disk: an age filter does NOT protect a jib-built image
+
+The box fills up, and the obvious reach is an age-filtered prune. On 2026-09-03
+this one ran at 98% disk and reclaimed 16 GB, taking the box from 2.1 GB to 18 GB
+free:
+
+```bash
+podman image prune -a --filter until=24h
+```
+
+**It also deleted the freshly built images it was chosen to protect.** The
+reasoning was that `until=24h` keeps anything created in the last 24 hours, so
+images built minutes earlier would survive. They did not:
+
+```
+1970-01-01 00:00:00 +0000 UTC  ghcr.io/iden2-com/mirror/waltid-issuer-api:pr11
+1970-01-01 00:00:00 +0000 UTC  localhost/waltid/verifier-api:pr11
+```
+
+**jib stamps image creation time to the Unix epoch** so that builds are
+reproducible. Every jib-built image therefore reads as ~56 years old, and an age
+filter deletes it however recently it was built or loaded. The same holds for
+**ko** and **bazel**, which zero timestamps for the same reason. The filter
+presented as the safety mechanism is precisely what removes them.
+
+Two consequences worth carrying:
+
+- **Age is not a proxy for freshness on this box.** Protect by label or by an
+  explicit keep-list, not by `until=`.
+- **Verify by naming what must survive, not by counting what did.** The check
+  after that prune grepped for `pr9|iden2-kind`, got six `iden2-kind` hits and
+  **zero** `pr9` hits, and was read as confirmation — the absent half of the
+  pattern said the images were gone and went unnoticed. Assert the specific tags:
+
+```bash
+for t in localhost/waltid/issuer-api:pr11 localhost/waltid/verifier-api:pr11; do
+    podman image exists "$t" && echo "kept $t" || echo "LOST $t"
+done
+```
+
+Recovery was cheap here only because the build node still held the tars and
+re-streaming took about a minute. That is a property of that setup, not of the
+prune.
 
 Correcting this paragraph's original claim of "no swap": the box carries **4.5 GB**
 (a 496 MB Linode partition plus a 4 GB swapfile), and on 2026-08-04 the swapfile

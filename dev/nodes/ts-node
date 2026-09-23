@@ -55,9 +55,10 @@ export TF_VAR_tailscale_auth_key
 # nothing about a node the devbox already made -- terraform would then cheerfully
 # create a duplicate and neither state could clean the other up. Refuse rather
 # than diverge; divergence is silent and expensive, this is neither.
-if [ "$ROLE" = "k8s" ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
-    echo "error: k8s state lives on the devbox — run this there:" >&2
-    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node k8s $CMD'" >&2
+case "$ROLE" in k8s | testbox) DEVBOX_OWNED=1 ;; *) DEVBOX_OWNED=0 ;; esac
+if [ "$DEVBOX_OWNED" -eq 1 ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
+    echo "error: $ROLE state lives on the devbox — run this there:" >&2
+    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node $ROLE $CMD'" >&2
     echo "       (override with TS_NODE_ALLOW_MAC_K8S=1 only if you know why)" >&2
     exit 1
 fi
@@ -98,7 +99,25 @@ needs_linode_token() {
 ts_keychain_item() {
     case "$1" in
         minimal) echo "tailscale-exit-authkey" ;;   # reuse the existing item
+        # The testbox registers as tag:k8s and so uses the k8s key. Both are
+        # disposable compute holding no credentials, and reusing the tag is what
+        # lets the devbox reach it under ACL rules that already exist. A
+        # tag:testbox would need a minted key and a policy edit in the browser
+        # before any agent could reach the box.
+        testbox) echo "tailscale-k8s-authkey" ;;
         *)       echo "tailscale-$1-authkey" ;;
+    esac
+}
+
+# The TAG a role registers with, which is not always its own name -- testbox
+# wears tag:k8s, and minimal wears tag:exit-node. Telling someone to mint a key
+# tagged tag:testbox produces a key the ACL has no rule for, and the node then
+# comes up unreachable in a way that looks like a network fault.
+ts_tag_for() {
+    case "$1" in
+        minimal) echo "tag:exit-node" ;;
+        testbox) echo "tag:k8s" ;;
+        *)       echo "tag:$1" ;;
     esac
 }
 
@@ -107,7 +126,7 @@ needs_auth_key() {
     [ -z "${TF_VAR_tailscale_auth_key:-}" ] || return 0
     TF_VAR_tailscale_auth_key=$(keychain_get "$item") || {
         echo "error: keychain item '$item' not found." >&2
-        echo "       Generate a reusable + pre-approved key tagged tag:$ROLE at" >&2
+        echo "       Generate a reusable + pre-approved key tagged $(ts_tag_for "$ROLE") at" >&2
         echo "       https://login.tailscale.com/admin/settings/keys then:" >&2
         echo "         security add-generic-password -U -s $item -a \"\$USER\" -w" >&2
         exit 1
@@ -178,12 +197,24 @@ resize_guard() {
     #
     # Unreachable counts as "running". We cannot see the node's state, and
     # rebooting a box whose state is unknown is the case this guard exists for.
+    # Ask BOTH runtimes, and treat "neither is installed" as unknown rather than
+    # as zero. This ran podman only and fell back to `echo 0`, which made the
+    # guard fail OPEN on the role most likely to be resized: testbox runs docker,
+    # has no podman, and so reported zero containers while a kind cluster was
+    # live. A guard that answers "idle" when it cannot see is worse than no
+    # guard, because the answer gets believed. Found by a Codex review 2026-09-04.
     local label running
     label=$(tf output -raw label 2>/dev/null) || label=""
     if [ -n "$label" ]; then
-        running=$(tailscale ssh "$label" \
-            'if command -v podman >/dev/null 2>&1; then podman ps -q | wc -l; else echo 0; fi' \
-            2>/dev/null) || running=""
+        running=$(tailscale ssh "$label" '
+            total=0; seen=0
+            for rt in podman docker; do
+                command -v "$rt" >/dev/null 2>&1 || continue
+                n=$("$rt" ps -q 2>/dev/null | wc -l) || continue
+                seen=1; total=$((total + n))
+            done
+            [ "$seen" -eq 1 ] && echo "$total"
+        ' 2>/dev/null) || running=""
         running=$(printf '%s' "$running" | tr -d '[:space:]')
     else
         running=""
@@ -199,7 +230,8 @@ resize_guard() {
         echo "error: $running container(s) running on $label." >&2
         echo "       The resize ends in a reboot and nothing restarts them —" >&2
         echo "       podman-restart.service is disabled on this fleet. Stop them first:" >&2
-        echo "         tailscale ssh $label 'podman stop -a'" >&2
+        echo "         tailscale ssh $label 'podman stop -a'                 # devbox" >&2
+        echo "         tailscale ssh $label 'docker stop \$(docker ps -q)'   # testbox" >&2
         echo "       Override with TS_NODE_FORCE_RESIZE=1 to accept losing them." >&2
         [ -n "${TS_NODE_FORCE_RESIZE:-}" ] || exit 1
         echo "       ... TS_NODE_FORCE_RESIZE set, continuing anyway." >&2
