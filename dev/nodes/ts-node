@@ -55,9 +55,14 @@ export TF_VAR_tailscale_auth_key
 # nothing about a node the devbox already made -- terraform would then cheerfully
 # create a duplicate and neither state could clean the other up. Refuse rather
 # than diverge; divergence is silent and expensive, this is neither.
-if [ "$ROLE" = "k8s" ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
-    echo "error: k8s state lives on the devbox — run this there:" >&2
-    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node k8s $CMD'" >&2
+# burst joins k8s for the same reason, and devboxdos does not: devboxdos is a
+# DURABLE box the devbox builds once, so its state belongs with every other
+# durable thing. burst is created and destroyed per session by whichever agent
+# is working, which is precisely the state that must not exist in two places.
+case "$ROLE" in k8s | burst) DEVBOX_OWNED=1 ;; *) DEVBOX_OWNED=0 ;; esac
+if [ "$DEVBOX_OWNED" -eq 1 ] && [ "$(uname -s)" = "Darwin" ] && [ -z "${TS_NODE_ALLOW_MAC_K8S:-}" ]; then
+    echo "error: $ROLE state lives on the devbox — run this there:" >&2
+    echo "         ssh devbox '~/src/public/0x58/dev/nodes/ts-node $ROLE $CMD'" >&2
     echo "       (override with TS_NODE_ALLOW_MAC_K8S=1 only if you know why)" >&2
     exit 1
 fi
@@ -78,8 +83,25 @@ keychain_get() {
     security find-generic-password -s "$1" -a "$USER" -w 2>/dev/null
 }
 
-# Loaded only by the commands that actually talk to Linode, so `ssh` and `ip`
-# never carry the token in their environment at all.
+# ── Which cloud a role lives on ─────────────────────────────────────────────
+# DERIVED from the module the role calls, not from a list kept here. A second
+# list would drift the moment someone adds a role and updates only one of them,
+# and the failure mode is sending a Vultr UUID to a Linode endpoint -- which
+# 404s in a way that reads like a destroyed node rather than a wrong provider.
+#
+# The role's own main.tf is the single fact: whichever node module it sources
+# IS its provider.
+role_provider() {
+    if grep -q 'modules/vultr-node' "$ROLE_DIR/main.tf" 2>/dev/null; then
+        echo vultr
+    else
+        echo linode
+    fi
+}
+PROVIDER=$(role_provider)
+
+# Loaded only by the commands that actually talk to a provider, so `ssh` and
+# `ip` never carry a token in their environment at all.
 needs_linode_token() {
     if [ -z "${LINODE_TOKEN:-}" ]; then
         LINODE_TOKEN=$(keychain_get linode-pat) || {
@@ -92,6 +114,41 @@ needs_linode_token() {
     export LINODE_TOKEN
 }
 
+# The Vultr provider reads VULTR_API_KEY from the environment. It is never a
+# Terraform variable: a provider credential passed as a variable reaches
+# tfstate, and the Vultr state is meant to be shared between two controllers.
+#
+# Prefers the SCOPED sub-user key. That key carries `provisioning` and
+# `subscriptions` only -- no billing, no manage_users, no root -- so a copy
+# taken off a controller cannot mint further keys or escalate. The root
+# `vultr-api-key` is a deliberate last resort, and says so when it is used.
+needs_vultr_key() {
+    if [ -z "${VULTR_API_KEY:-}" ]; then
+        VULTR_API_KEY=$(keychain_get vultr-api-key-devbox) || VULTR_API_KEY=""
+        if [ -n "$VULTR_API_KEY" ]; then
+            :
+        elif VULTR_API_KEY=$(keychain_get vultr-api-key); then
+            echo "warning: using the ROOT vultr-api-key. Prefer a scoped sub-user key" >&2
+            echo "         in keychain item 'vultr-api-key-devbox' (provisioning +" >&2
+            echo "         subscriptions only)." >&2
+        else
+            echo "error: no Vultr API key." >&2
+            echo "       set VULTR_API_KEY, or put it in $CREDS_FILE," >&2
+            echo "       or add keychain item 'vultr-api-key-devbox'." >&2
+            exit 1
+        fi
+    fi
+    export VULTR_API_KEY
+}
+
+# Whichever one this role needs, and only that one.
+needs_provider_auth() {
+    case "$PROVIDER" in
+        vultr) needs_vultr_key ;;
+        *) needs_linode_token ;;
+    esac
+}
+
 # Per-role auth keys, because a Tailscale key grants ALL of its tags to the node
 # it registers — one shared multi-tag key would make every box wear every tag
 # and defeat the ACL separation.
@@ -102,14 +159,48 @@ ts_keychain_item() {
     esac
 }
 
+# The TAG a role registers with, which is not always its own name. Telling
+# someone to mint a key tagged tag:<role> produces a key the ACL has no rule
+# for, and the node then comes up unreachable in a way that looks like a
+# network fault.
+ts_tag_for() {
+    case "$1" in
+        minimal) echo "tag:exit-node" ;;
+        *)       echo "tag:$1" ;;
+    esac
+}
+
+# Roles whose auth key MUST be single-use, and why it is not merely preferred.
+#
+# A burst box runs other people's build code. Its auth key survives in Vultr's
+# metadata service, which re-serves user_data to anything on the instance, so no
+# amount of disk scrubbing removes it. A REUSABLE key there lets a compromised
+# build register arbitrary machines under that tag. A single-use key is spent
+# the moment the node joins, which makes the readable copy worthless.
+#
+# Accepted risk on the rest of the exposure is recorded in #106.
+ts_requires_single_use() {
+    case "$1" in
+        burst) return 0 ;;
+        *)     return 1 ;;
+    esac
+}
+
 needs_auth_key() {
-    local item; item=$(ts_keychain_item "$ROLE")
+    local item kind; item=$(ts_keychain_item "$ROLE")
+    if ts_requires_single_use "$ROLE"; then kind="SINGLE-USE"; else kind="reusable"; fi
     [ -z "${TF_VAR_tailscale_auth_key:-}" ] || return 0
     TF_VAR_tailscale_auth_key=$(keychain_get "$item") || {
         echo "error: keychain item '$item' not found." >&2
-        echo "       Generate a reusable + pre-approved key tagged tag:$ROLE at" >&2
+        echo "       Generate a $kind + pre-approved key tagged $(ts_tag_for "$ROLE") at" >&2
         echo "       https://login.tailscale.com/admin/settings/keys then:" >&2
         echo "         security add-generic-password -U -s $item -a \"\$USER\" -w" >&2
+        if ts_requires_single_use "$ROLE"; then
+            echo "       SINGLE-USE is not a preference here: this role runs untrusted" >&2
+            echo "       build code, and Vultr's metadata service re-serves the key to" >&2
+            echo "       anything on the box. A reusable key there can mint nodes." >&2
+            echo "       Re-mint it before every apply." >&2
+        fi
         exit 1
     }
 }
@@ -218,41 +309,111 @@ header = "Authorization: Bearer ${LINODE_TOKEN}"
 CFG
 }
 
+# Same stdin-config trick, same reason: the key never appears in argv.
+vultr_api() {
+    curl -s -K - -H "Content-Type: application/json" -w '\n%{http_code}' "$@" <<CFG
+header = "Authorization: Bearer ${VULTR_API_KEY}"
+CFG
+}
+
+# Prove an instance is GONE, rather than trusting the call that removed it.
+#
+# Measured 2026-09-15: DELETE on an instance still provisioning returns 409
+# while `status` already reads "active" -- the blocking field is
+# `server_status: locked`. A teardown that trusts one call, or its exit code,
+# leaves an instance running and billing with nothing on screen to say so. And
+# destroy is the only thing that stops charges: a stopped Vultr instance bills
+# in full.
+#
+# Checked by UUID, never by label. Vultr accepts duplicate labels, so a label
+# match cannot say WHICH instance survived.
+vultr_confirm_gone() {
+    local id="$1" attempt out code
+    for attempt in 1 2 3 4 5 6 7 8; do
+        out=$(vultr_api "https://api.vultr.com/v2/instances/$id")
+        code=$(printf '%s' "$out" | tail -n1)
+        case "$code" in
+            404) echo "confirmed gone: $id"; return 0 ;;
+            200) echo "  still present (attempt $attempt/8) — waiting 12s" >&2 ;;
+            *)   echo "  unexpected HTTP $code checking $id (attempt $attempt/8)" >&2 ;;
+        esac
+        sleep 12
+    done
+    echo "error: $id is STILL PRESENT after 8 checks — it is billing." >&2
+    echo "       Destroy it by hand and confirm: vultr-cli instance get $id" >&2
+    return 1
+}
+
 case "$CMD" in
     apply)
-        needs_linode_token
+        needs_provider_auth
         needs_auth_key
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf apply "$@"
         ;;
     plan)
-        needs_linode_token
+        needs_provider_auth
         needs_auth_key
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf plan "$@"
         ;;
     destroy)
-        needs_linode_token
+        needs_provider_auth
+        # Captured BEFORE the destroy, because outputs are gone afterwards and
+        # the UUID is the only thing that can confirm the node actually died.
+        DEAD_ID=$(instance_id 2>/dev/null) || DEAD_ID=""
         # auth_key is required by the schema; empty satisfies it during destroy.
         TF_VAR_tailscale_auth_key=""
         tf destroy "$@"
+        if [ "$PROVIDER" = "vultr" ] && [ -n "$DEAD_ID" ]; then
+            echo "Verifying the instance is gone (a 409 delete can look like success)..."
+            vultr_confirm_gone "$DEAD_ID" || exit 1
+        fi
         echo "Remember to remove the stale node from https://login.tailscale.com/admin/machines"
         ;;
     start)
-        needs_linode_token
+        needs_provider_auth
         ID=$(instance_id) || { echo "error: run './ts-node $ROLE apply' first" >&2; exit 1; }
         echo "Booting $ROLE (id $ID)..."
-        linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/boot" >/dev/null
+        if [ "$PROVIDER" = "vultr" ]; then
+            vultr_api -X POST "https://api.vultr.com/v2/instances/$ID/start" >/dev/null
+        else
+            linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/boot" >/dev/null
+        fi
         echo "On the tailnet in ~60s."
         ;;
     stop)
-        needs_linode_token
+        needs_provider_auth
         ID=$(instance_id) || exit 1
         echo "Powering off $ROLE (id $ID)."
-        echo "NOTE: Linode bills a powered-off instance in full. Only 'destroy' stops charges."
-        linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/shutdown" >/dev/null
+        echo "NOTE: a powered-off instance bills in full on BOTH providers."
+        echo "      Only 'destroy' stops charges."
+        if [ "$PROVIDER" = "vultr" ]; then
+            vultr_api -X POST "https://api.vultr.com/v2/instances/$ID/halt" >/dev/null
+        else
+            linode_api -X POST "https://api.linode.com/v4/linode/instances/$ID/shutdown" >/dev/null
+        fi
         ;;
     resize)
+        # REFUSED on Vultr, and this is not a missing feature.
+        #
+        # Vultr upgrades a plan in place and NEVER downgrades it. So a resize
+        # here is a one-way ratchet: the box would take the larger plan's price
+        # permanently, and the "back down afterwards" half of the command below
+        # simply does not exist. Offering it would be offering a trap that only
+        # shows up on the next invoice.
+        #
+        # The Vultr roles are built around this: a burst box is created at its
+        # working size and destroyed at the end, which is cheaper than the
+        # Linode round trip anyway. To change size, destroy and re-apply with a
+        # different plan.
+        if [ "$PROVIDER" = "vultr" ]; then
+            echo "error: Vultr plans cannot be resized down — a resize is permanent." >&2
+            echo "       Destroy and re-apply at the size you want instead:" >&2
+            echo "         ./ts-node $ROLE destroy" >&2
+            echo "         ./ts-node $ROLE apply -var plan=<vhp-...>" >&2
+            exit 1
+        fi
         # Scale a node up for a heavy test session and back down afterwards,
         # WITHOUT rebuilding it. This is an API operation, not a Terraform one,
         # for the same reason start/stop are: Terraform owns what the box IS,
@@ -339,10 +500,19 @@ case "$CMD" in
         echo "Synced. Confirm with: ssh $LABEL devbox-drift"
         ;;
     status)
-        needs_linode_token
+        needs_provider_auth
         ID=$(instance_id) || { echo "not applied"; exit 0; }
-        linode_api "https://api.linode.com/v4/linode/instances/$ID" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))"
+        if [ "$PROVIDER" = "vultr" ]; then
+            # server_status, not just status. A Vultr instance reports
+            # status=active while server_status=locked during provisioning, and
+            # that is exactly the window where a destroy returns 409 -- so the
+            # field that predicts the failure is the one worth printing.
+            vultr_api "https://api.vultr.com/v2/instances/$ID" | sed '$d' \
+                | python3 -c "import sys,json; d=json.load(sys.stdin).get('instance',{}); print(d.get('status','?'), '/', d.get('server_status','?'))"
+        else
+            linode_api "https://api.linode.com/v4/linode/instances/$ID" \
+                | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))"
+        fi
         ;;
     ssh)
         LABEL=$(tf output -raw label 2>/dev/null) || { echo "error: not applied" >&2; exit 1; }
