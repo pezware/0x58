@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# install — build, install and (re)seal the xai-broker on the devbox.
+#
+#   linux/xai-broker/install                 # build, install unit, restart
+#   linux/xai-broker/install --seal < key    # same, plus seal the key from stdin
+#
+# Run it over ssh as the human, unsandboxed: it needs sudo. The key travels on
+# stdin only — never argv, never a file on the box — so it does not land in
+# shell history, `ps` or a tmp file. Rotation is the --seal form again.
+#
+# Idempotent: a second run without --seal rebuilds and restarts, nothing else.
+set -euo pipefail
+# Never trace the key capture, even under bash -x.
+{ set +x; } 2>/dev/null
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CRED_NAME=xai-smallscreen
+CRED=/etc/credstore.encrypted/$CRED_NAME
+BIN=/usr/local/bin/xai-broker
+UNIT=/etc/systemd/system/xai-broker.service
+SOCK=/run/xai-broker/xai.sock
+
+seal=0
+case "${1:-}" in
+    --seal) seal=1 ;;
+    '') ;;
+    *) echo "usage: install [--seal]" >&2; exit 2 ;;
+esac
+
+sudo -n true 2>/dev/null || { echo "install: needs passwordless sudo" >&2; exit 1; }
+command -v go >/dev/null || { echo "install: go not on PATH (mise activate?)" >&2; exit 1; }
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+echo "== build"
+(cd "$HERE" && go build -trimpath -buildvcs=false -o "$tmp/xai-broker" .)
+sudo install -m 755 "$tmp/xai-broker" "$BIN"
+sudo install -m 644 "$HERE/xai-broker.service" "$UNIT"
+
+if [ "$seal" -eq 1 ]; then
+    echo "== seal key from stdin"
+    key="$(tr -d '[:space:]')"
+    case "$key" in
+        xai-*) ;;
+        *) echo "install: refusing to seal: an xAI key starts with 'xai-'" >&2; exit 1 ;;
+    esac
+    sudo install -d -m 700 /etc/credstore.encrypted
+    # --name must equal the credential ID in LoadCredentialEncrypted=, or PID 1
+    # refuses the file at unit start.
+    printf '%s' "$key" | sudo systemd-creds encrypt --with-key=host --name="$CRED_NAME" - "$CRED"
+    unset key
+    sudo chmod 600 "$CRED"
+fi
+
+if ! sudo test -s "$CRED"; then
+    echo "install: no sealed key at $CRED — run again with --seal and the key on stdin" >&2
+    exit 1
+fi
+
+echo "== enable"
+sudo systemctl daemon-reload
+sudo systemctl enable xai-broker.service >/dev/null
+sudo systemctl restart xai-broker.service
+
+echo "== verify"
+for _ in 1 2 3 4 5; do
+    [ -S "$SOCK" ] && break
+    sleep 1
+done
+curl -fsS --unix-socket "$SOCK" http://xai/healthz
+systemctl --no-pager --lines=3 status xai-broker.service | sed -n '1,4p'
+echo "callers: curl --unix-socket $SOCK http://xai/v1/models"

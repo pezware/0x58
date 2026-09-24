@@ -160,6 +160,39 @@ What is load-bearing is the shape underneath, and it is unchanged: loopback-only
 netns, and the `socat` listeners on `:3128`/`:1080` as the sole route out. The
 boundary is the route, not a list of names.
 
+## Third-party API keys: brokered, not placed
+
+The smallscreen-books xAI key is the first non-OAuth secret an agent needs to
+*use* from inside the sandbox. It is never on a path the agent's uid can read.
+`linux/xai-broker/` is a ~150-line stdlib Go reverse proxy under a **system**
+unit: it listens on `/run/xai-broker/xai.sock`, forwards `/v1/*` to `api.x.ai`,
+and replaces whatever `Authorization` header the client sent with the real key.
+
+Where the key lives: `systemd-creds encrypt --with-key=host` seals it into
+`/etc/credstore.encrypted/xai-smallscreen` (root, 0600). PID 1 decrypts it into a
+private tmpfs for that unit only. A sandboxed agent cannot read the ciphertext,
+cannot read the host key, and cannot sudo under `no_new_privs` — the boundary the
+confinement design measured on 2026-08-04, now doing work.
+
+Why a unix socket: the session netns has loopback only, so host TCP on
+`127.0.0.1` is unreachable from inside it. A unix socket on a bind-mounted path
+is reachable — the rootless podman socket already works this way in-session.
+
+```bash
+linux/xai-broker/install --seal < key.txt   # once, over ssh, as the human; rotate the same way
+curl --unix-socket /run/xai-broker/xai.sock http://xai/v1/models   # from a session
+journalctl -u xai-broker                    # uid, pid, method, path, status — no bodies
+```
+
+What it does **not** do: a caller can still spend on the key. That is a usage
+oracle, the same shape as the signing key, and the backstop is the same: a
+per-key spend limit on the provider side, plus the broker's request budget
+(`XAI_BROKER_RPM`, 60). Prefer this shape for the next API key too — a
+`credentials.env` entry is readable by design, and this is not.
+
+The unit sits in a subdirectory on purpose: `devbox-drift` treats `linux/*.service`
+as user units and would report a system unit as never enabled.
+
 ## Four deliberate trade-offs
 
 **Agents can sign, push and use `gh`.** As of 2026-08-03 this is granted
