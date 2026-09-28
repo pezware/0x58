@@ -1,0 +1,56 @@
+# xai-broker — the devbox agent gets an xAI endpoint, never the key.
+#
+# The key is sealed with `systemd-creds encrypt --with-key=host` into
+# /etc/credstore.encrypted/xai-smallscreen (root, 0600). PID 1 decrypts it into
+# a private tmpfs for this unit only, and the broker reads it from
+# $CREDENTIALS_DIRECTORY. A sandboxed agent running as uid 1000 cannot read
+# either the ciphertext or the host key, and cannot sudo (no_new_privs).
+#
+# Install and rotate with linux/xai-broker/install. This is a SYSTEM unit, which
+# is why it sits in a subdirectory: devbox-drift treats linux/*.service as user
+# units and would report it as never enabled.
+#
+# Callers: curl --unix-socket /run/xai-broker/xai.sock http://xai/v1/...
+# Audit:   journalctl -u xai-broker   (uid, pid, method, path, status; no bodies)
+
+[Unit]
+Description=xAI API broker (bearer-injecting proxy on a unix socket)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xai-broker
+Environment=XAI_BROKER_SOCKET=/run/xai-broker/xai.sock
+Environment=XAI_BROKER_CREDENTIAL=xai-smallscreen
+Environment=XAI_BROKER_RPM=60
+LoadCredentialEncrypted=xai-smallscreen:/etc/credstore.encrypted/xai-smallscreen
+RuntimeDirectory=xai-broker
+RuntimeDirectoryMode=0755
+DynamicUser=yes
+Restart=on-failure
+RestartSec=5
+
+# Nothing below is load-bearing for the secret; the credential path above is.
+# It bounds what a bug in the proxy could reach.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

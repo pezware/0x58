@@ -325,11 +325,54 @@ if live.get('sandbox') != repo.get('sandbox'):
     live['sandbox'] = repo['sandbox']
     changed.append('sandbox')
 
+# `env` is owned here, and it exists to carry PATH. A Claude Code Bash call gets
+# a non-login shell, so ~/.bashrc never runs and PATH arrives as the system
+# default: /usr/local/bin:/usr/bin:/bin plus the games dirs. Neither the mise
+# shims nor ~/.local/bin are in it.
+#
+# Measured 2026-09-14: `codex` was installed (codex-cli 0.147.0) and signed in
+# (~/.codex/auth.json written minutes earlier), and every agent shell still said
+# "codex: command not found". kubectl failed the same way in the same session.
+# The symptom points at auth or at the install; the cause is neither, which is
+# what makes this worth a tracked key rather than a note.
+#
+# A full replacement PATH, not a prefix: Claude Code sets these verbatim, so the
+# system entries have to be spelled out or they are lost.
+if repo.get('env') is not None and live.get('env') != repo['env']:
+    live['env'] = repo['env']
+    changed.append('env')
+
 # `autoMode` is wholly owned by this repo, like `sandbox`, so it is replaced
 # rather than merged. Claude Code never writes this key itself.
 if repo.get('autoMode') is not None and live.get('autoMode') != repo['autoMode']:
     live['autoMode'] = repo['autoMode']
     changed.append('autoMode')
+
+# `remoteControlAtStartup` is owned here and replaced. This box runs agents
+# unattended and the human steers them from a phone, so a session that starts
+# without Remote Control is unreachable until somebody opens a terminal.
+#
+# Claude Code writes this key itself when you toggle Remote Control in /config.
+# The replace is deliberate: turning it off for one session still works, and the
+# devbox answer goes back to on at the next restore. It was never in this file
+# before, so no restore run ever put it back, and new sessions started detached.
+if repo.get('remoteControlAtStartup') is not None and \
+        live.get('remoteControlAtStartup') != repo['remoteControlAtStartup']:
+    live['remoteControlAtStartup'] = repo['remoteControlAtStartup']
+    changed.append('remoteControlAtStartup')
+
+# Under `pluginConfigs` we own ONLY the entries this file names. `/plugin` writes
+# sibling entries for other plugins, so replacing the block wholesale would
+# discard them -- the same class of bug as `permissions.defaultMode` below.
+#
+# `claude-md-and-agents-md` loads a repo's AGENTS.md alongside its CLAUDE.md.
+# Measured 2026-09-19: the default reads AGENTS.md only when no CLAUDE.md sits at
+# or above the working directory, so a repo carrying both left its AGENTS.md
+# unread. A user-level ~/.claude/AGENTS.md is never read, at any setting.
+for plugin, cfg in repo.get('pluginConfigs', {}).items():
+    if live.get('pluginConfigs', {}).get(plugin) != cfg:
+        live.setdefault('pluginConfigs', {})[plugin] = cfg
+        changed.append(f'pluginConfigs.{plugin}')
 
 # Under `permissions` we own ONLY defaultMode. `allow`/`deny`/`ask` accumulate
 # entries Claude Code writes as the human answers prompts, and replacing the
@@ -873,6 +916,32 @@ setup_dev_tools() {
         fi
     fi
 
+    # Cap the journal. Same class of problem as tmp.mount above -- a default
+    # sized by the disk rather than by what this box needs -- and the reason it
+    # lives here rather than in a cleanup timer is in the drop-in's header.
+    #
+    # `sudo -n true || [[ -t 0 ]]` mirrors the lingering check above: an
+    # unattended restore must not block on a password prompt nobody can answer.
+    # Skipping prints the command instead, so the box reports the gap.
+    if [[ "$PLATFORM" == "linux" && -f "$LINUX_DIR/journald-devbox.conf" ]]; then
+        local _jd=/etc/systemd/journald.conf.d/10-devbox.conf
+        if sudo -n true 2>/dev/null || [[ -t 0 ]]; then
+            if sudo install -D -m 644 "$LINUX_DIR/journald-devbox.conf" "$_jd"; then
+                # Restart, not daemon-reload: journald re-reads its config only
+                # on restart, and the running journal keeps its old cap until
+                # then. Safe live -- clients block on the socket and drain after.
+                sudo systemctl restart systemd-journald 2>/dev/null || true
+                echo "    journald: capped at $(awk -F= '/^SystemMaxUse/{print $2}' "$LINUX_DIR/journald-devbox.conf") (now $(journalctl --disk-usage 2>/dev/null | grep -o '[0-9.]*[MG] ' | head -1))"
+            else
+                echo "    WARNING: could not write $_jd; journal stays uncapped" >&2
+            fi
+        else
+            echo "    journald: NOT capped — no sudo. Run:" >&2
+            echo "             sudo install -D -m 644 $LINUX_DIR/journald-devbox.conf $_jd" >&2
+            echo "             sudo systemctl restart systemd-journald" >&2
+        fi
+    fi
+
     # nvim plugins (lazy.nvim auto-bootstraps on first launch). macOS only —
     # printing this on the devbox would advertise an editor that is not there.
     if [[ "$PLATFORM" == "macos" ]]; then
@@ -1263,6 +1332,26 @@ setup_gh_context() {
     unset _h
     echo "    installed: ~/.local/bin/worktree-guard (PreToolUse gate), worktree-sweep"
 
+    # agents-md-context answers a third gap prose cannot close: a repo's
+    # AGENTS.md has to reach the agent. Claude Code reads AGENTS.md directly only
+    # where a per-machine feature flag is on. On this Mac it is not -- /config
+    # shows no "Project instructions" row -- so in a repo carrying AGENTS.md and
+    # no CLAUDE.md a session starts with NO repository instructions at all.
+    # go-monorepo is one, and it gitignores CLAUDE.md on purpose, so the fix
+    # cannot live in the repo.
+    #
+    # It points at the file rather than injecting it. Measured 2026-09-20: a
+    # 10,072 B AGENTS.md passed through `additionalContext` was cut to the first
+    # 2 KB by the harness, while a 5,753 B one arrived whole. A truncated
+    # instruction file reads exactly like a complete one, which is the failure
+    # worth avoiding.
+    if [[ -f "$BIN_DIR/agents-md-context" ]]; then
+        install -m 755 "$BIN_DIR/agents-md-context" ~/.local/bin/agents-md-context
+        echo "    installed: ~/.local/bin/agents-md-context (SessionStart AGENTS.md pointer)"
+    else
+        echo "    agents-md-context: MISSING from $BIN_DIR — skipped" >&2
+    fi
+
     # Linux gets the hooks from claude-settings.json, which this script merges.
     # macOS keeps its ~/.claude/settings.json outside this repo -- ~/.claude is a
     # symlink to ~/src/claude there and is the source of truth -- so say what is
@@ -1275,6 +1364,9 @@ setup_gh_context() {
         grep -q 'worktree-guard' "$_s" 2>/dev/null \
             && echo "    hook: PreToolUse worktree gate wired" \
             || echo "    hook: MISSING PreToolUse(Edit|Write) -> \$HOME/.local/bin/worktree-guard" >&2
+        grep -q 'agents-md-context' "$_s" 2>/dev/null \
+            && echo "    hook: SessionStart AGENTS.md pointer wired" \
+            || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/agents-md-context --session-json" >&2
         grep -q 'worktree-sweep --session-json' "$_s" 2>/dev/null \
             && echo "    hook: SessionStart worktree sweep wired" \
             || echo "    hook: MISSING SessionStart -> \$HOME/.local/bin/worktree-sweep --session-json" >&2
