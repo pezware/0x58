@@ -326,8 +326,8 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `error parsing config file: .mise.toml` | config is **untrusted**, not malformed → `mise trust` |
 | `go: command not found`, `kubectl: command not found` | non-interactive shell; `mise activate` only runs from an interactive prompt → use `~/.local/share/mise/shims/<tool>` |
 | `gh` says `please run gh auth login` | you invoked the **mise shim**. `gh` is the ONE tool that must NOT come from the shim → use `~/.local/bin/gh` |
-| `Permission denied (publickey)` on push | ssh is not offering the key; `~/.ssh/config` must pin `IdentityFile ~/.ssh/devbox_agent` |
-| `Couldn't find key in agent?` when signing | `user.signingkey` is in `key::` form, which needs an agent → use the **path** form |
+| `Permission denied (publickey)` on push | ssh is not offering the key; `~/.ssh/config` must pin `IdentityFile ~/.ssh/devbox_agent.pub` and `IdentityAgent /run/ssh-agent-%u/agent.sock`. An empty agent (`SSH_AUTH_SOCK=/run/ssh-agent-$USER/agent.sock ssh-add -l`) needs the human to run `devbox-keys restore` |
+| `Couldn't find key in agent?` when signing | `user.signingkey` must name a `.pub` file and `gpg.ssh.program` must be `~/.local/bin/devbox-ssh-keygen`, which points ssh-keygen at the sealed agent. No private key file exists to point at |
 | `gh` dies with `not a directory` | `~/.config/gh` is missing → `mkdir -p ~/.config/gh` |
 | `403 denied` on push | HTTPS remote; tokens are read-only → use the SSH remote |
 | container test cannot reach Docker | no `docker` binary and `XDG_RUNTIME_DIR` unset → install the shim in `patterns/containers-and-k8s.md`, do NOT set `DOCKER_HOST` |
@@ -336,7 +336,7 @@ Most devbox failures report the wrong cause. Match the symptom, do not trust it:
 | `pnpm install` refuses a fresh version | the 7-day supply-chain cooldown, working as intended → add a dated `minimumReleaseAgeExclude` entry, never lower the floor |
 | `Could not resolve to a Repository` | wrong token for that owner → run `gh` from inside the repo |
 | `a branch named X already exists` right after a failed `worktree add` | the branch WAS created before the config write failed → retry with `--no-track`, or attach to it |
-| `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent commit -S` |
+| `Couldn't find key in agent?` **only under `~/src/iden2/`** | the `includeIf gitdir:` work config overrides the global signingkey with the Mac's `key::` form → `git -c user.signingkey=~/.ssh/devbox_agent.pub commit -S` |
 | `could not lock config file .git/config` | **not** a stale lock — the sandbox masks it; the operation that needed it is unavailable, the rest of the command usually succeeded |
 | `codex exec` dies with `Permission denied (os error 13)`, or `codex login status` reports `loggedIn: false` | stale settings on the box. `~/.codex/auth.json` was un-denied on 2026-08-05; the live `~/.claude/settings.json` still denies it → re-pull and merge the sandbox block. Do **not** run `codex login` — the file is on the host, it is masked from your session, and re-authenticating treats a visibility problem as a credential one |
 | `git branch -d` says the branch is not fully merged, after the PR merged | the PR was **squash**-merged, so no commit with your SHA is in `main` → confirm on the PR page, then `-D` |

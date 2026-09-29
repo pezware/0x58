@@ -7,17 +7,19 @@ That is the common thread: **the symptom names the wrong subsystem.**
 
 ```
 user.signingkey = key::ssh-ed25519 AAAA…    → error: Couldn't find key in agent?
-user.signingkey = /home/…/.ssh/devbox_agent → %G? = G
+user.signingkey = /home/…/.ssh/devbox_agent_personal.pub → %G? = G  (the sealed agent signs)
 ```
 
 `key::<pubkey>` names a key held by an **agent**. That is correct on the Mac,
 where Secretive keeps the key in the Secure Enclave and there is no file to point
-at. The devbox is the mirror image — a key on disk, no agent — so it needs a
-**path**.
+at. The devbox holds its keys in a root-loaded agent that sessions reach only
+through `gpg.ssh.program = ~/.local/bin/devbox-ssh-keygen`, so it needs a
+**path to the `.pub`**. No private key file exists on the box to point at.
 
 The Mac's gitconfig therefore cannot work here whatever key it names. If you ever
-see `Couldn't find key in agent?`, do not hunt for a missing agent; check the
-*form* of `user.signingkey`.
+see `Couldn't find key in agent?`, check the *form* of `user.signingkey` and
+`gpg.ssh.program` first, then whether the agent holds the key
+(`SSH_AUTH_SOCK=/run/ssh-agent-$USER/agent.sock ssh-add -l`).
 
 Worse than failing: the Mac's value names a key belonging to a **different GitHub
 account**, so a success would be silently misattributed.
@@ -94,7 +96,8 @@ reject. Map each key to the one address whose account owns it, never to both.
 ```
 Host github.com
     User git
-    IdentityFile ~/.ssh/devbox_agent
+    IdentityFile ~/.ssh/devbox_agent.pub
+    IdentityAgent /run/ssh-agent-%u/agent.sock
     IdentitiesOnly yes
 ```
 
@@ -200,7 +203,7 @@ restored since, override per-commit rather than editing global config (which the
 sandbox blocks anyway):
 
 ```bash
-git -c user.signingkey=~/.ssh/devbox_agent commit -S -m "..."
+git -c user.signingkey=~/.ssh/devbox_agent.pub commit -S -m "..."
 ```
 
 The devbox key is already in `allowed_signers` under `andy@iden2.com`, so local
