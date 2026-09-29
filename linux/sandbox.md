@@ -164,12 +164,13 @@ boundary is the route, not a list of names.
 
 The smallscreen-books xAI key is the first non-OAuth secret an agent needs to
 *use* from inside the sandbox. It is never on a path the agent's uid can read.
-`linux/xai-broker/` is a ~150-line stdlib Go reverse proxy under a **system**
-unit: it listens on `/run/xai-broker/xai.sock`, forwards `/v1/*` to `api.x.ai`,
-and replaces whatever `Authorization` header the client sent with the real key.
+`linux/secret-broker/` is a stdlib Go reverse proxy under a **system** unit,
+one instance per key. The `xai` route listens on `/run/xai-broker/xai.sock`,
+forwards `/v1/*` to `api.x.ai`, and replaces whatever `Authorization` header the
+client sent with the real key.
 
 Where the key lives: `systemd-creds encrypt --with-key=host` seals it into
-`/etc/credstore.encrypted/xai-smallscreen` (root, 0600). PID 1 decrypts it into a
+`/etc/credstore.encrypted/xai` (root, 0600). PID 1 decrypts it into a
 private tmpfs for that unit only. A sandboxed agent cannot read the ciphertext,
 cannot read the host key, and cannot sudo under `no_new_privs` — the boundary the
 confinement design measured on 2026-08-04, now doing work.
@@ -179,15 +180,15 @@ Why a unix socket: the session netns has loopback only, so host TCP on
 is reachable — the rootless podman socket already works this way in-session.
 
 ```bash
-linux/xai-broker/install --seal < key.txt   # once, over ssh, as the human; rotate the same way
+linux/secret-broker/install --seal xai < key.txt   # once, over ssh, as the human; rotate the same way
 curl --unix-socket /run/xai-broker/xai.sock http://xai/v1/models   # from a session
-journalctl -u xai-broker                    # uid, pid, method, path, status — no bodies
+journalctl -u secret-broker@xai                    # uid, pid, method, path, status — no bodies
 ```
 
 What it does **not** do: a caller can still spend on the key. That is a usage
 oracle, the same shape as the signing key, and the backstop is the same: a
 per-key spend limit on the provider side, plus the broker's request budget
-(`XAI_BROKER_RPM`, 60). Prefer this shape for the next API key too — a
+(`BROKER_RPM`, 60). Prefer this shape for the next API key too — a
 `credentials.env` entry is readable by design, and this is not.
 
 **On a Mac**, the same binary runs as a launchd agent. It reads the key from the
@@ -196,7 +197,7 @@ login keychain item `xai-smallscreen` and listens on
 `XAI_BROKER_SOCKET`.
 
 ```bash
-linux/xai-broker/install-macos              # build, write the plist, load, check /healthz
+linux/secret-broker/install-macos           # build, write the plist, load, check /healthz
 tail -f ~/Library/Logs/xai-broker.log       # method, path, status — no bodies
 ```
 
