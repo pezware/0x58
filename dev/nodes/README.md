@@ -585,6 +585,13 @@ the public keys land in `~/.ssh`. `devbox-keys status` shows each one.
 **Step 5** exists because cloud-init runs `restore.sh` before step 4, when no
 `.pub` exists yet, so it cannot configure git signing on the first pass.
 
+Git identity follows the directory on both machines: `~/src/iden2/` is
+arbeitandy, and `~/src/public/`, `~/src/private/` and `~/src/iden2/.claude/` are
+achtungandy (`setup_git_identity` in `macos/restore.sh`). `git-identity-check`
+proves it per repo. The devbox pushes as achtungandy with `devbox_agent_personal`,
+so that key must be an **Authentication** key on achtungandy as well as a
+Signing key. Registered once, it survives every rebuild through the escrow.
+
 **Step 6** has no automated path, because the file holds three secrets that
 deliberately never enter this repo or a backup:
 

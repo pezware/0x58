@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""git-identity-check — prove every repo commits, signs and pushes as its directory's account.
+
+  git-identity-check            # every repo under ~/src/{iden2,public,private}
+  git-identity-check <repo>...  # just these
+
+The rule (setup_git_identity in macos/restore.sh):
+
+  ~/src/iden2/          arbeitandy    andy@iden2.com
+  ~/src/iden2/.claude/  achtungandy   andy@pezware.com
+  ~/src/public/         achtungandy   andy@pezware.com
+  ~/src/private/        achtungandy   andy@pezware.com
+
+For each repo it checks the effective user.email, that GitHub lists the signing
+key as a SIGNING key of that account, that it lists the push key (core.sshCommand
+IdentityFile) as an AUTH key of that account, and that every GitHub push URL is
+plain git@github.com, because core.sshCommand ignores ssh host aliases.
+
+It reads config and GitHub's public key lists only. No key is used, so no Touch
+ID prompt. Exit 0 all good, 1 a mismatch, 2 cannot reach GitHub.
+"""
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+ACCOUNTS = {
+    "arbeitandy": "andy@iden2.com",
+    "achtungandy": "andy@pezware.com",
+}
+# Most specific first: the first matching prefix decides.
+RULES = [
+    (HOME / "src/iden2/.claude", "achtungandy"),
+    (HOME / "src/iden2", "arbeitandy"),
+    (HOME / "src/public", "achtungandy"),
+    (HOME / "src/private", "achtungandy"),
+]
+
+
+def expected_account(repo: Path):
+    for root, account in RULES:
+        if repo == root or root in repo.parents:
+            return account
+    return None
+
+
+def git(repo: Path, *args: str) -> str:
+    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+_cache: dict = {}
+
+
+def github_keys(account: str, kind: str) -> set:
+    """Base64 key blobs GitHub lists for an account. kind: auth or sign."""
+    if (account, kind) not in _cache:
+        url = (f"https://github.com/{account}.keys" if kind == "auth"
+               else f"https://api.github.com/users/{account}/ssh_signing_keys")
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                body = resp.read().decode()
+        except OSError as err:
+            print(f"cannot reach GitHub ({url}): {err}", file=sys.stderr)
+            sys.exit(2)
+        _cache[(account, kind)] = set(re.findall(r"AAAA[0-9A-Za-z+/=]+", body))
+    return _cache[(account, kind)]
+
+
+def blob_of_file(path: str):
+    p = Path(os.path.expanduser(path))
+    if not p.is_file():
+        return None
+    m = re.search(r"AAAA[0-9A-Za-z+/=]+", p.read_text())
+    return m.group(0) if m else None
+
+
+def signing_blob(value: str):
+    if value.startswith("key::"):
+        m = re.search(r"AAAA[0-9A-Za-z+/=]+", value)
+        return m.group(0) if m else None
+    return blob_of_file(value) if value else None
+
+
+def push_blob(ssh_command: str):
+    m = re.search(r"IdentityFile=(\S+)", ssh_command)
+    return blob_of_file(m.group(1)) if m else None
+
+
+def owner_of(blob, kind: str) -> str:
+    if not blob:
+        return "none"
+    owners = [a for a in ACCOUNTS if blob in github_keys(a, kind)]
+    return ",".join(owners) or "unregistered"
+
+
+def check(repo: Path) -> list:
+    """Problems with one repo; empty means it follows the rule."""
+    want = expected_account(repo)
+    if want is None:
+        return [f"outside the identity trees, so it cannot commit"]
+    problems = []
+    email = git(repo, "config", "user.email")
+    if email != ACCOUNTS[want]:
+        problems.append(f"email {email or 'unset'}, want {ACCOUNTS[want]}")
+    signer = owner_of(signing_blob(git(repo, "config", "user.signingkey")), "sign")
+    if signer != want:
+        problems.append(f"signing key belongs to {signer}, want {want}")
+    pusher = owner_of(push_blob(git(repo, "config", "core.sshCommand")), "auth")
+    if pusher != want:
+        problems.append(f"push key belongs to {pusher}, want {want}")
+    for remote in git(repo, "remote").split():
+        for url in git(repo, "remote", "get-url", "--push", "--all", remote).splitlines():
+            if "github" not in url:
+                continue  # gitlab and friends are not this rule's business
+            if not (url.startswith("git@github.com:") or url.startswith("ssh://git@github.com/")):
+                problems.append(f"{remote} pushes to {url}, which core.sshCommand does not cover")
+    return problems
+
+
+def repos() -> list:
+    found = []
+    for root, _ in RULES[1:]:
+        if root.is_dir():
+            found += sorted(p for p in root.iterdir() if (p / ".git").exists())
+    claude = RULES[0][0]
+    if (claude / ".git").exists():
+        found.append(claude)
+    return found
+
+
+def main() -> int:
+    targets = [Path(a).resolve() for a in sys.argv[1:]] or repos()
+    bad = 0
+    for repo in targets:
+        problems = check(repo)
+        label = str(repo).replace(str(HOME), "~", 1)
+        if problems:
+            bad += 1
+            print(f"FAIL {label}")
+            for p in problems:
+                print(f"       {p}")
+        else:
+            print(f"ok   {label}  ({expected_account(repo)})")
+    if git(HOME, "config", "--global", "user.email"):
+        bad += 1
+        print("FAIL global user.email is set, so repos outside the trees commit as it")
+    if git(HOME, "config", "--global", "user.useConfigOnly") != "true":
+        bad += 1
+        print("FAIL user.useConfigOnly is not true, so git may guess an identity")
+    print(f"\n{len(targets)} repo(s), {bad} problem(s)")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -169,7 +169,6 @@ place_dotfiles() {
     # allowed_signers is machine-specific (Secretive key) — copy as reference,
     # but it needs regeneration on new machines (see setup-guide.md)
     [[ -f "$DOTFILES/config-git/allowed_signers" ]] && cp -v "$DOTFILES/config-git/allowed_signers" ~/.config/git/
-    [[ -f "$DOTFILES/config-git/personal" ]] && cp -v "$DOTFILES/config-git/personal" ~/.config/git/
 
     # npm / pnpm supply-chain cooldown.
     #
@@ -438,23 +437,14 @@ PY
             fi
         fi
 
-        # Git identity. Without it every commit on the box dies with "Please tell
-        # me who you are", which is how an agent ended up hand-setting repo-local
-        # config just to get a commit through.
-        #
-        # Only set when absent, so a machine-specific choice is never clobbered.
-        #
-        # NOTE this differs from the Mac deliberately. There the global identity is
-        # the work one and ~/src/public/ overrides to personal; here personal is the
-        # default, so commits to the iden2 repos carry it too. If that matters, add:
-        #   git config --global includeIf.gitdir:~/src/iden2/.path ~/.config/git/work
+        # Git identity comes from the directory, on both machines: see
+        # setup_git_identity. There is no global email on purpose.
         #
         # commit.gpgsign is deliberately NOT enabled. Signing needs the forwarded
         # SSH agent, and the agent socket is AF_UNIX — which Claude Code's sandbox
         # refuses at socket(). Forcing it would make every agent commit fail hard
         # rather than merely be unsigned. Sign from your own shell with `git -S`.
         git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "arbeitandy"
-        git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "andy@pezware.com"
 
         # SSH-based commit signing through the FORWARDED agent, so the private key
         # never reaches this machine. All three repos enforce required_signatures
@@ -566,25 +556,6 @@ SSHCFG
             # authoritative check is GitHub's, asserted in devbox-smoketest.
             unset -f _add_signer
         fi
-        if [[ -f "$DOTFILES/config-git/work" ]]; then
-            cp -v "$DOTFILES/config-git/work" ~/.config/git/work
-            git config --global includeIf."gitdir:~/src/iden2/".path ~/.config/git/work
-
-            # An include OVERRIDES the global, so setting user.signingkey globally
-            # above does not reach ~/src/iden2/ -- the tracked work file carries the
-            # Mac's `key::` value and silently wins there. Every iden2 commit then
-            # fails with "Couldn't find key in agent?" while signing works fine
-            # everywhere else, which is a maddening thing to debug.
-            #
-            # Found by an agent taking a real ticket, not by the smoke test: that
-            # signs in a throwaway repo under /tmp, which never matches this
-            # gitdir: condition. Same key, same email, only the form changes.
-            if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent.pub ]]; then
-                git config --file ~/.config/git/work user.signingkey ~/.ssh/devbox_agent.pub
-                echo "    git: iden2 include re-pointed at the work key in the sealed agent"
-            fi
-        fi
-
         # gh wrapper: selects the fine-grained PAT matching the repo's owner.
         # Installed as ~/.local/bin/gh, which is ahead of the mise shim on PATH.
         # It reads ~/.config/0x58/credentials.env, which agents can read too. An
@@ -1309,6 +1280,63 @@ install_python_packages() {
 
 # A prose rule loses to friction. This makes the right thing one command, and
 # idempotent, so re-posting edits one comment instead of stacking a ninth.
+setup_git_identity() {
+    echo ""
+    echo "==> git identity by directory"
+    # The directory decides who a commit is from, what signs it and which key
+    # pushes it, on both machines:
+    #
+    #   ~/src/iden2/          work      arbeitandy
+    #   ~/src/iden2/.claude/  personal  achtungandy  (pezware-claude on the devbox)
+    #   ~/src/public/         personal  achtungandy
+    #   ~/src/private/        personal  achtungandy
+    #   anywhere else         refuses to commit (user.useConfigOnly)
+    #
+    # Each include sets user.email, user.signingkey and core.sshCommand. All three
+    # are single-valued, so the last matching include wins for all of them alike.
+    # A per-account url.insteadOf would not: on a tie git takes the FIRST rewrite,
+    # so ~/src/iden2/.claude/ would commit as achtungandy and push as arbeitandy.
+    local cfg="$HOME/.config/git" d
+    mkdir -p "$cfg"
+    cp "$DOTFILES/config-git/personal" "$DOTFILES/config-git/work" "$cfg/"
+
+    # The tracked files name the Mac's Secretive keys. The devbox signs and
+    # pushes through its sealed agent (linux/ssh-agent) with the .pub files.
+    if [[ "$PLATFORM" == "linux" ]]; then
+        _devbox_identity() {   # $1 include file   $2 key name
+            git config --file "$cfg/$1" user.signingkey "$HOME/.ssh/$2.pub"
+            git config --file "$cfg/$1" core.sshCommand \
+                "ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=/run/ssh-agent-%u/agent.sock -o IdentityFile=$HOME/.ssh/$2.pub"
+        }
+        _devbox_identity personal devbox_agent_personal
+        _devbox_identity work devbox_agent
+        unset -f _devbox_identity
+    fi
+
+    # Removed and re-added so the order is fixed: the narrower .claude rule
+    # must follow the iden2 rule, or iden2 wins inside it.
+    # shellcheck disable=SC2088  # the ~ is for git: gitdir: patterns expand it
+    for d in "~/src/iden2/" "~/src/iden2/.claude/" "~/src/public/" "~/src/private/"; do
+        git config --global --remove-section "includeIf.gitdir:$d" 2>/dev/null || true
+    done
+    git config --global includeIf."gitdir:~/src/iden2/".path "$cfg/work"
+    git config --global includeIf."gitdir:~/src/iden2/.claude/".path "$cfg/personal"
+    git config --global includeIf."gitdir:~/src/public/".path "$cfg/personal"
+    git config --global includeIf."gitdir:~/src/private/".path "$cfg/personal"
+
+    # No fallback identity. A commit outside the trees above stops with
+    # "Author identity unknown" instead of guessing an account. Tools that set
+    # GIT_AUTHOR_EMAIL themselves (Codex's memory repo) still work.
+    git config --global --unset user.email 2>/dev/null || true
+    git config --global user.useConfigOnly true
+
+    if [[ -f "$BIN_DIR/git-identity-check" ]]; then
+        mkdir -p ~/.local/bin
+        install -m 755 "$BIN_DIR/git-identity-check" ~/.local/bin/git-identity-check
+    fi
+    echo "    git: identity by directory; verify with git-identity-check"
+}
+
 setup_gh_context() {
     echo "==> gh-context (agent context lands on the PR, not in memory)"
 
@@ -1481,6 +1509,7 @@ setup_dev_tools
 install_python_packages
 setup_src_sync
 setup_gh_context
+setup_git_identity
 setup_keymaster
 # Import before pruning: the prune asks "is this context defined anywhere?", so
 # the kind configs have to be in place first or it would delete the overlays
