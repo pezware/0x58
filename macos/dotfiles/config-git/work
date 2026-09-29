@@ -1,6 +1,7 @@
-# Work identity (arbeitandy), included for ~/src/iden2/ on both machines. There is
-# no global identity: a repo outside the identity trees refuses to commit
-# (user.useConfigOnly). See setup_git_identity in macos/restore.sh.
+# Work identity (arbeitandy), included for ~/src/iden2/ and ~/src/phenix-id/ on
+# both machines. There is no global identity: a repo outside the identity trees
+# refuses to commit (user.useConfigOnly). See setup_git_identity in
+# macos/restore.sh.
 [user]
 	name = Andy Xiang
 	email = andy@iden2.com
