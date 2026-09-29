@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# install — seal devbox ssh keys and run them in a root-loaded ssh-agent.
+#
+#   linux/ssh-agent/install                        # install units, restart, verify
+#   linux/ssh-agent/install --seal <name> < key    # same, plus seal one private key
+#
+# Run it as the human, unsandboxed: it needs sudo. The private key travels on
+# stdin only and is sealed to /etc/credstore.encrypted/ssh-<name>. Only the
+# public half lands in ~/.ssh/<name>.pub. From the Mac,
+# `dev/nodes/devbox-keys restore` does this for every escrowed key.
+#
+# A private key already at ~/.ssh/<name> is deleted once the agent proves it
+# holds the same key. That is the migration off on-disk keys.
+set -euo pipefail
+{ set +x; } 2>/dev/null
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ME="$(id -un)"
+SOCK="/run/ssh-agent-$ME/agent.sock"
+
+name=""
+if [ "${1:-}" = "--seal" ]; then
+    name="${2:-}"
+    [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "usage: install [--seal <name>]" >&2; exit 2; }
+elif [ $# -gt 0 ]; then
+    echo "usage: install [--seal <name>]" >&2; exit 2
+fi
+
+sudo -n true 2>/dev/null || { echo "install: needs passwordless sudo" >&2; exit 1; }
+
+if [ -n "$name" ]; then
+    echo "== seal ssh-$name from stdin"
+    key="$(cat)"
+    # Derive the public half first: it proves stdin held a private key before
+    # anything is overwritten.
+    pub="$(printf '%s\n' "$key" | ssh-keygen -y -f /dev/stdin)" || {
+        echo "install: stdin is not a private ssh key" >&2; exit 1
+    }
+    sudo install -d -m 700 /etc/credstore.encrypted
+    printf '%s\n' "$key" | sudo systemd-creds encrypt --with-key=host \
+        --name="ssh-$name" - "/etc/credstore.encrypted/ssh-$name"
+    unset key
+    sudo chmod 600 "/etc/credstore.encrypted/ssh-$name"
+    install -d -m 700 ~/.ssh
+    printf '%s\n' "$pub" > ~/.ssh/"$name".pub
+    chmod 644 ~/.ssh/"$name".pub
+fi
+
+echo "== install units"
+sudo install -m 644 "$HERE/devbox-ssh-agent@.service" /etc/systemd/system/
+sudo install -m 644 "$HERE/devbox-ssh-agent-load@.service" /etc/systemd/system/
+sudo install -D -m 755 "$HERE/load" /usr/local/libexec/devbox-ssh-agent-load
+install -D -m 755 "$HERE/devbox-ssh-keygen" ~/.local/bin/devbox-ssh-keygen
+sudo systemctl daemon-reload
+sudo systemctl enable "devbox-ssh-agent@$ME.service" "devbox-ssh-agent-load@$ME.service" >/dev/null
+# Restarting the agent restarts the loader too (PartOf=), so new keys load.
+sudo systemctl restart "devbox-ssh-agent@$ME.service"
+sudo systemctl start "devbox-ssh-agent-load@$ME.service"
+
+echo "== verify"
+held="$(SSH_AUTH_SOCK="$SOCK" ssh-add -l)" || {
+    sudo journalctl -u "devbox-ssh-agent-load@$ME" -n 5 --no-pager >&2
+    exit 1
+}
+printf '%s\n' "$held"
+for pubfile in ~/.ssh/*.pub; do
+    [ -f "$pubfile" ] || continue
+    fp="$(ssh-keygen -lf "$pubfile" | awk '{print $2}')"
+    printf '%s\n' "$held" | grep -qF "$fp" || continue
+    priv="${pubfile%.pub}"
+    if [ -f "$priv" ]; then
+        rm -f "$priv"
+        echo "   removed on-disk private key $priv (the agent holds it)"
+    fi
+done

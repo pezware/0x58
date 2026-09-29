@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# install-macos — build and (re)load the xai-broker as a launchd agent on a Mac.
+# install-macos — build and (re)load the xai route of secret-broker as a launchd
+# agent on a Mac.
 #
-#   linux/xai-broker/install-macos
+#   linux/secret-broker/install-macos
 #
 # The key must already be in the login keychain as "xai-smallscreen". Store it
 # through stdin, so it never lands in argv, `ps` or shell history:
@@ -17,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 LABEL=com.0x58.xai-broker
-BIN="$HOME/.local/bin/xai-broker"
+BIN="$HOME/.local/bin/secret-broker"
 SOCK_DIR="$HOME/.local/state/xai-broker"
 SOCK="$SOCK_DIR/xai.sock"
 LOG="$HOME/Library/Logs/xai-broker.log"
@@ -32,6 +33,7 @@ security find-generic-password -s xai-smallscreen >/dev/null 2>&1 || {
 echo "== build"
 mkdir -p "$(dirname "$BIN")"
 (cd "$HERE" && go build -trimpath -buildvcs=false -o "$BIN" .)
+rm -f "$HOME/.local/bin/xai-broker"   # the binary's name before the rename
 
 echo "== load"
 # 0700 on the directory: the broker makes the socket 0666, so the directory is
@@ -41,8 +43,14 @@ chmod 700 "$SOCK_DIR"
 sed -e "s#@BROKER_BIN@#$BIN#" -e "s#@BROKER_SOCKET@#$SOCK#" -e "s#@BROKER_LOG@#$LOG#" \
     "$REPO/macos/dotfiles/launchd/$LABEL.plist" > "$PLIST"
 # bootout before bootstrap: launchd refuses to bootstrap a registered label.
+# bootout returns before the old job is gone, and a bootstrap in that window
+# fails with "5: Input/output error", so retry for a few seconds.
 launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID" "$PLIST"
+for i in 1 2 3 4 5; do
+    launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null && break
+    [ "$i" -lt 5 ] || { launchctl bootstrap "gui/$UID" "$PLIST"; exit 1; }
+    sleep 1
+done
 
 echo "== verify"
 for _ in 1 2 3 4 5; do

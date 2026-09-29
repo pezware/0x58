@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  The xAI broker on the Mac: linux/xai-broker, reading its key from the login
-  keychain item "xai-smallscreen" instead of a systemd credential.
+  The xai route of linux/secret-broker on the Mac. It reads its key from the
+  login keychain item "xai-smallscreen" instead of a systemd credential. The
+  route values mirror linux/secret-broker/routes/xai.env.
 
-  Installed by linux/xai-broker/install-macos, which fills in the paths.
+  Installed by linux/secret-broker/install-macos, which fills in the paths.
   The Mac runs no sandbox, so any process as you can still read the keychain.
   The broker keeps the key out of env vars and child processes, and it keeps
   the request budget and the one-line-per-call log.
@@ -21,11 +22,17 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>XAI_BROKER_SOCKET</key>
+        <key>BROKER_SOCKET</key>
         <string>@BROKER_SOCKET@</string>
-        <key>XAI_BROKER_CREDENTIAL</key>
+        <key>BROKER_CREDENTIAL</key>
         <string>xai-smallscreen</string>
-        <key>XAI_BROKER_RPM</key>
+        <key>BROKER_UPSTREAM</key>
+        <string>https://api.x.ai</string>
+        <key>BROKER_PATH</key>
+        <string>/v1/</string>
+        <key>BROKER_KEY_PREFIX</key>
+        <string>xai-</string>
+        <key>BROKER_RPM</key>
         <string>60</string>
     </dict>
 

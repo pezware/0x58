@@ -160,16 +160,20 @@ What is load-bearing is the shape underneath, and it is unchanged: loopback-only
 netns, and the `socat` listeners on `:3128`/`:1080` as the sole route out. The
 boundary is the route, not a list of names.
 
-## Third-party API keys: brokered, not placed
+## API keys and ssh keys: sealed, not placed
 
-The smallscreen-books xAI key is the first non-OAuth secret an agent needs to
-*use* from inside the sandbox. It is never on a path the agent's uid can read.
-`linux/xai-broker/` is a ~150-line stdlib Go reverse proxy under a **system**
-unit: it listens on `/run/xai-broker/xai.sock`, forwards `/v1/*` to `api.x.ai`,
-and replaces whatever `Authorization` header the client sent with the real key.
+Agents *use* four kinds of non-OAuth secret: the smallscreen-books xAI key, the
+scoped Linode PAT, the Tailscale OAuth client that mints `tag:k8s` keys, and the
+two ssh signing keys. None is on a path the agent's uid can read.
+[`linux/secret-broker/`](secret-broker/README.md) is a stdlib Go reverse proxy
+under a **system** unit, one instance per key, and its README says how to add a
+key. The `xai` route listens on `/run/xai-broker/xai.sock`, forwards `/v1/*` to
+`api.x.ai`, and replaces whatever `Authorization` header the client sent with the
+real key. The ssh keys sit in an agent that root loads
+([`linux/ssh-agent/`](ssh-agent/install)).
 
 Where the key lives: `systemd-creds encrypt --with-key=host` seals it into
-`/etc/credstore.encrypted/xai-smallscreen` (root, 0600). PID 1 decrypts it into a
+`/etc/credstore.encrypted/xai` (root, 0600). PID 1 decrypts it into a
 private tmpfs for that unit only. A sandboxed agent cannot read the ciphertext,
 cannot read the host key, and cannot sudo under `no_new_privs` — the boundary the
 confinement design measured on 2026-08-04, now doing work.
@@ -179,15 +183,15 @@ Why a unix socket: the session netns has loopback only, so host TCP on
 is reachable — the rootless podman socket already works this way in-session.
 
 ```bash
-linux/xai-broker/install --seal < key.txt   # once, over ssh, as the human; rotate the same way
+linux/secret-broker/install --seal xai < key.txt   # once, over ssh, as the human; rotate the same way
 curl --unix-socket /run/xai-broker/xai.sock http://xai/v1/models   # from a session
-journalctl -u xai-broker                    # uid, pid, method, path, status — no bodies
+journalctl -u secret-broker@xai                    # uid, pid, method, path, status — no bodies
 ```
 
 What it does **not** do: a caller can still spend on the key. That is a usage
 oracle, the same shape as the signing key, and the backstop is the same: a
 per-key spend limit on the provider side, plus the broker's request budget
-(`XAI_BROKER_RPM`, 60). Prefer this shape for the next API key too — a
+(`BROKER_RPM`, 60). Prefer this shape for the next API key too — a
 `credentials.env` entry is readable by design, and this is not.
 
 **On a Mac**, the same binary runs as a launchd agent. It reads the key from the
@@ -196,7 +200,7 @@ login keychain item `xai-smallscreen` and listens on
 `XAI_BROKER_SOCKET`.
 
 ```bash
-linux/xai-broker/install-macos              # build, write the plist, load, check /healthz
+linux/secret-broker/install-macos           # build, write the plist, load, check /healthz
 tail -f ~/Library/Logs/xai-broker.log       # method, path, status — no bodies
 ```
 
@@ -221,16 +225,18 @@ lists — measured inside a real session, `gh` failed with
 `credentials.files` or `denyRead`.**
 
 The cost is real and stated plainly: a signature no longer proves a *person*
-authorised the commit — it proves this box produced it. `user.signingkey` is an
-on-disk *path* (`~/.ssh/devbox_agent`) and `IdentityFile` pins the same key for
-github.com, so the devbox signs and pushes unattended with no agent and no Touch
-ID tap. That is the documented success of the loop, not a regression — but prompt
-injection here can push signed code to any repository the key reaches, which
-rotating a token does not undo. Verify rather than trust it:
+authorised the commit — it proves this box produced it. `user.signingkey` names
+`~/.ssh/devbox_agent_personal.pub`, and ssh's `IdentityAgent` names the sealed
+agent, so the devbox signs and pushes unattended with no Touch ID tap. That is the
+documented success of the loop, not a regression — but prompt injection here can
+push signed code to any repository the key reaches while the box is up. Since the
+sealed agent it can no longer *copy* the key off the box, so rotating the key
+ends the exposure. Verify rather than trust it:
 
 ```bash
-git config --get user.signingkey          # a path ⇒ signs with no agent, no tap
-grep -A1 'Host github.com' ~/.ssh/config  # IdentityFile ⇒ pushes with no tap
+git config --get user.signingkey                                    # a .pub ⇒ the agent signs
+SSH_AUTH_SOCK=/run/ssh-agent-$USER/agent.sock ssh-add -l             # the keys the agent holds
+ls ~/.ssh                                                           # no private key files
 ```
 
 **In-session Codex is worth a readable OpenAI token.** `~/.codex/auth.json` is

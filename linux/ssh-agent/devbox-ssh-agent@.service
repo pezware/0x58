@@ -1,0 +1,37 @@
+# devbox-ssh-agent@<user> — the devbox signs and pushes, and nothing can copy the key.
+#
+# The private keys are sealed with `systemd-creds encrypt --with-key=host` into
+# /etc/credstore.encrypted/ssh-<name> (root, 0600). devbox-ssh-agent-load@<user>
+# decrypts them as root and adds them to this agent. No private key exists in
+# ~/.ssh, so a session can use a key through the socket but cannot read one.
+#
+# The agent runs as <user> because ssh-agent refuses a client of any other uid,
+# root excepted. It marks itself non-dumpable, so a process of the same uid
+# cannot ptrace it or read its memory.
+#
+# Install with linux/ssh-agent/install. SYSTEM unit, so it sits in a subdirectory:
+# devbox-drift treats linux/*.service as user units.
+#
+# Callers: IdentityAgent /run/ssh-agent-%u/agent.sock in ~/.ssh/config, and
+# the devbox-ssh-keygen wrapper for git signing.
+# Check:   SSH_AUTH_SOCK=/run/ssh-agent-$USER/agent.sock ssh-add -l
+
+[Unit]
+Description=ssh-agent holding the sealed devbox keys for %i
+
+[Service]
+Type=simple
+User=%i
+RuntimeDirectory=ssh-agent-%i
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/ssh-agent -D -a /run/ssh-agent-%i/agent.sock
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

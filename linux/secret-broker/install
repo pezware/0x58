@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# install — build, install and (re)seal one secret-broker route on the devbox.
+#
+#   linux/secret-broker/install <route>               # build, install, restart
+#   linux/secret-broker/install --seal <route> < key  # same, plus seal the key
+#
+# <route> names a file in routes/. Run it as the human, unsandboxed: it needs
+# sudo. The key travels on stdin only — never argv, never a file on the box —
+# so it does not land in shell history, `ps` or a tmp file. Rotation is the
+# --seal form again. From the Mac, `dev/nodes/devbox-keys restore` does this for
+# every route, reading each key from the Keychain.
+#
+# Idempotent: a second run without --seal rebuilds and restarts, nothing else.
+set -euo pipefail
+# Never trace the key capture, even under bash -x.
+{ set +x; } 2>/dev/null
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN=/usr/local/bin/secret-broker
+UNIT=/etc/systemd/system/secret-broker@.service
+
+seal=0
+[ "${1:-}" = "--seal" ] && { seal=1; shift; }
+route="${1:-}"
+[ $# -eq 1 ] && [ -n "$route" ] || { echo "usage: install [--seal] <route>" >&2; exit 2; }
+ROUTE_FILE="$HERE/routes/$route.env"
+[ -f "$ROUTE_FILE" ] || { echo "install: no route file $ROUTE_FILE" >&2; exit 2; }
+CRED=/etc/credstore.encrypted/$route
+SOCK=/run/$route-broker/$route.sock
+
+# The unit derives the socket and credential from the instance name. A route
+# file that sets them would silently win (EnvironmentFile= beats Environment=).
+if grep -qE '^(BROKER_SOCKET|BROKER_CREDENTIAL)=' "$ROUTE_FILE"; then
+    echo "install: $ROUTE_FILE must not set BROKER_SOCKET or BROKER_CREDENTIAL" >&2
+    exit 1
+fi
+route_var() { sed -n "s/^$1=//p" "$ROUTE_FILE"; }
+
+sudo -n true 2>/dev/null || { echo "install: needs passwordless sudo" >&2; exit 1; }
+command -v go >/dev/null || { echo "install: go not on PATH (mise activate?)" >&2; exit 1; }
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+echo "== build"
+(cd "$HERE" && go build -trimpath -buildvcs=false -o "$tmp/secret-broker" .)
+sudo install -m 755 "$tmp/secret-broker" "$BIN"
+sudo install -m 644 "$HERE/secret-broker@.service" "$UNIT"
+sudo install -d -m 755 /etc/secret-broker
+sudo install -m 644 "$ROUTE_FILE" "/etc/secret-broker/$route.env"
+
+# Before the rename, the xai route ran as xai-broker.service with the same
+# RuntimeDirectory. Both cannot own /run/xai-broker.
+if [ -f /etc/systemd/system/xai-broker.service ]; then
+    echo "== retire xai-broker.service"
+    sudo systemctl disable --now xai-broker.service >/dev/null 2>&1 || true
+    sudo rm -f /etc/systemd/system/xai-broker.service
+fi
+
+if [ "$seal" -eq 1 ]; then
+    echo "== seal key from stdin"
+    key="$(tr -d '[:space:]')"
+    # Check the part the broker will check, so a wrong key never replaces a
+    # good one. An oauth2 credential is client_id:client_secret.
+    secret="$key"
+    [ "$(route_var BROKER_AUTH)" = "oauth2" ] && secret="${key#*:}"
+    prefix="$(route_var BROKER_KEY_PREFIX)"
+    if [ -z "$secret" ] || { [ -n "$prefix" ] && [ "${secret#"$prefix"}" = "$secret" ]; }; then
+        echo "install: refusing to seal: the $route secret must start with '$prefix'" >&2
+        exit 1
+    fi
+    sudo install -d -m 700 /etc/credstore.encrypted
+    # --name must equal the credential ID in LoadCredentialEncrypted=, or PID 1
+    # refuses the file at unit start.
+    printf '%s' "$key" | sudo systemd-creds encrypt --with-key=host --name="$route" - "$CRED"
+    unset key secret
+    sudo chmod 600 "$CRED"
+fi
+
+if ! sudo test -s "$CRED"; then
+    echo "install: no sealed key at $CRED — run again with --seal and the key on stdin" >&2
+    exit 1
+fi
+
+echo "== enable"
+sudo systemctl daemon-reload
+sudo systemctl enable "secret-broker@$route.service" >/dev/null
+sudo systemctl restart "secret-broker@$route.service"
+
+echo "== verify"
+for _ in 1 2 3 4 5; do
+    [ -S "$SOCK" ] && break
+    sleep 1
+done
+curl -fsS --unix-socket "$SOCK" "http://$route/healthz" || {
+    sudo journalctl -u "secret-broker@$route" -n 5 --no-pager >&2
+    exit 1
+}
+echo "callers: curl --unix-socket $SOCK http://$route$(route_var BROKER_PATH)"

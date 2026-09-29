@@ -116,10 +116,23 @@ for k in devbox_agent devbox_agent_personal; do
     fi
 done
 
-perm=$(remote 'stat -c %a ~/.ssh/devbox_agent 2>/dev/null')
-[ "$perm" = "600" ] \
-    && ok "private key permissions" "0600" \
-    || no "private key permissions" "${perm:-absent} — ssh refuses anything looser"
+# The private halves live sealed in /etc/credstore.encrypted and in the agent's
+# memory (linux/ssh-agent). A private key file in ~/.ssh is readable by every
+# session, which is the exposure the sealed agent exists to remove.
+held=$(remote 'SSH_AUTH_SOCK=/run/ssh-agent-$(id -un)/agent.sock ssh-add -l')
+for k in devbox_agent devbox_agent_personal; do
+    fp=$(remote "ssh-keygen -lf ~/.ssh/$k.pub 2>/dev/null | awk '{print \$2}'")
+    if [ -n "$fp" ] && printf '%s\n' "$held" | grep -qF "$fp"; then
+        ok "agent holds $k" "sealed, loaded by devbox-ssh-agent-load"
+    else
+        no "agent holds $k" "run: ./dev/nodes/devbox-keys restore"
+    fi
+    if remote "test -e ~/.ssh/$k"; then
+        no "no private key file for $k" "~/.ssh/$k exists — linux/ssh-agent/install removes it once sealed"
+    else
+        ok "no private key file for $k" "only the .pub is on disk"
+    fi
+done
 
 # Asserted one NAME at a time, not as a count. A count is the wrong shape twice
 # over: it passes while the single entry that mattered is the one missing, and it
@@ -131,14 +144,37 @@ cperm=$(remote 'stat -c %a ~/.config/0x58/credentials.env 2>/dev/null')
     && ok "credentials.env permissions" "0600" \
     || no "credentials.env permissions" "${cperm:-absent} — readable beyond you"
 
-for _v in GH_TOKEN_PEZWARE GH_TOKEN_IDEN2 LINODE_TOKEN TF_VAR_tailscale_auth_key GHCR_TOKEN; do
+for _v in GH_TOKEN_PEZWARE GH_TOKEN_IDEN2 GHCR_TOKEN; do
     if remote "grep -qE '^$_v=.+' ~/.config/0x58/credentials.env 2>/dev/null"; then
         ok "credentials.env: $_v" "present and non-empty"
     else
         no "credentials.env: $_v" "missing or empty — re-place from Keychain (dev/nodes/README.md step 5)"
     fi
 done
+# These two moved behind secret-broker routes. A copy left in the file is
+# readable by every session, and ts-node no longer needs it.
+for _v in LINODE_TOKEN TF_VAR_tailscale_auth_key; do
+    if remote "grep -qE '^$_v=' ~/.config/0x58/credentials.env 2>/dev/null"; then
+        no "credentials.env: no $_v" "still in the file — delete the line; the broker holds it"
+    else
+        ok "credentials.env: no $_v" "brokered instead"
+    fi
+done
 unset _v
+
+# ── brokered secrets ────────────────────────────────────────────────────────
+section "Secret brokers"
+
+# /healthz proves the unit started, and so that PID 1 decrypted the credential
+# and the broker accepted its prefix. It spends nothing upstream.
+for _r in xai linode tailscale; do
+    if remote "curl -fsS --unix-socket /run/$_r-broker/$_r.sock http://$_r/healthz" >/dev/null; then
+        ok "secret-broker@$_r" "serving /run/$_r-broker/$_r.sock"
+    else
+        no "secret-broker@$_r" "down — run: ./dev/nodes/devbox-keys restore; then journalctl -u secret-broker@$_r"
+    fi
+done
+unset _r
 
 # ── signing: the check the rehearsal was worth running for ──────────────────
 section "Commit signing"
@@ -158,7 +194,7 @@ case "$raw" in
             form="key:: (needs an agent)" ;;
     "")     cfg=""; form="unset" ;;
     *)      cfg=$(remote "ssh-keygen -lf \"\$(git config --get user.signingkey)\" 2>/dev/null | awk '{print \$2}'")
-            form="path (signs without an agent)" ;;
+            form="path to the .pub (the sealed agent signs)" ;;
 esac
 # Compared against EVERY key on the box, not against devbox_agent by name. This
 # named that key literally until 2026-08-04 and so went red the moment the default
@@ -180,7 +216,7 @@ fi
 # Checks the CONFIGURED key, not a hardcoded one. This named devbox_agent.pub
 # until 2026-08-04, so it went on passing after the global identity moved to the
 # personal key — it was asserting the presence of a key nothing was signing with.
-if remote 'grep -qF "$(awk "{print \$2}" "$(git config --get user.signingkey)".pub)" ~/.config/git/allowed_signers 2>/dev/null'; then
+if remote 'k=$(git config --get user.signingkey); grep -qF "$(awk "{print \$2}" "${k%.pub}.pub")" ~/.config/git/allowed_signers 2>/dev/null'; then
     ok "configured key in allowed_signers" "local verification will resolve"
 else
     no "configured key in allowed_signers" "sign-push will report unsigned even after signing"
@@ -195,7 +231,7 @@ sig=$(remote 'd=$(mktemp -d); cd "$d" || exit 1
   cd /; rm -rf "$d"')
 case "$sig" in
     G) ok "signs and verifies a real commit" "git reports G (good signature)" ;;
-    "") no "signs and verifies a real commit" "signing failed — no agent and no on-disk key?" ;;
+    "") no "signs and verifies a real commit" "signing failed — is devbox-ssh-agent@<user> up and holding the key?" ;;
     *) no "signs and verifies a real commit" "git reports '$sig', expected G" ;;
 esac
 
@@ -235,8 +271,9 @@ signing_pair() {   # $1 label   $2 dir on the box   $3 github login that owns th
         "")      no   "$1 signing key belongs to $3" "no signingkey resolved at $2 — is the repo there?" ; return ;;
         key::*)  skip "$1 signing key belongs to $3" "key:: form — the agent holds it, nothing on disk to resolve" ; return ;;
     esac
-    pub=$(remote "awk '{print \$2}' \"$kp.pub\" 2>/dev/null")
-    [[ -n "$pub" ]] || { no "$1 signing key belongs to $3" "cannot read $kp.pub on the box" ; return ; }
+    kp="${kp%.pub}.pub"
+    pub=$(remote "awk '{print \$2}' \"$kp\" 2>/dev/null")
+    [[ -n "$pub" ]] || { no "$1 signing key belongs to $3" "cannot read $kp on the box" ; return ; }
     keys=$(curl -fsS --max-time 15 "https://api.github.com/users/$3/ssh_signing_keys" 2>/dev/null)
     [[ -n "$keys" ]] || { skip "$1 signing key belongs to $3" "GitHub unreachable — pairing unchecked" ; return ; }
     if grep -qF "$pub" <<<"$keys"; then

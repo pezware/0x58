@@ -1,0 +1,24 @@
+# devbox-ssh-agent-load@<user> — put the sealed keys into <user>'s agent.
+#
+# Root, so the decrypted keys sit in a root-only tmpfs for this unit and never
+# in a file <user> can read. ssh-agent accepts root as a client. PartOf= reruns
+# this whenever the agent restarts, because a restarted agent holds no keys.
+#
+# ImportCredential= loads every /etc/credstore.encrypted/ssh-* file, so adding a
+# key means sealing one more file, not editing this unit (systemd >= 254).
+
+[Unit]
+Description=load the sealed devbox ssh keys into %i's agent
+Requires=devbox-ssh-agent@%i.service
+After=devbox-ssh-agent@%i.service
+PartOf=devbox-ssh-agent@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ImportCredential=ssh-*
+Environment=SSH_AUTH_SOCK=/run/ssh-agent-%i/agent.sock
+ExecStart=/usr/local/libexec/devbox-ssh-agent-load
+
+[Install]
+WantedBy=devbox-ssh-agent@%i.service

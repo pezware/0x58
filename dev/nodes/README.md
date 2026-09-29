@@ -417,9 +417,19 @@ Resolution order is environment → `~/.config/0x58/credentials.env` → macOS
 Keychain. The first two are what let fleet ops run off the Mac; the Keychain
 stays the source of truth where it exists.
 
-On the devbox, put a **separate, narrowly-scoped** Linode PAT in that file —
-Linodes + Volumes read/write, Events read-only, and nothing else. The Mac's token
-is full-access, and an injected agent with it could delete the entire account.
+On the devbox, the Linode PAT and the Tailscale credential are **not** in that
+file. They sit sealed behind [secret-broker](../../linux/secret-broker/README.md)
+routes, and `ts-node` uses the sockets when they exist. The Linode PAT is still a
+**separate, narrowly-scoped** one — Linodes + Volumes read/write, Events
+read-only, and nothing else — because a session can still *use* it through the
+socket. The Mac's token is full-access, and an injected agent with it could
+delete the entire account.
+
+The Tailscale credential is an OAuth client, not an auth key: scope `auth_keys`,
+tag `tag:k8s` only. `ts-node k8s apply` mints a single-use, pre-approved key that
+expires in an hour, so the copy that lands in tfstate is spent at first join.
+Create it at https://login.tailscale.com/admin/settings/oauth and escrow
+`<client_id>:<client_secret>` as the Keychain item `tailscale-k8s-oauth`.
 
 **Agents can read this file.** This paragraph claimed the opposite until
 2026-08-04 — that it sits in the sandbox's `credentials.files` deny list — and
@@ -427,13 +437,11 @@ that stopped being true on 2026-08-03, when `c99f538` removed it so `gh` could
 authenticate at all. The live deny list is the two OAuth token files, `~/.npmrc`,
 `~/.config/gh/hosts.yml` and `~/.git-credentials`; `credentials.env` is not among
 them. Scope every secret in here on the assumption that a session can print it.
-That is why the Linode PAT is narrow and why `GHCR_TOKEN` is `read:packages` only.
+That is why `GHCR_TOKEN` is `read:packages` only.
 
 ```bash
 install -m 600 /dev/null ~/.config/0x58/credentials.env
 cat > ~/.config/0x58/credentials.env <<'ENV'
-LINODE_TOKEN=<scoped-pat>
-TF_VAR_tailscale_auth_key=<reusable key tagged tag:k8s>
 GHCR_TOKEN=<classic PAT, read:packages ONLY>
 ENV
 ```
@@ -557,10 +565,11 @@ never captured in this repo.
 ./dev/nodes/backup-devbox.sh snapshot     # 1. source lives on the volume, but be sure
 ./dev/nodes/ts-node devbox apply          # 2. destroys and recreates the instance
 #    3. delete the OLD node in the Tailscale admin console  <-- do not skip
-./dev/nodes/devbox-keys restore           # 4. SSH keys back from Keychain escrow
-#    5. re-place ~/.config/0x58/credentials.env (below)
-#    6. re-do the ghcr login (below) <-- root disk is gone, so auth.json is too
-./dev/nodes/devbox-smoketest              # 7. prove the loop actually works
+./dev/nodes/devbox-keys restore           # 4. seal ssh keys + broker keys from Keychain escrow
+ssh devbox 'bash -lc ~/src/public/0x58/macos/restore.sh'   # 5. again, now the .pub keys exist
+#    6. re-place ~/.config/0x58/credentials.env (below)
+#    7. re-do the ghcr login (below) <-- root disk is gone, so auth.json is too
+./dev/nodes/devbox-smoketest              # 8. prove the loop actually works
 ```
 
 **Step 3 is not optional.** Tailscale will not reuse a hostname while a stale
@@ -568,20 +577,26 @@ record holds it, so the new node joins as `pezware-devbox-1`. The box is then
 perfectly healthy and completely unreachable by the name every script uses.
 `devbox-smoketest` checks for the suffix explicitly.
 
-**Step 5** has no automated path, because the file holds five secrets that
+**Step 4** seals, and places nothing readable. Each ssh key goes into the
+root-loaded agent ([`linux/ssh-agent`](../../linux/ssh-agent/install)), and each
+broker route with a `BROKER_ESCROW_ITEM` is sealed from that Keychain item. Only
+the public keys land in `~/.ssh`. `devbox-keys status` shows each one.
+
+**Step 5** exists because cloud-init runs `restore.sh` before step 4, when no
+`.pub` exists yet, so it cannot configure git signing on the first pass.
+
+**Step 6** has no automated path, because the file holds three secrets that
 deliberately never enter this repo or a backup:
 
 ```bash
 kc() { security find-generic-password -s "$1" -a "$USER" -w; }
 { printf 'GH_TOKEN_PEZWARE=%s\n'          "$(kc gh-pat-devbox-pezware)"
   printf 'GH_TOKEN_IDEN2=%s\n'            "$(kc gh-pat-devbox-iden2)"
-  printf 'LINODE_TOKEN=%s\n'              "$(kc linode-pat-devbox)"
-  printf 'TF_VAR_tailscale_auth_key=%s\n' "$(kc tailscale-devbox-authkey)"
   printf 'GHCR_TOKEN=%s\n'                "$(kc ghcr-pat-devbox)"
 } | ssh devbox 'umask 077; mkdir -p ~/.config/0x58 && cat > ~/.config/0x58/credentials.env'
 ```
 
-**Step 6** is separate from step 5 on purpose. Putting `GHCR_TOKEN` in the file
+**Step 7** is separate from step 6 on purpose. Putting `GHCR_TOKEN` in the file
 is not the same as being logged in: the thing that pulls is the podman *service*,
 which reads its own `~/.config/containers/auth.json`, and that file lives on the
 root disk a rebuild destroys. Miss this and every ghcr pull 403s while the token
@@ -610,7 +625,7 @@ Piped over stdin on purpose — a value passed as an argument would be visible i
 Then `claude login` and `codex login`, which are interactive OAuth and cannot be
 scripted. `restore.sh` runs automatically from cloud-init and handles the rest:
 dotfiles, packages, the gh wrapper, podman, lingering, mise trust, and pointing
-`user.signingkey` at the on-disk key.
+`user.signingkey` at the public key the sealed agent signs with (step 5).
 
 ### What the 2026-08-03 rehearsal found
 

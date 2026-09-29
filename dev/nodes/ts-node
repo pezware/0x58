@@ -78,10 +78,44 @@ keychain_get() {
     security find-generic-password -s "$1" -a "$USER" -w 2>/dev/null
 }
 
+# ── Brokered secrets (the devbox) ───────────────────────────────────────────
+# On the devbox the Linode token and the Tailscale OAuth client sit in
+# secret-broker routes (linux/secret-broker), sealed where no agent can read
+# them. When a route's socket exists it wins over every other source, so a stale
+# token left in credentials.env is never used. The Mac has no /run sockets and
+# keeps the Keychain path below.
+LINODE_SOCK="${TS_NODE_LINODE_SOCK:-/run/linode-broker/linode.sock}"
+TAILSCALE_SOCK="${TS_NODE_TAILSCALE_SOCK:-/run/tailscale-broker/tailscale.sock}"
+LINODE_BROKERED=""
+BRIDGE_PID=""
+trap '[ -z "$BRIDGE_PID" ] || kill "$BRIDGE_PID" 2>/dev/null' EXIT
+
+# Terraform's Linode provider speaks TCP, not a unix socket, so give it a
+# loopback port that socat forwards to the broker for this process's lifetime.
+# The sandbox allows local binding; the port is on the session's own loopback.
+start_linode_bridge() {
+    [ -n "$LINODE_BROKERED" ] && [ -z "$BRIDGE_PID" ] || return 0
+    command -v socat >/dev/null || { echo "error: socat is required to reach $LINODE_SOCK" >&2; exit 1; }
+    local port
+    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+    socat "TCP-LISTEN:$port,bind=127.0.0.1,reuseaddr,fork" "UNIX-CONNECT:$LINODE_SOCK" &
+    BRIDGE_PID=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && break
+        sleep 0.2
+    done
+    # The provider appends /v4 itself. Verified against provider 2.41.2.
+    export LINODE_URL="http://127.0.0.1:$port"
+}
+
 # Loaded only by the commands that actually talk to Linode, so `ssh` and `ip`
 # never carry the token in their environment at all.
 needs_linode_token() {
-    if [ -z "${LINODE_TOKEN:-}" ]; then
+    if [ -S "$LINODE_SOCK" ] && [ -z "${TS_NODE_NO_BROKER:-}" ]; then
+        LINODE_BROKERED=1
+        # The provider refuses to start without a token. The broker replaces it.
+        LINODE_TOKEN=broker
+    elif [ -z "${LINODE_TOKEN:-}" ]; then
         LINODE_TOKEN=$(keychain_get linode-pat) || {
             echo "error: no Linode token." >&2
             echo "       set LINODE_TOKEN, or put it in $CREDS_FILE," >&2
@@ -102,8 +136,35 @@ ts_keychain_item() {
     esac
 }
 
+# A fresh key per run: single-use, pre-approved, dead in an hour. It still lands
+# in tfstate and the cloud-init cache (see the header), but spent at first join,
+# so the copy at rest is worthless. The OAuth client behind the broker may only
+# mint tag:k8s, so a role with any other tag gets a 403 here, by design.
+mint_auth_key() {
+    local body answer
+    body=$(printf '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true,"tags":["tag:%s"]}}},"expirySeconds":3600,"description":"ts-node %s %s"}' \
+        "$ROLE" "$ROLE" "$CMD")
+    answer=$(curl -sS --unix-socket "$TAILSCALE_SOCK" -X POST -H "Content-Type: application/json" \
+        -d "$body" -w '\n%{http_code}' http://tailscale/api/v2/tailnet/-/keys) || {
+        echo "error: cannot reach $TAILSCALE_SOCK — journalctl -u secret-broker@tailscale" >&2
+        exit 1
+    }
+    TF_VAR_tailscale_auth_key=$(printf '%s' "$answer" | sed '$d' | python3 -c \
+        'import sys,json; print(json.load(sys.stdin).get("key",""))' 2>/dev/null) || true
+    case "$TF_VAR_tailscale_auth_key" in
+        tskey-auth-*) ;;
+        *)  echo "error: the broker minted no auth key (HTTP $(printf '%s' "$answer" | tail -1))." >&2
+            echo "       The OAuth client needs the auth_keys scope and tag:$ROLE." >&2
+            exit 1 ;;
+    esac
+}
+
 needs_auth_key() {
     local item; item=$(ts_keychain_item "$ROLE")
+    if [ -S "$TAILSCALE_SOCK" ] && [ -z "${TS_NODE_NO_BROKER:-}" ]; then
+        mint_auth_key
+        return 0
+    fi
     [ -z "${TF_VAR_tailscale_auth_key:-}" ] || return 0
     TF_VAR_tailscale_auth_key=$(keychain_get "$item") || {
         echo "error: keychain item '$item' not found." >&2
@@ -213,6 +274,13 @@ instance_id() { tf output -raw instance_id 2>/dev/null; }
 # The Authorization header goes in via a stdin config file rather than argv,
 # where any local process could read it out of /proc or `ps` while curl runs.
 linode_api() {
+    if [ -n "$LINODE_BROKERED" ]; then
+        # Plain HTTP over the socket: curl would otherwise try TLS to the broker.
+        local a args=()
+        for a in "$@"; do args+=("${a/#https:\/\/api.linode.com/http://linode}"); done
+        curl -sf --unix-socket "$LINODE_SOCK" -H "Content-Type: application/json" "${args[@]}"
+        return
+    fi
     curl -sf -K - -H "Content-Type: application/json" "$@" <<CFG
 header = "Authorization: Bearer ${LINODE_TOKEN}"
 CFG
@@ -222,17 +290,20 @@ case "$CMD" in
     apply)
         needs_linode_token
         needs_auth_key
+        start_linode_bridge
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf apply "$@"
         ;;
     plan)
         needs_linode_token
         needs_auth_key
+        start_linode_bridge
         [ -d "$ROLE_DIR/.terraform/providers" ] || tf init
         tf plan "$@"
         ;;
     destroy)
         needs_linode_token
+        start_linode_bridge
         # auth_key is required by the schema; empty satisfies it during destroy.
         TF_VAR_tailscale_auth_key=""
         tf destroy "$@"

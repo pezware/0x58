@@ -11,7 +11,7 @@
 # Homebrew path
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
-# The xAI broker's socket (linux/xai-broker/install-macos). The devbox default
+# The xAI broker's socket (linux/secret-broker/install-macos). The devbox default
 # /run/xai-broker/xai.sock does not exist on a Mac.
 export XAI_BROKER_SOCKET="$HOME/.local/state/xai-broker/xai.sock"
 
