@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """git-identity-check — prove every repo commits, signs and pushes as its directory's account.
 
-  git-identity-check            # every repo under ~/src/{iden2,public,private}
+  git-identity-check            # every repo under ~/src/{iden2,phenix-id,public,private}
   git-identity-check <repo>...  # just these
 
 The rule (setup_git_identity in macos/restore.sh):
 
   ~/src/iden2/          arbeitandy    andy@iden2.com
+  ~/src/phenix-id/      arbeitandy    andy@iden2.com
   ~/src/iden2/.claude/  achtungandy   andy@pezware.com
   ~/src/public/         achtungandy   andy@pezware.com
   ~/src/private/        achtungandy   andy@pezware.com
@@ -35,6 +36,7 @@ ACCOUNTS = {
 RULES = [
     (HOME / "src/iden2/.claude", "achtungandy"),
     (HOME / "src/iden2", "arbeitandy"),
+    (HOME / "src/phenix-id", "arbeitandy"),
     (HOME / "src/public", "achtungandy"),
     (HOME / "src/private", "achtungandy"),
 ]

@@ -1287,6 +1287,7 @@ setup_git_identity() {
     # pushes it, on both machines:
     #
     #   ~/src/iden2/          work      arbeitandy
+    #   ~/src/phenix-id/      work      arbeitandy
     #   ~/src/iden2/.claude/  personal  achtungandy  (pezware-claude on the devbox)
     #   ~/src/public/         personal  achtungandy
     #   ~/src/private/        personal  achtungandy
@@ -1316,11 +1317,12 @@ setup_git_identity() {
     # Removed and re-added so the order is fixed: the narrower .claude rule
     # must follow the iden2 rule, or iden2 wins inside it.
     # shellcheck disable=SC2088  # the ~ is for git: gitdir: patterns expand it
-    for d in "~/src/iden2/" "~/src/iden2/.claude/" "~/src/public/" "~/src/private/"; do
+    for d in "~/src/iden2/" "~/src/iden2/.claude/" "~/src/phenix-id/" "~/src/public/" "~/src/private/"; do
         git config --global --remove-section "includeIf.gitdir:$d" 2>/dev/null || true
     done
     git config --global includeIf."gitdir:~/src/iden2/".path "$cfg/work"
     git config --global includeIf."gitdir:~/src/iden2/.claude/".path "$cfg/personal"
+    git config --global includeIf."gitdir:~/src/phenix-id/".path "$cfg/work"
     git config --global includeIf."gitdir:~/src/public/".path "$cfg/personal"
     git config --global includeIf."gitdir:~/src/private/".path "$cfg/personal"
 
