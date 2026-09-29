@@ -157,6 +157,11 @@ EOF
 bash macos/inventory.sh   # picks up ~/.config/git/personal + allowed_signers
 ```
 
+Then run `macos/restore.sh`. Its `setup_git_identity` step writes
+`~/.ssh/secretive_{personal,work}.pub` from each include's `signingkey`, and
+`core.sshCommand` pushes with those copies. A stale copy names a key that no
+longer exists, so the push fails. It does not fall back to another key.
+
 ### Step 5 — Verify end-to-end
 
 ```bash

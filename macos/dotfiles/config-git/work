@@ -8,7 +8,7 @@
 	signingkey = key::ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHtka53TISNw3+5ybiF6VIiV79Q2fkBUKBgX/NdKa+bAKcHw7rAlPetisbFoHu3U12kmAbJaSJnqMOEdvfF56/w= andy@iden2.com
 # The push key; see the note in personal.
 [core]
-	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/PublicKeys/8071647b75c5e6b5f4d9ad1ea9ffd3f2.pub
+	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/.ssh/secretive_work.pub
 # Every GitHub remote goes over ssh, so core.sshCommand decides the account.
 # Both includes rewrite to the same target, so their order cannot matter here.
 [url "git@github.com:"]
