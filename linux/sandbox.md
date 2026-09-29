@@ -190,6 +190,20 @@ per-key spend limit on the provider side, plus the broker's request budget
 (`XAI_BROKER_RPM`, 60). Prefer this shape for the next API key too — a
 `credentials.env` entry is readable by design, and this is not.
 
+**On a Mac**, the same binary runs as a launchd agent. It reads the key from the
+login keychain item `xai-smallscreen` and listens on
+`~/.local/state/xai-broker/xai.sock`. `macos.bash` exports that path as
+`XAI_BROKER_SOCKET`.
+
+```bash
+linux/xai-broker/install-macos              # build, write the plist, load, check /healthz
+tail -f ~/Library/Logs/xai-broker.log       # method, path, status — no bodies
+```
+
+The Mac runs no sandbox, so any process as you can read the keychain item. There
+the broker keeps the key out of env vars and child processes, and it keeps the
+budget and the log. The log shows `uid=0 pid=0`: peer credentials are Linux-only.
+
 The unit sits in a subdirectory on purpose: `devbox-drift` treats `linux/*.service`
 as user units and would report a system unit as never enabled.
 

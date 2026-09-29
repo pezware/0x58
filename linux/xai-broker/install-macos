@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# install-macos — build and (re)load the xai-broker as a launchd agent on a Mac.
+#
+#   linux/xai-broker/install-macos
+#
+# The key must already be in the login keychain as "xai-smallscreen". Store it
+# through stdin, so it never lands in argv, `ps` or shell history:
+#
+#   printf 'add-generic-password -U -s xai-smallscreen -a %s -w %s\n' \
+#       "$USER" "$(tr -d '[:space:]' < key.txt)" | security -i
+#
+# Callers then set XAI_BROKER_SOCKET to the socket path this script prints.
+# Idempotent: a second run rebuilds and restarts.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+LABEL=com.0x58.xai-broker
+BIN="$HOME/.local/bin/xai-broker"
+SOCK_DIR="$HOME/.local/state/xai-broker"
+SOCK="$SOCK_DIR/xai.sock"
+LOG="$HOME/Library/Logs/xai-broker.log"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+command -v go >/dev/null || { echo "install-macos: go not on PATH (mise activate?)" >&2; exit 1; }
+security find-generic-password -s xai-smallscreen >/dev/null 2>&1 || {
+    echo "install-macos: no keychain item xai-smallscreen — see the header of this script" >&2
+    exit 1
+}
+
+echo "== build"
+mkdir -p "$(dirname "$BIN")"
+(cd "$HERE" && go build -trimpath -buildvcs=false -o "$BIN" .)
+
+echo "== load"
+# 0700 on the directory: the broker makes the socket 0666, so the directory is
+# what keeps other users out.
+mkdir -p "$SOCK_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG")"
+chmod 700 "$SOCK_DIR"
+sed -e "s#@BROKER_BIN@#$BIN#" -e "s#@BROKER_SOCKET@#$SOCK#" -e "s#@BROKER_LOG@#$LOG#" \
+    "$REPO/macos/dotfiles/launchd/$LABEL.plist" > "$PLIST"
+# bootout before bootstrap: launchd refuses to bootstrap a registered label.
+launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID" "$PLIST"
+
+echo "== verify"
+for _ in 1 2 3 4 5; do
+    [ -S "$SOCK" ] && break
+    sleep 1
+done
+curl -fsS --unix-socket "$SOCK" http://xai/healthz || { tail -5 "$LOG" >&2; exit 1; }
+echo "socket:  export XAI_BROKER_SOCKET=$SOCK"
+echo "log:     tail -f $LOG"

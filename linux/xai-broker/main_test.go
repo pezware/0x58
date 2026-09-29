@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -91,5 +92,38 @@ func TestBudgetResetsAfterAMinute(t *testing.T) {
 
 	if !b.allow(start.Add(time.Minute)) {
 		t.Fatal("budget did not reset after one minute")
+	}
+}
+
+func TestLoadKeyReadsCredentialsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/cred", []byte("xai-from-systemd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+
+	if key, err := loadKey("cred"); err != nil || key != "xai-from-systemd" {
+		t.Fatalf("loadKey = %q, %v; want xai-from-systemd", key, err)
+	}
+}
+
+func TestLoadKeyRefusesNonXAIKey(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/cred", []byte("sk-not-xai"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+
+	if _, err := loadKey("cred"); err == nil {
+		t.Fatal("loadKey accepted a key without the xai- prefix")
+	}
+}
+
+func TestLoadKeyFailsWithoutAnySource(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+
+	// No keychain item has this name, and off macOS there is no keychain.
+	if _, err := loadKey("xai-broker-test-no-such-item"); err == nil {
+		t.Fatal("loadKey found a key where none exists")
 	}
 }
