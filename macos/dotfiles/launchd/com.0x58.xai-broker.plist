@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The xAI broker on the Mac: linux/xai-broker, reading its key from the login
+  keychain item "xai-smallscreen" instead of a systemd credential.
+
+  Installed by linux/xai-broker/install-macos, which fills in the paths.
+  The Mac runs no sandbox, so any process as you can still read the keychain.
+  The broker keeps the key out of env vars and child processes, and it keeps
+  the request budget and the one-line-per-call log.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.0x58.xai-broker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BROKER_BIN@</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XAI_BROKER_SOCKET</key>
+        <string>@BROKER_SOCKET@</string>
+        <key>XAI_BROKER_CREDENTIAL</key>
+        <string>xai-smallscreen</string>
+        <key>XAI_BROKER_RPM</key>
+        <string>60</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart after any failure, a missing key included, at most every 10s. -->
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>@BROKER_LOG@</string>
+    <key>StandardErrorPath</key>
+    <string>@BROKER_LOG@</string>
+</dict>
+</plist>

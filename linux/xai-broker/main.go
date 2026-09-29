@@ -94,17 +94,22 @@ func main() {
 
 // loadKey reads the credential systemd placed in $CREDENTIALS_DIRECTORY. That
 // directory is a private tmpfs for this unit, decrypted by PID 1 from the
-// root-owned ciphertext in /etc/credstore.encrypted.
+// root-owned ciphertext in /etc/credstore.encrypted. Without systemd, on a Mac,
+// it reads the login keychain item of the same name instead.
 func loadKey(name string) (string, error) {
-	dir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if dir == "" {
-		return "", errors.New("CREDENTIALS_DIRECTORY is unset: run under systemd with LoadCredentialEncrypted")
+	var key string
+	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
+		raw, err := os.ReadFile(dir + "/" + name)
+		if err != nil {
+			return "", err
+		}
+		key = strings.TrimSpace(string(raw))
+	} else {
+		var err error
+		if key, err = keychainKey(name); err != nil {
+			return "", err
+		}
 	}
-	raw, err := os.ReadFile(dir + "/" + name)
-	if err != nil {
-		return "", err
-	}
-	key := strings.TrimSpace(string(raw))
 	if !strings.HasPrefix(key, "xai-") {
 		return "", fmt.Errorf("credential %q does not look like an xAI key", name)
 	}
