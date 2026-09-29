@@ -77,6 +77,7 @@ Setup commands write to `configs/<type>-<env>/config`, create a short context al
 | `kube-setup-gke <env> <cluster> [location] [project]` | `kube-setup-gke staging iden2-staging-gke` |
 | `kube-setup-eks <env> <cluster> [region]` | `kube-setup-eks dev my-cluster eu-central-2` |
 | `kube-setup-kind <name>` | `kube-setup-kind iden2-dev` |
+| `kube-setup-orbstack` | `kube-setup-orbstack` (OrbStack Kubernetes must be on) |
 
 ## GKE defaults
 

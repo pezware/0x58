@@ -379,9 +379,8 @@ kube-setup-kind() {
   local config_dir="$KUBECONFIG_DIR/kind-$name"
 
   # Requires the kind CLI. The old fallback -- scraping a `kind-*` context out of
-  # ~/.kube/config -- existed only for OrbStack-managed kind, which is gone; with
-  # no local container runtime there is nothing for it to find. For a cluster on
-  # the k8s node, use kube-setup-kind-remote instead.
+  # ~/.kube/config -- is gone; `kind export kubeconfig` gives the same result
+  # without it. For a cluster on the k8s node, use kube-setup-kind-remote instead.
   if ! _kube_kind version >/dev/null 2>&1; then
     echo "Error: kind CLI not found. For a remote cluster: kube-setup-kind-remote"
     return 1
@@ -406,6 +405,26 @@ kube-setup-kind() {
   command mv "$tmp" "$config_dir/config"
   chmod 600 "$config_dir/config"
   echo "Kind $name -> $config_dir/config"
+  kube-refresh
+}
+
+# OrbStack writes its context into ~/.kube/config, which the configs/*/ glob never
+# reads. Same order as kube-setup-kind: mkdir only after the extract succeeds.
+kube-setup-orbstack() {
+  local config_dir="$KUBECONFIG_DIR/orbstack"
+  local tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/kubeconfig-orbstack-XXXXXX") || return 1
+  if ! KUBECONFIG="$HOME/.kube/config" kubectl config view \
+      --minify --flatten --context=orbstack >"$tmp" 2>/dev/null ||
+    [[ -z "$(_kube_contexts_in "$tmp")" ]]; then
+    echo "Error: orbstack context not found. Is OrbStack running with Kubernetes on?"
+    rm -f "$tmp"
+    return 1
+  fi
+  mkdir -p "$config_dir"
+  command mv "$tmp" "$config_dir/config"
+  chmod 600 "$config_dir/config"
+  echo "OrbStack -> $config_dir/config"
   kube-refresh
 }
 

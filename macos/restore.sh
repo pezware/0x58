@@ -1029,8 +1029,8 @@ setup_keymaster() {
 # --- Phase 3d: remove state left by retired setups ---
 # restore.sh is re-run on working machines, so it has to converge them onto the
 # current design, not just add to it. A machine provisioned before 2026-08-09
-# still has the external-drive mounter and a dead OrbStack kubeconfig; neither is
-# removed by simply not installing them any more.
+# still has the external-drive mounter, which is not removed by simply not
+# installing it any more.
 prune_retired_state() {
     # Runs on BOTH platforms now. It used to return early on Linux while
     # place_dotfiles installed kube configs on both -- so the devbox sat inside
@@ -1061,13 +1061,6 @@ prune_retired_state() {
             osascript -e 'tell application "System Events" to delete login item "external-drives-mount.sh"' 2>/dev/null \
                 && echo "    pruned: external-drives-mount Login Item" \
                 || echo "    NOTE: remove the external-drives-mount Login Item in System Settings"
-        fi
-
-        # KUBECONFIG is glob-built from ~/.kube/configs/*/, so a leftover orbstack
-        # directory keeps a dead context in the merge list forever.
-        if [[ -d "$HOME/.kube/configs/orbstack" ]]; then
-            rm -rf "$HOME/.kube/configs/orbstack"
-            echo "    pruned: ~/.kube/configs/orbstack (OrbStack removed)"
         fi
     fi
 

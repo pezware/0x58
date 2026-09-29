@@ -80,6 +80,10 @@ Replaced by: dev work moved to the devbox, OrbStack removed entirely, and the
 ~700 MB of source actually needed locally moved onto the internal FileVault
 volume. `/etc/fstab` and the Login Item were removed with it.
 
+OrbStack came back on 2026-09-29, installed as a brew cask with its data on the
+internal FileVault disk. That removes problems 1 and 3. Problem 2 still applies:
+the VM disk only grows, so watch `du -sh ~/.orbstack` and prune images.
+
 Two lessons worth carrying forward:
 
 - **`df <path>` is the only thing that reveals a directory symlinked onto another
