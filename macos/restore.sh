@@ -475,7 +475,12 @@ PY
         # key, registered on GitHub, so it signs without the Mac. ~/.ssh stays in
         # the sandbox's denyRead, which is what kept the original objection --
         # that any agent-run command could exfiltrate it -- from applying.
-        if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
+        #
+        # Since the sealed agent (linux/ssh-agent), the box holds only the PUBLIC
+        # halves. user.signingkey names a .pub file, which makes ssh-keygen sign
+        # through the agent, and gpg.ssh.program points ssh-keygen at the agent's
+        # socket, because agent shells here export no SSH_AUTH_SOCK.
+        if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent.pub ]]; then
             # TWO keys, one per GitHub account, and pairing them wrong is silent.
             # GitHub resolves a signature by commit email -> account -> THAT
             # account's signing keys, so the key must belong to the account that
@@ -489,32 +494,40 @@ PY
             # push succeeded, `git log %G?` said G, and GitHub alone reported
             # `unknown_key` on the PR. Falls back to devbox_agent when the personal
             # key is absent, which is worse but still signs.
-            if [[ -f ~/.ssh/devbox_agent_personal ]]; then
-                git config --global user.signingkey ~/.ssh/devbox_agent_personal
+            if [[ -f ~/.ssh/devbox_agent_personal.pub ]]; then
+                git config --global user.signingkey ~/.ssh/devbox_agent_personal.pub
                 echo "    git: signing with the PERSONAL devbox key (achtungandy owns andy@pezware.com)"
             else
-                git config --global user.signingkey ~/.ssh/devbox_agent
-                echo "    git: signing with on-disk devbox key (no personal key present)"
+                git config --global user.signingkey ~/.ssh/devbox_agent.pub
+                echo "    git: signing with the work devbox key (no personal key present)"
             fi
+            git config --global gpg.ssh.program ~/.local/bin/devbox-ssh-keygen
 
             # ssh only offers DEFAULT identity names (id_ed25519, id_rsa, ...).
             # devbox_agent is not one, so without this GitHub answers "Permission
             # denied (publickey)" while the key is present, valid and registered --
             # and `git push` fails for something that looks like a key problem but
             # is really a name problem. IdentitiesOnly stops ssh walking every key
-            # first and tripping MaxAuthTries. Signing does NOT need this; it reads
-            # the file directly. Only auth to github.com does.
-            if ! grep -qs "IdentityFile ~/.ssh/devbox_agent" ~/.ssh/config; then
+            # first and tripping MaxAuthTries. IdentityFile names the .pub, and
+            # IdentityAgent the sealed agent, so ssh signs the auth challenge
+            # through the socket. Signing does NOT need this block; only auth does.
+            if grep -qsx "    IdentityFile ~/.ssh/devbox_agent" ~/.ssh/config; then
+                # A block from before the sealed agent names the private key file,
+                # which linux/ssh-agent/install deletes. Re-point it in place.
+                sed -i 's#^    IdentityFile ~/.ssh/devbox_agent$#    IdentityFile ~/.ssh/devbox_agent.pub\n    IdentityAgent /run/ssh-agent-%u/agent.sock#' ~/.ssh/config
+                echo "    ssh: github.com re-pointed at the sealed agent"
+            elif ! grep -qs "IdentityFile ~/.ssh/devbox_agent.pub" ~/.ssh/config; then
                 umask 077
                 cat >> ~/.ssh/config <<'SSHCFG'
 
 Host github.com
     User git
-    IdentityFile ~/.ssh/devbox_agent
+    IdentityFile ~/.ssh/devbox_agent.pub
+    IdentityAgent /run/ssh-agent-%u/agent.sock
     IdentitiesOnly yes
 SSHCFG
                 chmod 600 ~/.ssh/config
-                echo "    ssh: github.com pinned to the devbox key"
+                echo "    ssh: github.com pinned to the devbox key in the sealed agent"
             fi
 
             # gh reads config.yml from this directory. The sandbox masks hosts.yml
@@ -566,9 +579,9 @@ SSHCFG
             # Found by an agent taking a real ticket, not by the smoke test: that
             # signs in a throwaway repo under /tmp, which never matches this
             # gitdir: condition. Same key, same email, only the form changes.
-            if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent ]]; then
-                git config --file ~/.config/git/work user.signingkey ~/.ssh/devbox_agent
-                echo "    git: iden2 include re-pointed at the on-disk key (path form)"
+            if [[ "$PLATFORM" == "linux" && -f ~/.ssh/devbox_agent.pub ]]; then
+                git config --file ~/.config/git/work user.signingkey ~/.ssh/devbox_agent.pub
+                echo "    git: iden2 include re-pointed at the work key in the sealed agent"
             fi
         fi
 

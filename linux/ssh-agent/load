@@ -1,0 +1,22 @@
+#!/bin/sh
+# Adds every imported ssh-* credential to the agent at $SSH_AUTH_SOCK.
+# Installed as /usr/local/libexec/devbox-ssh-agent-load; run by
+# devbox-ssh-agent-load@.service, as root, never by hand.
+set -eu
+
+# The agent is Type=simple, so systemd starts this before its socket may exist.
+i=0
+while [ ! -S "$SSH_AUTH_SOCK" ]; do
+    i=$((i + 1))
+    [ "$i" -le 50 ] || { echo "no agent socket at $SSH_AUTH_SOCK" >&2; exit 1; }
+    sleep 0.2
+done
+
+n=0
+for key in "${CREDENTIALS_DIRECTORY:?}"/ssh-*; do
+    [ -f "$key" ] || continue
+    ssh-add -q "$key"
+    n=$((n + 1))
+done
+[ "$n" -gt 0 ] || { echo "no sealed ssh-* credentials to load" >&2; exit 1; }
+echo "loaded $n key(s)"

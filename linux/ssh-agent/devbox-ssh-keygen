@@ -1,0 +1,5 @@
+#!/bin/sh
+# git's gpg.ssh.program on the devbox: ssh-keygen, pointed at the sealed-key agent.
+# user.signingkey names a .pub file, which makes ssh-keygen sign through the
+# agent. Agent shells here export only PATH, so the socket cannot come from env.
+SSH_AUTH_SOCK="/run/ssh-agent-$(id -un)/agent.sock" exec ssh-keygen "$@"
