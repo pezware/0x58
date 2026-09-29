@@ -1305,6 +1305,23 @@ setup_git_identity() {
         _devbox_identity personal devbox_agent_personal
         _devbox_identity work devbox_agent
         unset -f _devbox_identity
+    else
+        # ssh reads the push key's .pub to pick it from the agent. Secretive's own
+        # copy sits in its app container, and reading that makes macOS ask for
+        # kitty on every push. Write each copy from the include's signingkey.
+        # The private key never leaves the Secure Enclave.
+        local id key
+        for id in personal work; do
+            key=$(sed -n 's/^[[:space:]]*signingkey = key:://p' "$cfg/$id")
+            if [[ -z "$key" ]]; then
+                echo "    ERROR: no key:: signingkey in $cfg/$id" >&2
+                return 1
+            fi
+            mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+            printf '%s\n' "$key" > "$HOME/.ssh/secretive_$id.pub"
+            chmod 644 "$HOME/.ssh/secretive_$id.pub"
+            echo "    ~/.ssh/secretive_$id.pub <- $id signingkey"
+        done
     fi
 
     # Removed and re-added so the order is fixed: the narrower .claude rule

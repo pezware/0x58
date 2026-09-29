@@ -9,8 +9,10 @@
 # ~/.ssh/config, so ssh has exactly this key to offer: an unregistered key fails
 # the push rather than falling back to the other account. On Linux, restore.sh
 # rewrites this and signingkey for the devbox's sealed agent.
+# The IdentityFile is a copy of signingkey that restore.sh writes. Reading
+# Secretive's own copy in its app container makes macOS ask on every push.
 [core]
-	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/PublicKeys/3efdc1c7d76c949e6b8216cd2a48c1d9.pub
+	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/.ssh/secretive_personal.pub
 # Every GitHub remote goes over ssh, so core.sshCommand decides the account.
 # Both includes rewrite to the same target, so their order cannot matter here.
 [url "git@github.com:"]
