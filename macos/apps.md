@@ -7,7 +7,7 @@ Generated: 2026-09-02
 | Google Chrome | brew cask |
 | kitty | brew cask |
 | Modus | manual/App Store |
-| Rectangle | brew cask |
+| OrbStack | brew cask |
 | Safari | manual/App Store |
 | Secretive | brew cask |
 | Tailscale | manual/App Store |

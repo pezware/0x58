@@ -18,3 +18,7 @@ for dir in "/usr/local/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/local/bin" "$H
     [ -d "$dir" ] && NEW_PATH="$dir:$NEW_PATH"
 done
 export PATH="${NEW_PATH}$PATH"
+
+# OrbStack command-line tools and integration. OrbStack writes this line once at
+# install and never again, so the repo has to carry it.
+source ~/.orbstack/shell/init.bash 2>/dev/null || :

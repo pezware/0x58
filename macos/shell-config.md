@@ -56,8 +56,8 @@ Where the two platform files make opposite choices — the SSH agent socket and
 - **Version manager**: `mise activate bash` at end of `.bashrc`
 - **GPG**: `GPG_TTY=$(tty)` for commit signing
 - **Privacy**: `DO_NOT_TRACK=1`
-- **Containers**: `KIND_EXPERIMENTAL_PROVIDER=podman` — kind defaults to docker, which
-  is not installed here; podman is the Mac's runtime
+- **Containers**: OrbStack is the docker runtime; kind uses it by default. Podman is
+  the fallback: `KIND_EXPERIMENTAL_PROVIDER=podman kind ...`
 
 ## Dotfiles management
 
