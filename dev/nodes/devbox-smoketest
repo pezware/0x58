@@ -102,14 +102,26 @@ dirty=$(remote 'n=0; while IFS= read -r g; do r=$(dirname "$g"); c=$(git -C "$r"
 # ── restored secrets ────────────────────────────────────────────────────────
 section "Restored secrets"
 
+# The escrowed fingerprint, derived from the private half. Through a 0600 temp
+# file: macOS ssh-keygen -y reads nothing from /dev/stdin, and this check then
+# compared against an empty string and passed without comparing anything.
+escrow_fp() {
+    local t fp
+    t=$(mktemp) && chmod 600 "$t"
+    security find-generic-password -s "devbox-sshkey-$1" -a "$USER" -w 2>/dev/null | base64 -d > "$t" 2>/dev/null
+    fp=$(ssh-keygen -y -f "$t" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
+    rm -f "$t"
+    printf '%s' "$fp"
+}
+
 for k in devbox_agent devbox_agent_personal; do
     live=$(remote "ssh-keygen -lf ~/.ssh/$k.pub 2>/dev/null | awk '{print \$2}'")
-    esc=$(security find-generic-password -s "devbox-sshkey-$k" -a "$USER" -w 2>/dev/null \
-          | base64 -d 2>/dev/null | ssh-keygen -y -f /dev/stdin 2>/dev/null \
-          | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
+    esc=$(escrow_fp "$k")
     if [ -z "$live" ]; then
         no "ssh key $k" "absent — run: ./dev/nodes/devbox-keys restore"
-    elif [ -n "$esc" ] && [ "$live" != "$esc" ]; then
+    elif [ -z "$esc" ]; then
+        skip "ssh key $k" "$live on the box, but the Keychain escrow is unreadable — nothing compared"
+    elif [ "$live" != "$esc" ]; then
         no "ssh key $k" "on-box key DIFFERS from Keychain escrow"
     else
         ok "ssh key $k" "$live"
@@ -177,6 +189,19 @@ done
 unset _r
 
 # ── signing: the check the rehearsal was worth running for ──────────────────
+section "Git identity by directory"
+
+# Email, signing key and push key for every repo in ~/src/{iden2,public,private},
+# each checked against GitHub's key lists for the account that directory owns.
+# A push key GitHub does not list for achtungandy means devbox_agent_personal is
+# still registered for signing only: add it as an Authentication key.
+if idout=$(remote 'git-identity-check'); then
+    ok "every repo matches its directory" "$(printf '%s\n' "$idout" | tail -1)"
+else
+    no "every repo matches its directory" "$(printf '%s\n' "$idout" | tail -1) — run git-identity-check on the box"
+    printf '%s\n' "$idout" | grep -A3 '^FAIL' | sed 's/^/         /' | head -20
+fi
+
 section "Commit signing"
 
 # The rebuilt box restored the MAC's gitconfig, so user.signingkey pointed at the

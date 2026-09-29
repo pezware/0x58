@@ -1,8 +1,15 @@
-# Work identity, included for ~/src/iden2/ so commits to those repos carry the
-# right address and signing key. Mirrors the Mac's attribution, inverted: there
-# work is the global default with ~/src/public/ overriding, here personal is the
-# default and this overrides. Both public keys are already in allowed_signers.
+# Work identity (arbeitandy), included for ~/src/iden2/ on both machines. There is
+# no global identity: a repo outside the identity trees refuses to commit
+# (user.useConfigOnly). See setup_git_identity in macos/restore.sh.
 [user]
 	name = Andy Xiang
 	email = andy@iden2.com
 	signingkey = key::ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHtka53TISNw3+5ybiF6VIiV79Q2fkBUKBgX/NdKa+bAKcHw7rAlPetisbFoHu3U12kmAbJaSJnqMOEdvfF56/w= andy@iden2.com
+# The push key; see the note in personal.
+[core]
+	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/PublicKeys/8071647b75c5e6b5f4d9ad1ea9ffd3f2.pub
+# Every GitHub remote goes over ssh, so core.sshCommand decides the account.
+# Both includes rewrite to the same target, so their order cannot matter here.
+[url "git@github.com:"]
+	insteadOf = https://github.com/
+	insteadOf = ssh://git@github.com/

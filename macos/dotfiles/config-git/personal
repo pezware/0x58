@@ -1,3 +1,21 @@
+# Personal identity (achtungandy), included for ~/src/public/ and ~/src/private/,
+# and on the devbox for ~/src/iden2/.claude/ (pezware-claude lives there). The
+# directory picks the identity; see setup_git_identity in macos/restore.sh.
 [user]
+	name = Andy Xiang
 	email = andy@pezware.com
 	signingkey = key::ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPKpqsavwoj+cp79ZVxznGX6+N2Fm02UxKm+djIZLynHOEEfY4eKkL8MA7K2F/jgsLItGm2C7O0mnWr0UB78u+U= andy@pezware.com
+# The push key, chosen here and not by the remote's host. -F /dev/null skips
+# ~/.ssh/config, so ssh has exactly this key to offer: an unregistered key fails
+# the push rather than falling back to the other account. On Linux, restore.sh
+# rewrites this and signingkey for the devbox's sealed agent.
+[core]
+	sshCommand = /opt/homebrew/bin/ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh -o IdentityFile=~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/PublicKeys/3efdc1c7d76c949e6b8216cd2a48c1d9.pub
+# Every GitHub remote goes over ssh, so core.sshCommand decides the account.
+# Both includes rewrite to the same target, so their order cannot matter here.
+[url "git@github.com:"]
+	insteadOf = https://github.com/
+	insteadOf = ssh://git@github.com/
+# Remotes cloned with the old host alias. ssh no longer reads the alias.
+[url "git@github.com:"]
+	insteadOf = git@github-pezware:
