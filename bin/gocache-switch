@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# Point the Go build cache at the external SSD while it is mounted, and back at
+# Go's internal default when it is not.
+#
+#   gocache-switch [volume]      default: $GOCACHE_VOLUME, else /Volumes/pourquoimoi
+#
+# WHY
+#
+# The build cache regrew to 30 GiB in 9 days (2026-10-20), because every worktree
+# path gets its own entries. On the encrypted SSD at 10 Gb/s, a warm go-monorepo
+# build with RAM purged took 12.3 s, against 12.6 s on the internal disk.
+#
+# The switch writes Go's own env file with `go env -w`, not a shell export. Go
+# reads that file on every run, so every caller sees it, including agent shells,
+# which export only PATH. launchd runs this at login and on every change under
+# /Volumes: macos/dotfiles/launchd/com.0x58.gocache-switch.plist.
+set -uo pipefail
+
+VOLUME=""
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)        echo "unknown flag: $arg" >&2; exit 2 ;;
+        *)         VOLUME="$arg" ;;
+    esac
+done
+VOLUME="${VOLUME:-${GOCACHE_VOLUME:-/Volumes/pourquoimoi}}"
+VOLUME="${VOLUME%/}"
+TARGET="$VOLUME/go-build"
+
+# Only the env-file value is ours. An exported GOCACHE would mask it in `go env`
+# and make `go env -w` refuse to write.
+unset GOCACHE
+
+# A real mount has a different device id from its parent. An unclean unplug can
+# leave an empty /Volumes/<name> behind, and a cache there sits on the internal disk.
+mounted() {
+    [ -d "$1" ] && [ -w "$1" ] || return 1
+    [ "$(stat -f %d "$1")" != "$(stat -f %d "$(dirname "$1")")" ]
+}
+
+current="$(go env GOCACHE)" || { echo "gocache-switch: go env failed" >&2; exit 1; }
+
+if mounted "$VOLUME"; then
+    [ "$current" = "$TARGET" ] && exit 0
+    go env -w GOCACHE="$TARGET" || { echo "gocache-switch: go env -w failed" >&2; exit 1; }
+    echo "gocache-switch: GOCACHE -> $TARGET"
+else
+    case "$current" in
+        "$VOLUME"/*)
+            go env -u GOCACHE || { echo "gocache-switch: go env -u failed" >&2; exit 1; }
+            echo "gocache-switch: $VOLUME is not mounted, GOCACHE -> $(go env GOCACHE)"
+            ;;
+    esac
+fi

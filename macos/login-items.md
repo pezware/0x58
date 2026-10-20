@@ -81,8 +81,15 @@ Replaced by: dev work moved to the devbox, OrbStack removed entirely, and the
 volume. `/etc/fstab` and the Login Item were removed with it.
 
 OrbStack came back on 2026-09-29, installed as a brew cask with its data on the
-internal FileVault disk. That removes problems 1 and 3. Problem 2 still applies:
-the VM disk only grows, so watch `du -sh ~/.orbstack` and prune images.
+internal FileVault disk. On 2026-10-20 its data moved to an encrypted APFS SSD,
+together with the podman VM disk: [external-ssd.md](external-ssd.md). Encryption
+removes problem 1. Problem 2 came from the sparse-image layer, and that layer is
+gone: `data.img.raw` now sits straight on APFS, and it shrinks when data is
+deleted, as OrbStack's own `README.txt` states. Problem 3 remains in part, since
+a USB stall can still stall a VM, so the SSD goes straight into a Mac port. The
+real size is `du -sh` on the file in
+`~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/`. `~/.orbstack` holds
+only config, logs and sockets.
 
 Two lessons worth carrying forward:
 

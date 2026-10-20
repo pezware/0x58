@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# Stop the VMs that run from the external SSD, then eject it.
+#
+#   pourquoimoi-eject [volume]      default: /Volumes/pourquoimoi
+#
+# WHY
+#
+# Podman's VM disk and OrbStack's data live on the SSD (macos/external-ssd.md).
+# macOS refuses to eject a disk that a running VM holds open, and pulling the
+# cable instead can break the VM's filesystem. This stops both VMs, refuses if
+# any other process still holds a file there, and only then ejects.
+set -uo pipefail
+
+VOLUME="${1:-/Volumes/pourquoimoi}"
+VOLUME="${VOLUME%/}"
+[ -d "$VOLUME" ] || { echo "pourquoimoi-eject: $VOLUME is not mounted" >&2; exit 1; }
+
+if [ "$(podman machine inspect --format '{{.State}}' 2>/dev/null)" = running ]; then
+    echo "pourquoimoi-eject: stopping the podman machine"
+    podman machine stop >/dev/null || { echo "pourquoimoi-eject: podman machine stop failed" >&2; exit 1; }
+fi
+
+# pgrep, not `orb status`: an orb command can start OrbStack when it is stopped.
+# The VM runs in "OrbStack Helper"; plain lsof cuts that name to "OrbStack".
+if pgrep -xq "OrbStack Helper"; then
+    echo "pourquoimoi-eject: stopping OrbStack"
+    orb stop >/dev/null || { echo "pourquoimoi-eject: orb stop failed" >&2; exit 1; }
+fi
+
+# Given a mount point, lsof lists every open file on that volume.
+holders="$(lsof -Fc "$VOLUME" 2>/dev/null | sed -n 's/^c//p' | sort -u | paste -sd, -)"
+if [ -n "$holders" ]; then
+    echo "pourquoimoi-eject: still open on $VOLUME by: $holders" >&2
+    exit 1
+fi
+
+diskutil eject "$VOLUME"

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Tests for cache-cap.
+#
+#   ./bin/cache-cap-test
+#
+# No test framework, matching bin/src-sync-test. The fixture is a directory of
+# 1 MiB files with ascending mtimes, so "oldest" is fixed and every size is
+# exact. CACHE_CAP_ROOT points at the throwaway directory, so the refusal guard
+# is exercised without going near ~/Library/Caches.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+CAP="$HERE/cache-cap"
+
+pass=0
+fail=0
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+
+WORK="$(mktemp -d)"
+cleanup() {
+    case "$WORK" in /tmp/* | /var/folders/* | /private/var/folders/*) rm -rf "$WORK" ;; esac
+}
+trap cleanup EXIT
+export CACHE_CAP_ROOT="$WORK"
+
+# <dir> with six 1 MiB files, f1 oldest and f6 newest, spread over two
+# subdirectories the way Go spreads entries over 00..ff.
+new_cache() {
+    local d=$1 i
+    rm -rf "$d"
+    mkdir -p "$d/0a" "$d/0b"
+    for i in 1 2 3 4 5 6; do
+        head -c 1048576 /dev/urandom > "$d/0$( [ $((i % 2)) -eq 0 ] && echo a || echo b )/f$i"
+        touch -t "2026010${i}1200" "$d"/0?/f$i
+    done
+}
+count() { find "$1" -type f | wc -l | tr -d ' '; }
+size_kib() { du -sk "$1" | awk '{print $1}'; }
+
+echo "cache-cap"
+
+new_cache "$WORK/under"
+"$CAP" --limit-mib=10 "$WORK/under" >/dev/null 2>&1
+assert_eq "under the limit: no file removed" "$(count "$WORK/under")" "6"
+
+new_cache "$WORK/over"
+"$CAP" --limit-mib=3 "$WORK/over" >/dev/null 2>&1
+if [ "$(size_kib "$WORK/over")" -le 3072 ]; then
+    ok "over the limit: cache ends at or below the limit"
+else
+    no "over the limit: cache ends at or below the limit" "size $(size_kib "$WORK/over") KiB > 3072 KiB"
+fi
+
+new_cache "$WORK/newest"
+"$CAP" --limit-mib=3 "$WORK/newest" >/dev/null 2>&1
+if [ -f "$WORK/newest/0a/f6" ]; then
+    ok "over the limit: the most recently used file survives"
+else
+    no "over the limit: the most recently used file survives" "f6 was deleted"
+fi
+
+OUTSIDE="$(mktemp -d)"
+new_cache "$OUTSIDE/c"
+"$CAP" --limit-mib=1 "$OUTSIDE/c" >/dev/null 2>&1
+assert_eq "directory outside the root: exits 2" "$?" "2"
+assert_eq "directory outside the root: no file removed" "$(count "$OUTSIDE/c")" "6"
+rm -rf "$OUTSIDE"
+
+"$CAP" --limit-mib=1 "$WORK/missing" >/dev/null 2>&1
+assert_eq "missing directory: exits 0" "$?" "0"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

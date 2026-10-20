@@ -1217,6 +1217,59 @@ setup_src_sync() {
     fi
 }
 
+# --- Phase 3g: Go build cache on the external SSD ---
+# The cache regrew 30 GiB in 9 days on the internal disk. bin/gocache-switch
+# moves it to the encrypted SSD while that is mounted; the reasons live there.
+setup_gocache_switch() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    echo "==> gocache-switch (Go build cache follows the external SSD)"
+
+    mkdir -p ~/.local/bin ~/Library/LaunchAgents ~/Library/Logs
+    install -m 755 "$BIN_DIR/gocache-switch" ~/.local/bin/gocache-switch
+    # Stops the VMs that run from the SSD, then ejects it: macos/external-ssd.md.
+    install -m 755 "$BIN_DIR/pourquoimoi-eject" ~/.local/bin/pourquoimoi-eject
+
+    local src="$DOTFILES/launchd/com.0x58.gocache-switch.plist"
+    local plist=~/Library/LaunchAgents/com.0x58.gocache-switch.plist
+    sed -e "s#GOCACHE_SWITCH_PATH#$HOME/.local/bin/gocache-switch#" \
+        -e "s#MISE_SHIMS_DIR#$HOME/.local/share/mise/shims#" \
+        -e "s#GOCACHE_SWITCH_LOG#$HOME/Library/Logs/gocache-switch.log#" \
+        "$src" > "$plist"
+    # bootout first: launchd refuses to bootstrap a label it already holds.
+    launchctl bootout "gui/$UID/com.0x58.gocache-switch" 2>/dev/null || true
+    if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+        echo "    launchd: gocache-switch loaded (at login and on every /Volumes change)"
+    else
+        echo "    launchd: gocache-switch NOT loaded — run" >&2
+        echo "             launchctl bootstrap gui/$UID $plist" >&2
+    fi
+}
+
+# --- Phase 3h: size cap for the internal build caches ---
+# Without the SSD, Go writes to the internal cache again, and Go has no size
+# limit of its own. bin/cache-cap trims it daily, oldest files first.
+setup_cache_cap() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    echo "==> cache-cap (internal build caches stay under 20 GiB)"
+
+    mkdir -p ~/.local/bin ~/Library/LaunchAgents ~/Library/Logs
+    install -m 755 "$BIN_DIR/cache-cap" ~/.local/bin/cache-cap
+
+    local src="$DOTFILES/launchd/com.0x58.cache-cap.plist"
+    local plist=~/Library/LaunchAgents/com.0x58.cache-cap.plist
+    sed -e "s#CACHE_CAP_PATH#$HOME/.local/bin/cache-cap#" \
+        -e "s#HOME_DIR#$HOME#g" \
+        -e "s#CACHE_CAP_LOG#$HOME/Library/Logs/cache-cap.log#" \
+        "$src" > "$plist"
+    launchctl bootout "gui/$UID/com.0x58.cache-cap" 2>/dev/null || true
+    if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+        echo "    launchd: cache-cap loaded (daily at 12:00, or at the next wake)"
+    else
+        echo "    launchd: cache-cap NOT loaded — run" >&2
+        echo "             launchctl bootstrap gui/$UID $plist" >&2
+    fi
+}
+
 # --- Phase 3f: agent context goes to the ticket ---
 #
 # Both machines, deliberately. The devbox agent and the Mac session work the same
@@ -1520,6 +1573,8 @@ setup_dev_tools
 # After setup_dev_tools: it is what sources bashrc and puts mise on PATH.
 install_python_packages
 setup_src_sync
+setup_gocache_switch
+setup_cache_cap
 setup_gh_context
 setup_git_identity
 setup_keymaster

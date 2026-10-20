@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# Tests for gocache-switch.
+#
+#   ./bin/gocache-switch-test
+#
+# No test framework, matching bin/src-sync-test. A real disk image stands in for
+# the SSD: the contract is "a mount point, not merely a directory", and only a
+# real mount can prove it. GOENV points at a throwaway file, so the real
+# ~/Library/Application Support/go/env is never touched. macOS only, like the
+# script it covers.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SWITCH="$HERE/gocache-switch"
+
+pass=0
+fail=0
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+
+WORK="$(mktemp -d)"
+VOL="$WORK/vol"
+cleanup() {
+    hdiutil detach -quiet "$VOL" 2>/dev/null
+    case "$WORK" in /tmp/* | /var/folders/* | /private/var/folders/*) rm -rf "$WORK" ;; esac
+}
+trap cleanup EXIT
+
+export GOENV="$WORK/goenv"
+unset GOCACHE
+DEFAULT="$(GOENV=off go env GOCACHE)"
+
+fresh() { rm -f "$GOENV"; }
+gocache() { go env GOCACHE; }
+mount_vol() {
+    hdiutil create -quiet -size 16m -fs HFS+ -volname gcs-test "$WORK/vol.dmg" &&
+        mkdir -p "$VOL" &&
+        hdiutil attach -quiet -nobrowse -mountpoint "$VOL" "$WORK/vol.dmg"
+}
+
+echo "gocache-switch"
+
+mount_vol || { echo "  cannot attach a disk image; nothing tested" >&2; exit 1; }
+
+fresh
+"$SWITCH" "$VOL" >/dev/null 2>&1
+assert_eq "mounted volume: GOCACHE moves to <volume>/go-build" "$(gocache)" "$VOL/go-build"
+
+out="$("$SWITCH" "$VOL" 2>&1)"
+assert_eq "second run while mounted: prints nothing" "$out" ""
+
+hdiutil detach -quiet "$VOL"
+"$SWITCH" "$VOL" >/dev/null 2>&1
+assert_eq "after unmount: GOCACHE returns to the default" "$(gocache)" "$DEFAULT"
+
+fresh
+"$SWITCH" "$WORK/missing" >/dev/null 2>&1
+assert_eq "no such path: GOCACHE stays the default" "$(gocache)" "$DEFAULT"
+
+fresh
+mkdir -p "$WORK/stale"
+"$SWITCH" "$WORK/stale" >/dev/null 2>&1
+assert_eq "writable directory that is not a mount point: GOCACHE stays the default" "$(gocache)" "$DEFAULT"
+
+fresh
+go env -w GOCACHE="$WORK/mine"
+"$SWITCH" "$WORK/missing" >/dev/null 2>&1
+assert_eq "GOCACHE set elsewhere by hand: left alone when the volume is absent" "$(gocache)" "$WORK/mine"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
