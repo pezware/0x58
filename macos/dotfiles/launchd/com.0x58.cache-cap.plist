@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keep the internal build caches under 20 GiB: bin/cache-cap. These are the
+  caches Go and golangci-lint use when the external SSD is not mounted.
+
+  The paths are the internal defaults on purpose, not `go env GOCACHE`: the
+  cache on the SSD has room, and Go's own 5-day trim bounds it there.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.0x58.cache-cap</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>CACHE_CAP_PATH</string>
+        <string>HOME_DIR/Library/Caches/go-build</string>
+        <string>HOME_DIR/Library/Caches/golangci-lint</string>
+    </array>
+
+    <!--
+      Daily at 12:00. A calendar job missed during sleep runs at the next wake;
+      a StartInterval job would skip it, and a laptop sleeps often.
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>12</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>CACHE_CAP_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>CACHE_CAP_LOG</string>
+</dict>
+</plist>

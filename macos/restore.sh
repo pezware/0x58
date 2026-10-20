@@ -1243,6 +1243,31 @@ setup_gocache_switch() {
     fi
 }
 
+# --- Phase 3h: size cap for the internal build caches ---
+# Without the SSD, Go writes to the internal cache again, and Go has no size
+# limit of its own. bin/cache-cap trims it daily, oldest files first.
+setup_cache_cap() {
+    if [[ "$PLATFORM" != "macos" ]]; then return; fi
+    echo "==> cache-cap (internal build caches stay under 20 GiB)"
+
+    mkdir -p ~/.local/bin ~/Library/LaunchAgents ~/Library/Logs
+    install -m 755 "$BIN_DIR/cache-cap" ~/.local/bin/cache-cap
+
+    local src="$DOTFILES/launchd/com.0x58.cache-cap.plist"
+    local plist=~/Library/LaunchAgents/com.0x58.cache-cap.plist
+    sed -e "s#CACHE_CAP_PATH#$HOME/.local/bin/cache-cap#" \
+        -e "s#HOME_DIR#$HOME#g" \
+        -e "s#CACHE_CAP_LOG#$HOME/Library/Logs/cache-cap.log#" \
+        "$src" > "$plist"
+    launchctl bootout "gui/$UID/com.0x58.cache-cap" 2>/dev/null || true
+    if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+        echo "    launchd: cache-cap loaded (daily at 12:00, or at the next wake)"
+    else
+        echo "    launchd: cache-cap NOT loaded — run" >&2
+        echo "             launchctl bootstrap gui/$UID $plist" >&2
+    fi
+}
+
 # --- Phase 3f: agent context goes to the ticket ---
 #
 # Both machines, deliberately. The devbox agent and the Mac session work the same
@@ -1547,6 +1572,7 @@ setup_dev_tools
 install_python_packages
 setup_src_sync
 setup_gocache_switch
+setup_cache_cap
 setup_gh_context
 setup_git_identity
 setup_keymaster

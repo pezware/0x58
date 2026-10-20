@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# Keep build cache directories under a size limit.
+#
+#   cache-cap [--limit-mib=N] dir...     default limit: $CACHE_CAP_MIB, else 20480 (20 GiB)
+#
+# WHY
+#
+# gocache-switch puts GOCACHE on the external SSD only while it is mounted.
+# Without the SSD, Go writes to ~/Library/Caches/go-build again, and that cache
+# regrew 30 GiB in 9 days (2026-10-20). Go itself removes only entries unused for
+# 5 days, so it has no size limit. golangci-lint's cache is a fork of Go's and
+# has the same gap. A LaunchAgent runs this daily:
+# macos/dotfiles/launchd/com.0x58.cache-cap.plist.
+#
+# It deletes files, so it refuses any directory outside $CACHE_CAP_ROOT
+# (default ~/Library/Caches).
+set -uo pipefail
+
+LIMIT_MIB="${CACHE_CAP_MIB:-20480}"
+ROOT="${CACHE_CAP_ROOT:-$HOME/Library/Caches}"
+DIRS=()
+for arg in "$@"; do
+    case "$arg" in
+        --limit-mib=*) LIMIT_MIB="${arg#*=}" ;;
+        -h|--help)     sed -n '3,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*)            echo "unknown flag: $arg" >&2; exit 2 ;;
+        *)             DIRS+=("${arg%/}") ;;
+    esac
+done
+case "$LIMIT_MIB" in ''|*[!0-9]*) echo "cache-cap: --limit-mib must be an integer" >&2; exit 2 ;; esac
+[ "${#DIRS[@]}" -gt 0 ] || { echo "cache-cap: no directory given" >&2; exit 2; }
+
+size_kib() { du -sk "$1" | awk '{print $1}'; }
+
+# Prints "<mtime> <kib> <path>" per file, oldest first. Go refreshes an entry's
+# mtime when it reuses it (at most once an hour), so oldest is close to
+# least recently used.
+files_oldest_first() {
+    find "$1" -type f -exec stat -f '%m %b %N' {} + | awk '{ $2 = int(($2 + 1) / 2); print }' | sort -n
+}
+
+# Deletes files from <dir> until it fits <limit_kib>. Read the candidates from
+# files_oldest_first; <dir> is already known to be over the limit.
+trim_to_limit() {
+    local dir=$1 limit_kib=$2 total _mtime kib path
+    total=$(size_kib "$dir")
+    while read -r _mtime kib path; do
+        [ "$total" -le "$limit_kib" ] && break
+        rm -f -- "$path" && total=$(( total - kib ))
+    done < <(files_oldest_first "$dir")
+}
+
+status=0
+for dir in "${DIRS[@]}"; do
+    case "$dir" in
+        "$ROOT"/?*) ;;
+        *) echo "cache-cap: refusing $dir: not under $ROOT" >&2; status=2; continue ;;
+    esac
+    [ -d "$dir" ] || continue
+
+    limit_kib=$(( LIMIT_MIB * 1024 ))
+    before=$(size_kib "$dir")
+    [ "$before" -le "$limit_kib" ] && continue
+
+    trim_to_limit "$dir" "$limit_kib"
+    after=$(size_kib "$dir")
+    echo "cache-cap: $dir $(( before / 1024 )) MiB -> $(( after / 1024 )) MiB (limit $LIMIT_MIB MiB)"
+done
+exit "$status"
