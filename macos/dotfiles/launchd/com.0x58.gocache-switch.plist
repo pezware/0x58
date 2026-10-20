@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keep GOCACHE on the external SSD while it is mounted, and on the internal
+  default while it is not. The logic and its reasons live in bin/gocache-switch.
+
+  PATH carries the mise shims, because go is a mise tool and launchd gives a job
+  no shell profile. The shim resolves go from the global mise config.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.0x58.gocache-switch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>GOCACHE_SWITCH_PATH</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>MISE_SHIMS_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- A mount adds an entry under /Volumes and an unmount removes it. -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Volumes</string>
+    </array>
+
+    <!-- At login the SSD may already be mounted, and no /Volumes change reports that. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>GOCACHE_SWITCH_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>GOCACHE_SWITCH_LOG</string>
+</dict>
+</plist>
