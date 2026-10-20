@@ -1226,6 +1226,8 @@ setup_gocache_switch() {
 
     mkdir -p ~/.local/bin ~/Library/LaunchAgents ~/Library/Logs
     install -m 755 "$BIN_DIR/gocache-switch" ~/.local/bin/gocache-switch
+    # Stops the VMs that run from the SSD, then ejects it: macos/external-ssd.md.
+    install -m 755 "$BIN_DIR/pourquoimoi-eject" ~/.local/bin/pourquoimoi-eject
 
     local src="$DOTFILES/launchd/com.0x58.gocache-switch.plist"
     local plist=~/Library/LaunchAgents/com.0x58.gocache-switch.plist

@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# Tests for pourquoimoi-eject.
+#
+#   ./bin/pourquoimoi-eject-test
+#
+# No test framework, matching bin/src-sync-test. Stub podman, orb, pgrep, lsof
+# and diskutil go first on PATH and append each call to one log, so a test can
+# check what ran and in which order. Nothing touches a real VM or disk.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+EJECT="$HERE/pourquoimoi-eject"
+
+pass=0
+fail=0
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]" ;;
+    esac
+}
+
+WORK="$(mktemp -d)"
+cleanup() {
+    case "$WORK" in /tmp/* | /var/folders/* | /private/var/folders/*) rm -rf "$WORK" ;; esac
+}
+trap cleanup EXIT
+
+STUB="$WORK/stub"
+LOG="$WORK/calls.log"
+VOL="$WORK/vol"
+mkdir -p "$STUB" "$VOL"
+
+# Each stub logs "<name> <args>" and reads its scenario from STUB_* variables.
+cat >"$STUB/podman" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "podman $*" >>"$STUB_LOG"
+case "$*" in
+    "machine inspect"*) echo "${STUB_PODMAN_STATE:-stopped}" ;;
+    "machine stop"*)    exit "${STUB_PODMAN_STOP_RC:-0}" ;;
+esac
+STUB_EOF
+cat >"$STUB/orb" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "orb $*" >>"$STUB_LOG"
+STUB_EOF
+cat >"$STUB/pgrep" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "pgrep $*" >>"$STUB_LOG"
+[ "${STUB_ORB_RUNNING:-0}" = 1 ]
+STUB_EOF
+cat >"$STUB/lsof" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "lsof $*" >>"$STUB_LOG"
+[ -n "${STUB_LSOF_HOLDER:-}" ] && printf 'p123\nc%s\n' "$STUB_LSOF_HOLDER"
+exit 0
+STUB_EOF
+cat >"$STUB/diskutil" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "diskutil $*" >>"$STUB_LOG"
+STUB_EOF
+chmod +x "$STUB"/*
+
+# run [VAR=value ...] -- [args]: one scenario, with a fresh log.
+run() {
+    : >"$LOG"
+    env STUB_LOG="$LOG" PATH="$STUB:$PATH" "$@" "$EJECT" "$VOL" 2>&1
+}
+calls() { cut -d' ' -f1-3 "$LOG" | tr '\n' ';'; }
+line_of() { grep -n -F "$1" "$LOG" | head -1 | cut -d: -f1; }
+
+echo "pourquoimoi-eject"
+
+run STUB_PODMAN_STATE=running STUB_ORB_RUNNING=1 >/dev/null
+if [ -n "$(line_of 'podman machine stop')" ] && [ "$(line_of 'podman machine stop')" -lt "$(line_of 'diskutil eject')" ]; then
+    ok "podman running: it stops before the eject"
+else
+    no "podman running: it stops before the eject" "calls: $(calls)"
+fi
+
+run STUB_PODMAN_STATE=running STUB_ORB_RUNNING=1 >/dev/null
+if [ -n "$(line_of 'orb stop')" ] && [ "$(line_of 'orb stop')" -lt "$(line_of 'diskutil eject')" ]; then
+    ok "OrbStack running: it stops before the eject"
+else
+    no "OrbStack running: it stops before the eject" "calls: $(calls)"
+fi
+
+run >/dev/null
+assert_eq "nothing running: no VM is stopped" "$(grep -c -E 'machine stop|^orb' "$LOG")" "0"
+
+run >/dev/null
+assert_eq "nothing running: the eject runs" "$(grep -c "^diskutil eject $VOL" "$LOG")" "1"
+
+out="$(run STUB_LSOF_HOLDER=holder-under-test)"
+assert_eq "a process still holds a file: no eject" "$(grep -c '^diskutil' "$LOG")" "0"
+assert_contains "a process still holds a file: it is named" "$out" "holder-under-test"
+
+run STUB_PODMAN_STATE=running STUB_PODMAN_STOP_RC=1 >/dev/null
+assert_eq "podman stop fails: no eject" "$(grep -c '^diskutil' "$LOG")" "0"
+
+: >"$LOG"
+env STUB_LOG="$LOG" PATH="$STUB:$PATH" "$EJECT" "$WORK/missing" >/dev/null 2>&1
+assert_eq "volume not mounted: exits 1" "$?" "1"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
