@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+#
+# external-review — ask a model outside this session to review a diff, and
+# write its report to a file the session reads back.
+#
+#   external-review                         # this branch against origin/main
+#   external-review --pr 2635               # a PR at its head, in a detached worktree
+#   external-review --base origin/release   # another base
+#   external-review --backends agy,claude   # these backends, in this order
+#   external-review --dry-run               # write the prompt, call no model
+#
+# Prints the report path. Exit 0: a report exists. 1: every backend failed, and
+# stderr says why for each. 2: bad usage, or nothing to review.
+#
+# WHY THIS EXISTS
+#
+# A reviewer on another model catches what the author's model misses: on
+# 2026-10-21 codex and agy found disjoint, true defects on the same pull request.
+# But each CLI fails in its own quiet way, and that benchmark lost runs to all
+# of them:
+#
+#   agy     one denied shell command ends the turn with an EMPTY response, status
+#           SUCCESS and exit 0. Three of five runs did this.
+#   codex   waits forever on an open stdin; an npm impostor named `codex` exits 0
+#           with nothing; workspace credits run out mid-week.
+#   claude  a nested `claude -p` works, but prints an array of events.
+#
+# So a run counts only when its report holds the "## Findings" heading that the
+# prompt asks for, never by exit status. A backend that is missing, signed out,
+# under its budget floor or silent falls through to the next one.
+#
+# WHY READ-ONLY
+#
+# The reviewer reads a diff someone else wrote, which is a prompt-injection
+# surface. agy runs with --sandbox (no writes and no network, both probed
+# 2026-10-22), codex with -s read-only, and claude with Read, Grep and Glob only.
+set -uo pipefail
+
+die() { printf 'external-review: %s\n' "$*" >&2; exit 2; }
+note() { printf 'external-review: %s\n' "$*" >&2; }
+
+usage() {
+    sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-2}"
+}
+
+need() { [[ -n "${2:-}" && "${2:-}" != --* ]] || die "$1 needs a value"; }
+
+BACKENDS="${EXTERNAL_REVIEW_BACKENDS:-agy codex claude}"
+OUT_ROOT="${EXTERNAL_REVIEW_OUT:-${TMPDIR:-/tmp}/external-review}"
+AGY_MODEL="${AGY_MODEL:-gemini-4-argon}"
+AGY_EFFORT="${AGY_EFFORT:-high}"
+# agy takes the prompt as one argument, and macOS caps arguments plus the
+# environment at 1 MiB. Refuse rather than truncate a diff the reviewer then
+# reports on as if it were whole.
+MAX_PROMPT_BYTES=900000
+PR="" BASE="" DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pr)       need "$@"; PR=$2; shift 2 ;;
+        --base)     need "$@"; BASE=$2; shift 2 ;;
+        --backends) need "$@"; BACKENDS=${2//,/ }; shift 2 ;;
+        --dry-run)  DRY_RUN=1; shift ;;
+        -h|--help)  usage 0 ;;
+        *)          note "unknown argument: $1"; usage 2 ;;
+    esac
+done
+
+[[ -z "$PR" || "$PR" =~ ^[0-9]+$ ]] || die "--pr takes a number, not '$PR'"
+for b in $BACKENDS; do
+    case "$b" in agy|codex|claude) ;; *) die "unknown backend '$b': use agy, codex or claude" ;; esac
+done
+[[ -n "${BACKENDS// /}" ]] || die "no backend to try"
+command -v jq >/dev/null || die "jq is required"
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repository"
+
+# Physical path: git records a worktree by it, and on macOS /var is a symlink.
+mkdir -p "$OUT_ROOT" || die "cannot create $OUT_ROOT"
+slug=${PR:+pr$PR}
+slug=${slug:-$(git -C "$TOP" rev-parse --abbrev-ref HEAD | tr '/' '-')}
+RUN=$(mktemp -d "$OUT_ROOT/$(basename "$TOP")-$slug.XXXXXX") || die "cannot create a run directory"
+RUN=$(cd "$RUN" && pwd -P)
+ATTEMPTS="$RUN/attempts.jsonl"
+: >"$ATTEMPTS"
+
+WT="" REPORT=""
+# A PR worktree stays when a report came back: verifying the findings needs the
+# reviewed tree. It goes when there is nothing to verify.
+cleanup() {
+    [[ -n "$WT" && -z "$REPORT" ]] && git -C "$TOP" worktree remove --force "$WT" >/dev/null 2>&1
+    return 0
+}
+trap cleanup EXIT
+
+META=""
+if [[ -n "$PR" ]]; then
+    view=$(gh pr view "$PR" --json headRefOid,baseRefName,title,body) || die "gh cannot read PR #$PR"
+    head=$(jq -r .headRefOid <<<"$view")
+    base_branch=$(jq -r .baseRefName <<<"$view")
+    BASE=${BASE:-origin/$base_branch}
+    git -C "$TOP" fetch -q origin "$base_branch" "pull/$PR/head" || die "cannot fetch PR #$PR from origin"
+    git -C "$TOP" cat-file -e "$head^{commit}" 2>/dev/null || die "PR #$PR head $head is not in origin's pull/$PR/head"
+    WT="$RUN/wt"
+    git -C "$TOP" worktree add -q --detach "$WT" "$head" || die "cannot add a worktree for PR #$PR"
+    DIR=$WT
+    META=$(jq -r '"PR title: \(.title)\n\nPR description:\n\(.body)"' <<<"$view")
+else
+    DIR=$TOP
+    if [[ -z "$BASE" ]]; then
+        BASE=main
+        git -C "$TOP" rev-parse -q --verify origin/main >/dev/null && BASE=origin/main
+    fi
+fi
+
+mb=$(git -C "$DIR" merge-base "$BASE" HEAD 2>/dev/null) || die "no merge base between $BASE and HEAD"
+git -C "$DIR" diff "$mb" HEAD >"$RUN/diff" || die "git diff failed"
+[[ -s "$RUN/diff" ]] || die "nothing to review: HEAD has no change against $BASE"
+
+repo=$(git -C "$TOP" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#')
+if [[ -n "$PR" ]]; then
+    what="GitHub pull request ${repo:-this repository}#$PR"
+else
+    what="branch $(git -C "$TOP" rev-parse --abbrev-ref HEAD) of ${repo:-this repository}"
+fi
+{
+    cat <<EOF
+You are reviewing $what for correctness, security and operational defects.
+
+Your working directory is the repository, checked out at $(git -C "$DIR" rev-parse --short HEAD). The unified diff against the merge base ($(git -C "$DIR" rev-parse --short "$mb")) is at the end of this message. Read any file in the repository for context. Do not modify files. Do not run builds or tests.
+
+Report only defects you can support with evidence from the code. Skip style preferences and praise.
+
+Use this exact Markdown format:
+
+## Findings
+
+### F1: <one-line title>
+- Severity: blocking | non-blocking
+- Location: <path>:<line> (a line in the reviewed tree)
+- Issue: what the code does, and the input or state that triggers the defect
+- Evidence: the code or file you checked
+- Fix: the change you recommend, in one or two sentences
+- Confidence: high | medium | low
+
+Repeat for F2, F3 and so on. If you find no defects, write "None." under the heading.
+
+## Not checked
+
+At most five bullets: what you could not verify.
+
+EOF
+    [[ -n "$META" ]] && printf -- '---\n\n%s\n\n' "$META"
+    printf -- '---\n\nDiff:\n\n````diff\n'
+    cat "$RUN/diff"
+    printf '````\n'
+} >"$RUN/prompt.md"
+
+bytes=$(wc -c <"$RUN/prompt.md" | tr -d ' ')
+((bytes <= MAX_PROMPT_BYTES)) || die "the prompt is $bytes bytes, over $MAX_PROMPT_BYTES: review a narrower --base or split the change"
+
+if ((DRY_RUN)); then
+    printf '%s\n' "$RUN/prompt.md"
+    exit 0
+fi
+
+# attempt <backend> <ok|skipped|failed> <reason> [json object merged in]
+attempt() {
+    local extra=${4:-}
+    [[ -n "$extra" ]] || extra='{}'
+    jq -n -c --arg b "$1" --arg s "$2" --arg r "$3" --argjson x "$extra" \
+        '{backend: $b, status: $s, reason: $r} + $x' >>"$ATTEMPTS"
+}
+
+usable() { [[ -s "$1" ]] && grep -q '^## Findings' "$1"; }
+
+# ── agy ─────────────────────────────────────────────────────────────────────
+
+# /usage answers from the quota service and costs no tokens. It also fails when
+# the account is signed out or not yet verified, so it doubles as the
+# availability check. Prints {"<group> / <label>": <percent remaining>, ...}.
+agy_usage() {
+    agy -p /usage --output-format json </dev/null 2>/dev/null | jq -c '
+        select(.status == "SUCCESS") | .response | split("\n")
+        | map(select(length > 0) | split("\t"))
+        | map({key: (.[0] + " / " + .[1]), value: (.[2] | rtrimstr("%") | tonumber)})
+        | from_entries' 2>/dev/null
+}
+
+# Whether agy has quota left for one review. $1 is agy_usage's object.
+#
+# TODO(andy): the budget policy. Measured 2026-10-21: one large review cost
+# 10-11 points of "Gemini 4 Argon / Gemini 4 Argon Weekly Limit", a failed run
+# 4-8, and the Gemini five-hour window never moved.
+agy_has_budget() {
+    return 0
+}
+
+# agy has file tools of its own. Steering it off the shell matters: one command
+# outside the settings.json allow-list ends the review with no output.
+AGY_PREAMBLE='Read and search files with your built-in file tools. Do not run shell commands.
+
+'
+
+run_agy() {
+    command -v agy >/dev/null || { attempt agy skipped "agy is not installed"; return 1; }
+    local before after rc secs t0 extra why
+    before=$(agy_usage)
+    [[ -n "$before" ]] || { attempt agy skipped "agy /usage failed: signed out or not verified (run: agy models)"; return 1; }
+    agy_has_budget "$before" || { attempt agy skipped "agy quota is under the budget floor" "{\"quota_before\":$before}"; return 1; }
+    t0=$SECONDS
+    (cd "$DIR" && agy -p "$AGY_PREAMBLE$(cat "$RUN/prompt.md")" --model "$AGY_MODEL" --effort "$AGY_EFFORT" \
+        --sandbox --output-format json </dev/null >"$RUN/agy.json" 2>"$RUN/agy.err")
+    rc=$? secs=$((SECONDS - t0))
+    after=$(agy_usage)
+    jq -r '.response // ""' "$RUN/agy.json" >"$RUN/agy.md" 2>/dev/null
+    extra=$(jq -c --argjson secs "$secs" --argjson before "$before" --argjson after "${after:-null}" --arg m "$AGY_MODEL" \
+        '{secs: $secs, model: $m, usage, quota_before: $before, quota_after: $after}' "$RUN/agy.json" 2>/dev/null) \
+        || extra="{\"secs\":$secs}"
+    if usable "$RUN/agy.md"; then
+        attempt agy ok "" "$extra"
+        REPORT="$RUN/agy.md"
+        return 0
+    fi
+    why=$(jq -r '
+        if (.denied_actions // []) | length > 0
+        then "headless mode denied " + ([.denied_actions[].display_name] | join(", ")) + ", and agy ended the review with no output"
+        elif .status != "SUCCESS" then (.error // .status)
+        else "the response holds no ## Findings heading" end' "$RUN/agy.json" 2>/dev/null)
+    attempt agy failed "${why:-exit $rc and no JSON: see agy.err}" "$extra"
+    return 1
+}
+
+# ── codex ───────────────────────────────────────────────────────────────────
+
+# The 5-hour and weekly windows, from the session log codex writes per thread.
+codex_quota() {
+    local f
+    f=$(find "$HOME/.codex/sessions" -name "rollout-*$1.jsonl" -print -quit 2>/dev/null)
+    [[ -n "$f" ]] || { echo null; return; }
+    grep '"token_count"' "$f" | tail -1 \
+        | jq -c '.payload.rate_limits | {five_hour_used: .primary.used_percent, weekly_used: .secondary.used_percent}' 2>/dev/null \
+        || echo null
+}
+
+run_codex() {
+    command -v codex >/dev/null || { attempt codex skipped "codex is not installed"; return 1; }
+    # An npm package also named `codex` (a 2013 site generator) can shadow the
+    # real CLI. Check the identity, not the presence.
+    local version rc secs t0 extra why tid
+    version=$(codex --version 2>&1 | head -1)
+    [[ "$version" == codex-cli* ]] || { attempt codex skipped "codex on PATH is not codex-cli: $version"; return 1; }
+    t0=$SECONDS
+    # The prompt goes on stdin through `-`. With an open stdin and a prompt
+    # argument instead, codex waits for more input forever.
+    codex exec -s read-only --json -C "$DIR" --output-last-message "$RUN/codex.md" - \
+        <"$RUN/prompt.md" >"$RUN/codex.jsonl" 2>"$RUN/codex.err"
+    rc=$? secs=$((SECONDS - t0))
+    tid=$(jq -r 'select(.type == "thread.started") | .thread_id' "$RUN/codex.jsonl" 2>/dev/null | head -1)
+    extra=$(jq -s -c --argjson secs "$secs" --argjson q "$(codex_quota "${tid:-none}")" '
+        [.[] | select(.type == "turn.completed") | .usage] as $u
+        | {secs: $secs, quota_after: $q,
+           usage: {input: ($u | map(.input_tokens) | add), cached: ($u | map(.cached_input_tokens) | add),
+                   output: ($u | map(.output_tokens) | add), reasoning: ($u | map(.reasoning_output_tokens) | add)}}' \
+        "$RUN/codex.jsonl" 2>/dev/null) || extra="{\"secs\":$secs}"
+    if usable "$RUN/codex.md"; then
+        attempt codex ok "" "$extra"
+        REPORT="$RUN/codex.md"
+        return 0
+    fi
+    why=$(jq -r 'select(.type == "error" or .type == "turn.failed") | (.message // .error.message // "turn failed")' \
+        "$RUN/codex.jsonl" 2>/dev/null | tail -1)
+    attempt codex failed "${why:-exit $rc and no report: see codex.err}" "$extra"
+    return 1
+}
+
+# ── claude ──────────────────────────────────────────────────────────────────
+
+run_claude() {
+    command -v claude >/dev/null || { attempt claude skipped "claude is not installed"; return 1; }
+    local rc secs t0 extra why
+    t0=$SECONDS
+    # Read, Grep and Glob only: no shell and no writes. The prompt goes on stdin.
+    (cd "$DIR" && claude -p --output-format json --allowedTools Read,Grep,Glob \
+        --disallowedTools Edit,Write,NotebookEdit,Bash ${CLAUDE_MODEL:+--model "$CLAUDE_MODEL"} \
+        <"$RUN/prompt.md" >"$RUN/claude.json" 2>"$RUN/claude.err")
+    rc=$? secs=$((SECONDS - t0))
+    # This CLI prints an array of events; older versions print the result object.
+    local result='(if type == "array" then .[-1] else . end)'
+    jq -r "$result | select(.is_error | not) | .result // \"\"" "$RUN/claude.json" >"$RUN/claude.md" 2>/dev/null
+    extra=$(jq -c --argjson secs "$secs" "$result"' | {secs: $secs, cost_usd: .total_cost_usd, usage}' \
+        "$RUN/claude.json" 2>/dev/null) || extra="{\"secs\":$secs}"
+    if usable "$RUN/claude.md"; then
+        attempt claude ok "" "$extra"
+        REPORT="$RUN/claude.md"
+        return 0
+    fi
+    why=$(jq -r "$result | select(.is_error) | .result" "$RUN/claude.json" 2>/dev/null)
+    attempt claude failed "${why:-exit $rc and no report: see claude.err}" "$extra"
+    return 1
+}
+
+for b in $BACKENDS; do
+    case "$b" in
+        agy)    run_agy && break ;;
+        codex)  run_codex && break ;;
+        claude) run_claude && break ;;
+    esac
+done
+
+jq -n --arg target "${PR:+#$PR}" --arg base "$BASE" --arg tree "$DIR" --arg report "${REPORT:+$RUN/report.md}" \
+    --slurpfile attempts "$ATTEMPTS" '
+    {target: (if $target == "" then "branch" else $target end), base: $base, tree: $tree,
+     report: (if $report == "" then null else $report end),
+     backend: ([$attempts[] | select(.status == "ok") | .backend][0]),
+     attempts: $attempts}' >"$RUN/run.json"
+
+if [[ -z "$REPORT" ]]; then
+    note "every backend failed (details in $RUN/run.json):"
+    jq -r '"  \(.backend): \(.status): \(.reason)"' "$ATTEMPTS" >&2
+    exit 1
+fi
+cp "$REPORT" "$RUN/report.md"
+printf '%s\n' "$RUN/report.md"
