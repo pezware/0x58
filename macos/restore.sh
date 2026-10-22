@@ -1474,6 +1474,27 @@ setup_gh_context() {
     fi
 }
 
+# external-review sends one diff to a reviewer on another model (agy, then
+# codex, then claude) and writes the report to a file. The skill of the same
+# name drives it and verifies the findings.
+setup_external_review() {
+    echo "==> external-review (a second-opinion review from another model)"
+
+    if [[ ! -f "$BIN_DIR/external-review" ]]; then
+        echo "    external-review: MISSING from $BIN_DIR — skipped" >&2
+        return
+    fi
+    mkdir -p ~/.local/bin
+    install -m 755 "$BIN_DIR/external-review" ~/.local/bin/external-review
+    echo "    installed: ~/.local/bin/external-review (--pr, --base, --backends, --dry-run)"
+    # Each backend is optional and checked at run time. Name the absent ones now,
+    # so a rebuilt box does not find out in the middle of a review.
+    local b
+    for b in agy codex claude; do
+        command -v "$b" >/dev/null || echo "    external-review: $b is not on PATH, so that backend is skipped"
+    done
+}
+
 print_manual_steps() {
     # Repeat the gh failures here. Phase 3 of twelve scrolls away long before the
     # run ends, and an extension that never installed is silent afterwards --
@@ -1576,6 +1597,7 @@ setup_src_sync
 setup_gocache_switch
 setup_cache_cap
 setup_gh_context
+setup_external_review
 setup_git_identity
 setup_keymaster
 # Import before pruning: the prune asks "is this context defined anywhere?", so

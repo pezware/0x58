@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+#
+# Tests for external-review.
+#
+#   ./bin/external-review-test
+#
+# No test framework, matching bin/src-sync-test. Stub agy, codex, claude and gh
+# go first on PATH, log each call and read their scenario from STUB_* variables.
+# The fixture is a throwaway repository with a bare origin that also holds
+# refs/pull/7/head, and HOME points into the work directory, so no real account,
+# quota or ~/.codex session is touched.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TOOL="$HERE/external-review"
+
+pass=0
+fail=0
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_eq() {
+    if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]" ;;
+    esac
+}
+assert_lacks() {
+    case "$2" in
+    *"$3"*) no "$1" "output contained [$3]" ;;
+    *) ok "$1" ;;
+    esac
+}
+
+WORK="$(mktemp -d)"
+cleanup() {
+    case "$WORK" in /tmp/* | /var/folders/* | /private/var/folders/*) rm -rf "$WORK" ;; esac
+}
+trap cleanup EXIT
+
+STUB="$WORK/stub"
+REPO="$WORK/repo"
+ORIGIN="$WORK/origin.git"
+mkdir -p "$STUB" "$WORK/home"
+export HOME="$WORK/home"
+export STUB_LOG="$WORK/calls.log"
+export STUB_DIR="$WORK"
+export EXTERNAL_REVIEW_OUT="$WORK/out"
+unset EXTERNAL_REVIEW_BACKENDS
+
+# agy: `-p /usage` reports quota; any other `-p` is a review. The review stub
+# records its working directory, whether --sandbox was passed, and the prompt.
+cat >"$STUB/agy" <<'STUB_EOF'
+#!/usr/bin/env bash
+if [ "${2:-}" = "/usage" ]; then
+    echo "agy usage" >>"$STUB_LOG"
+    case "${STUB_AGY_USAGE:-ok}" in
+    ok) jq -n -c --arg a "${STUB_AGY_ARGON:-90}" \
+            '{status: "SUCCESS", response: ("Gemini Models\tWeekly Limit Remaining\t100%\t2026-10-29T00:00:00Z\nGemini 4 Argon\tGemini 4 Argon Weekly Limit\t" + $a + "%\t2026-10-29T00:00:00Z\n")}' ;;
+    ineligible) echo '{"status":"ERROR","response":"","error":"Eligibility check failed"}'; exit 1 ;;
+    esac
+    exit 0
+fi
+sandbox=no
+for a in "$@"; do [ "$a" = "--sandbox" ] && sandbox=yes; done
+echo "agy review cwd=$(pwd -P) sandbox=$sandbox" >>"$STUB_LOG"
+printf '%s' "$2" >"$STUB_DIR/agy-prompt.txt"
+case "${STUB_AGY_REVIEW:-ok}" in
+ok) jq -n -c '{status: "SUCCESS", response: "## Findings\n\nNone.\n\n## Not checked\n\n- agy stub\n", denied_actions: null,
+              usage: {input_tokens: 100, output_tokens: 10, thinking_tokens: 5, cache_read_tokens: 50, total_tokens: 110}}' ;;
+empty) echo '{"status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"RunCommand"}]}' ;;
+silent) exit 1 ;;
+esac
+STUB_EOF
+
+# codex: --version prints the identity; exec reads the prompt from stdin and
+# writes the report to --output-last-message.
+cat >"$STUB/codex" <<'STUB_EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+    echo "${STUB_CODEX_VERSION:-codex-cli 0.152.0}"
+    exit 0
+fi
+out="" dir="" prev=""
+for a in "$@"; do
+    [ "$prev" = "--output-last-message" ] && out=$a
+    [ "$prev" = "-C" ] && dir=$a
+    prev=$a
+done
+echo "codex exec dir=$dir" >>"$STUB_LOG"
+cat >"$STUB_DIR/codex-prompt.txt"
+case "${STUB_CODEX_REVIEW:-ok}" in
+ok)
+    printf '## Findings\n\nNone.\n\n## Not checked\n\n- codex stub\n' >"$out"
+    echo '{"type":"thread.started","thread_id":"t-stub"}'
+    echo '{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":150,"output_tokens":20,"reasoning_output_tokens":8}}'
+    ;;
+fail)
+    echo '{"type":"thread.started","thread_id":"t-stub"}'
+    echo '{"type":"error","message":"workspace credits depleted"}'
+    exit 1
+    ;;
+noheading)
+    echo 'Looks fine to me.' >"$out"
+    echo '{"type":"thread.started","thread_id":"t-stub"}'
+    ;;
+esac
+STUB_EOF
+
+# claude: the prompt arrives on stdin; this CLI version prints an event array.
+cat >"$STUB/claude" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "claude args=$* cwd=$(pwd -P)" >>"$STUB_LOG"
+cat >"$STUB_DIR/claude-prompt.txt"
+case "${STUB_CLAUDE_REVIEW:-ok}" in
+ok) jq -n -c '[{type: "system"}, {type: "result", is_error: false, total_cost_usd: 0.12,
+              result: "## Findings\n\nNone.\n\n## Not checked\n\n- claude stub\n",
+              usage: {input_tokens: 3, cache_read_input_tokens: 40, output_tokens: 9}}]' ;;
+fail) echo '[{"type":"result","is_error":true,"result":"API Error: overloaded"}]'; exit 1 ;;
+noheading) echo '[{"type":"result","is_error":false,"result":"Looks fine to me."}]' ;;
+esac
+STUB_EOF
+
+# uname decides how a worktree is removed: a sandboxed Linux session needs
+# devbox-worktree-rm. This stub removes the worktree the way the real one would.
+cat >"$STUB/uname" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "${STUB_UNAME:-Darwin}"
+STUB_EOF
+cat >"$STUB/devbox-worktree-rm" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "devbox-worktree-rm $*" >>"$STUB_LOG"
+common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)
+git -C "$(dirname "$common")" worktree remove --force "$1"
+STUB_EOF
+
+cat >"$STUB/gh" <<'STUB_EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$STUB_LOG"
+case "$*" in
+"pr view 7 --json"*)
+    jq -n -c --arg h "$STUB_PR_HEAD" '{headRefOid: $h, baseRefName: "main", title: "Stub PR title", body: "Stub PR body."}' ;;
+*) exit 1 ;;
+esac
+STUB_EOF
+chmod +x "$STUB"/*
+
+# The fixture: main holds one commit; branch feature adds one line, and origin
+# also carries it as pull request 7.
+g() { git -C "$REPO" -c user.name=fixture -c user.email=fixture -c commit.gpgsign=false "$@"; }
+git init -q --bare "$ORIGIN"
+git init -q -b main "$REPO"
+echo one >"$REPO/a.txt"
+g add a.txt && g commit -q -m base
+g remote add origin "$ORIGIN" && g push -q origin main
+g checkout -q -b feature
+echo two >>"$REPO/a.txt"
+g commit -q -am change
+g push -q origin feature:refs/pull/7/head
+STUB_PR_HEAD="$(g rev-parse HEAD)"
+export STUB_PR_HEAD
+REPO_REAL="$(cd "$REPO" && pwd -P)"
+
+# run_review <args...>: sets OUT, RC, ERR and RUNJSON for the last run.
+run_review() {
+    : >"$STUB_LOG"
+    OUT=$(cd "$REPO" && PATH="$STUB:$PATH" "$TOOL" "$@" 2>"$WORK/stderr")
+    RC=$?
+    ERR=$(cat "$WORK/stderr")
+    # A failed run prints no report path; stderr names its run.json instead.
+    RUNJSON="$(dirname "$OUT")/run.json"
+    [ -n "$OUT" ] || RUNJSON=$(sed -n 's/.*details in \(.*run\.json\).*/\1/p' <<<"$ERR")
+}
+scenario() {
+    unset STUB_AGY_USAGE STUB_AGY_ARGON STUB_AGY_REVIEW STUB_CODEX_VERSION STUB_CODEX_REVIEW STUB_CLAUDE_REVIEW \
+        STUB_UNAME EXTERNAL_REVIEW_BACKENDS
+    local kv
+    for kv in "$@"; do export "${kv?}"; done
+    return 0
+}
+field() { jq -r "$1" "$RUNJSON" 2>/dev/null; }
+calls() { cat "$STUB_LOG"; }
+
+echo "agy answers"
+scenario
+run_review
+assert_eq "exits 0" "$RC" "0"
+assert_eq "prints the report path" "$(basename "$OUT")" "report.md"
+assert_contains "the report holds the findings" "$(cat "$OUT" 2>/dev/null)" "## Findings"
+assert_eq "run.json names agy" "$(field .backend)" "agy"
+assert_contains "agy runs with --sandbox" "$(calls)" "sandbox=yes"
+assert_contains "agy runs in the repository" "$(calls)" "cwd=$REPO_REAL "
+assert_eq "agy quota is recorded" "$(field '.attempts[0].quota_before["Gemini 4 Argon / Gemini 4 Argon Weekly Limit"]')" "90"
+assert_contains "the prompt holds the diff" "$(cat "$WORK/agy-prompt.txt")" "+two"
+assert_contains "the prompt asks for the findings format" "$(cat "$WORK/agy-prompt.txt")" "### F1: <one-line title>"
+assert_lacks "codex is not called" "$(calls)" "codex"
+
+echo "agy returns an empty response after a denied command"
+scenario STUB_AGY_REVIEW=empty
+run_review
+assert_eq "falls through to codex" "$(field .backend)" "codex"
+assert_eq "the agy attempt failed" "$(field '.attempts[0].status')" "failed"
+assert_contains "the reason names the denial" "$(field '.attempts[0].reason')" "RunCommand"
+assert_contains "codex gets the prompt on stdin" "$(cat "$WORK/codex-prompt.txt")" "+two"
+assert_contains "codex reviews the repository" "$(calls)" "codex exec dir=$REPO_REAL"
+assert_eq "codex usage is recorded" "$(field '.attempts[1].usage.input')" "200"
+
+echo "agy is signed out or not verified"
+scenario STUB_AGY_USAGE=ineligible
+run_review
+assert_lacks "no agy review runs" "$(calls)" "agy review"
+assert_eq "the agy attempt is skipped" "$(field '.attempts[0].status')" "skipped"
+assert_eq "codex answers" "$(field .backend)" "codex"
+
+echo "agy under the weekly floor"
+scenario STUB_AGY_ARGON=11
+run_review
+assert_lacks "no agy review runs at 11%" "$(calls)" "agy review"
+assert_eq "the agy attempt is skipped" "$(field '.attempts[0].status')" "skipped"
+assert_contains "the reason names the level" "$(field '.attempts[0].reason')" "11%"
+assert_eq "codex answers" "$(field .backend)" "codex"
+scenario STUB_AGY_ARGON=12
+run_review
+assert_eq "agy answers at 12%" "$(field .backend)" "agy"
+scenario STUB_AGY_ARGON=12.5
+run_review
+assert_eq "a fractional level over the floor runs agy" "$(field .backend)" "agy"
+scenario STUB_AGY_ARGON=40
+AGY_MIN_WEEKLY=50 run_review
+assert_eq "AGY_MIN_WEEKLY moves the floor" "$(field '.attempts[0].status')" "skipped"
+AGY_MIN_WEEKLY=lots run_review
+assert_eq "a non-numeric AGY_MIN_WEEKLY exits 2" "$RC" "2"
+
+echo "an impostor named codex"
+scenario STUB_AGY_REVIEW=empty STUB_CODEX_VERSION=0.2.3
+run_review
+assert_lacks "codex exec never runs" "$(calls)" "codex exec"
+assert_contains "the reason names the identity" "$(field '.attempts[1].reason')" "0.2.3"
+assert_eq "claude answers" "$(field .backend)" "claude"
+
+echo "codex fails"
+scenario STUB_AGY_REVIEW=empty STUB_CODEX_REVIEW=fail
+run_review
+assert_contains "the reason carries codex's error" "$(field '.attempts[1].reason')" "credits depleted"
+assert_eq "claude answers" "$(field .backend)" "claude"
+assert_contains "claude gets the prompt on stdin" "$(cat "$WORK/claude-prompt.txt")" "+two"
+assert_contains "claude may not write" "$(calls)" "--disallowedTools Edit,Write,NotebookEdit,Bash"
+assert_eq "claude cost is recorded" "$(field '.attempts[2].cost_usd')" "0.12"
+
+echo "every backend fails"
+scenario STUB_AGY_REVIEW=empty STUB_CODEX_REVIEW=fail STUB_CLAUDE_REVIEW=fail
+run_review
+assert_eq "exits 1" "$RC" "1"
+assert_contains "stderr names agy" "$ERR" "agy: failed"
+assert_contains "stderr names codex" "$ERR" "codex: failed"
+assert_contains "stderr names claude" "$ERR" "claude: failed"
+
+echo "a backend that prints nothing still records its time"
+scenario STUB_AGY_REVIEW=silent
+run_review --backends agy
+assert_eq "exits 1" "$RC" "1"
+assert_eq "the agy attempt keeps secs" "$(field '.attempts[0].secs | type')" "number"
+assert_eq "the agy attempt keeps its quota" "$(field '.attempts[0].quota_before | type')" "object"
+
+echo "a report without the findings heading"
+scenario STUB_AGY_REVIEW=empty STUB_CODEX_REVIEW=noheading STUB_CLAUDE_REVIEW=noheading
+run_review
+assert_eq "codex is failed" "$(field '.attempts[1].status')" "failed"
+assert_contains "the codex reason names the heading" "$(field '.attempts[1].reason')" "no ## Findings heading"
+assert_contains "the claude reason names the heading" "$(field '.attempts[2].reason')" "no ## Findings heading"
+
+echo "--backends picks and orders"
+scenario
+run_review --backends claude
+assert_eq "claude answers" "$(field .backend)" "claude"
+assert_lacks "agy is not asked" "$(calls)" "agy"
+run_review --backends nope
+assert_eq "an unknown backend exits 2" "$RC" "2"
+scenario EXTERNAL_REVIEW_BACKENDS=claude,agy
+run_review
+assert_eq "EXTERNAL_REVIEW_BACKENDS takes a comma list" "$(field .backend)" "claude"
+
+echo "--pr reviews the pull request head in a detached worktree"
+scenario
+g checkout -q main
+run_review --pr 7
+assert_eq "exits 0" "$RC" "0"
+tree="$(field .tree)"
+assert_contains "agy reviews the worktree" "$(calls)" "cwd=$tree "
+assert_eq "the worktree is at the PR head" "$(git -C "$tree" rev-parse HEAD 2>/dev/null)" "$STUB_PR_HEAD"
+assert_contains "the prompt holds the PR title" "$(cat "$WORK/agy-prompt.txt")" "Stub PR title"
+assert_contains "the prompt holds the PR diff" "$(cat "$WORK/agy-prompt.txt")" "+two"
+assert_eq "the worktree stays for verification" "$(g worktree list | wc -l | tr -d ' ')" "2"
+assert_contains "run.json names the removal command" "$(field .remove)" "worktree remove --force"
+(cd "$REPO" && eval "$(field .remove)")
+assert_eq "the removal command removes the worktree" "$(g worktree list | wc -l | tr -d ' ')" "1"
+
+echo "--pr worktree goes when no report came back"
+scenario STUB_AGY_REVIEW=empty STUB_CODEX_REVIEW=fail STUB_CLAUDE_REVIEW=fail
+run_review --pr 7
+assert_eq "exits 1" "$RC" "1"
+assert_eq "no worktree is left" "$(g worktree list | wc -l | tr -d ' ')" "1"
+
+echo "--pr on a sandboxed Linux session"
+scenario STUB_UNAME=Linux
+run_review --pr 7
+assert_contains "run.json names devbox-worktree-rm" "$(field .remove)" "devbox-worktree-rm "
+scenario STUB_UNAME=Linux STUB_AGY_REVIEW=empty STUB_CODEX_REVIEW=fail STUB_CLAUDE_REVIEW=fail
+(cd "$REPO" && export PATH="$STUB:$PATH" && eval "$(field .remove)")
+run_review --pr 7
+assert_contains "cleanup uses devbox-worktree-rm" "$(calls)" "devbox-worktree-rm "
+assert_eq "no worktree is left" "$(g worktree list | wc -l | tr -d ' ')" "1"
+
+echo "nothing to review"
+scenario
+run_review
+assert_eq "HEAD equal to the base exits 2" "$RC" "2"
+assert_lacks "no backend is called" "$(calls)" "review"
+g checkout -q feature
+
+echo "--dry-run"
+scenario
+run_review --dry-run
+assert_eq "exits 0" "$RC" "0"
+assert_eq "prints the prompt path" "$(basename "$OUT")" "prompt.md"
+assert_eq "calls no backend" "$(calls)" ""
+
+echo "bad usage"
+run_review --pr
+assert_eq "--pr without a number exits 2" "$RC" "2"
+run_review --frobnicate
+assert_eq "an unknown flag exits 2" "$RC" "2"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
