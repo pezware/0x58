@@ -50,6 +50,7 @@ BACKENDS="${EXTERNAL_REVIEW_BACKENDS:-agy codex claude}"
 OUT_ROOT="${EXTERNAL_REVIEW_OUT:-${TMPDIR:-/tmp}/external-review}"
 AGY_MODEL="${AGY_MODEL:-gemini-4-argon}"
 AGY_EFFORT="${AGY_EFFORT:-high}"
+AGY_MIN_WEEKLY="${AGY_MIN_WEEKLY:-12}"
 # agy takes the prompt as one argument, and macOS caps arguments plus the
 # environment at 1 MiB. Refuse rather than truncate a diff the reviewer then
 # reports on as if it were whole.
@@ -60,7 +61,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr)       need "$@"; PR=$2; shift 2 ;;
         --base)     need "$@"; BASE=$2; shift 2 ;;
-        --backends) need "$@"; BACKENDS=${2//,/ }; shift 2 ;;
+        --backends) need "$@"; BACKENDS=$2; shift 2 ;;
         --dry-run)  DRY_RUN=1; shift ;;
         -h|--help)  usage 0 ;;
         *)          note "unknown argument: $1"; usage 2 ;;
@@ -68,6 +69,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$PR" || "$PR" =~ ^[0-9]+$ ]] || die "--pr takes a number, not '$PR'"
+[[ "$AGY_MIN_WEEKLY" =~ ^[0-9]+$ ]] || die "AGY_MIN_WEEKLY takes a whole percentage, not '$AGY_MIN_WEEKLY'"
+# The flag and EXTERNAL_REVIEW_BACKENDS both take "agy,claude" or "agy claude".
+BACKENDS=${BACKENDS//,/ }
 for b in $BACKENDS; do
     case "$b" in agy|codex|claude) ;; *) die "unknown backend '$b': use agy, codex or claude" ;; esac
 done
@@ -85,10 +89,21 @@ ATTEMPTS="$RUN/attempts.jsonl"
 : >"$ATTEMPTS"
 
 WT="" REPORT=""
+# The command that removes the PR worktree. In a sandboxed Linux session plain
+# `git worktree remove` fails, and --force deletes tracked files first, so
+# devbox-worktree-rm removes it from outside the sandbox when it exists.
+remove_cmd() {
+    if [[ "$(uname -s)" == Linux ]] && command -v devbox-worktree-rm >/dev/null; then
+        printf 'devbox-worktree-rm %q' "$WT"
+    else
+        printf 'git -C %q worktree remove --force %q' "$TOP" "$WT"
+    fi
+}
 # A PR worktree stays when a report came back: verifying the findings needs the
-# reviewed tree. It goes when there is nothing to verify.
+# reviewed tree, and run.json carries remove_cmd for afterwards. It goes when
+# there is nothing to verify.
 cleanup() {
-    [[ -n "$WT" && -z "$REPORT" ]] && git -C "$TOP" worktree remove --force "$WT" >/dev/null 2>&1
+    [[ -n "$WT" && -z "$REPORT" ]] && eval "$(remove_cmd)" >/dev/null 2>&1
     return 0
 }
 trap cleanup EXIT
@@ -187,13 +202,17 @@ agy_usage() {
         | from_entries' 2>/dev/null
 }
 
-# Whether agy has quota left for one review. $1 is agy_usage's object.
-#
-# TODO(andy): the budget policy. Measured 2026-10-21: one large review cost
-# 10-11 points of "Gemini 4 Argon / Gemini 4 Argon Weekly Limit", a failed run
-# 4-8, and the Gemini five-hour window never moved.
+# The lowest Gemini weekly bucket, in percent remaining, from agy_usage's
+# object. null when no bucket matches, for example after agy renames one.
+WEEKLY_LOW='[to_entries[] | select(.key | test("^Gemini.*Weekly")) | .value] | min'
+
+# Whether agy keeps AGY_MIN_WEEKLY percent of every Gemini weekly bucket. One
+# large review cost 10-11 points of the Argon weekly limit on 2026-10-21, and the
+# five-hour window never moved, so the floor sits on the weekly buckets. No
+# match passes: an agy that is truly out of quota still falls through, on its
+# empty report. jq compares, because a percentage may be fractional.
 agy_has_budget() {
-    return 0
+    jq -e --argjson floor "$AGY_MIN_WEEKLY" "$WEEKLY_LOW | . == null or . >= \$floor" <<<"$1" >/dev/null
 }
 
 # agy has file tools of its own. Steering it off the shell matters: one command
@@ -204,19 +223,26 @@ AGY_PREAMBLE='Read and search files with your built-in file tools. Do not run sh
 
 run_agy() {
     command -v agy >/dev/null || { attempt agy skipped "agy is not installed"; return 1; }
-    local before after rc secs t0 extra why
+    local before after rc secs t0 usage extra why
     before=$(agy_usage)
     [[ -n "$before" ]] || { attempt agy skipped "agy /usage failed: signed out or not verified (run: agy models)"; return 1; }
-    agy_has_budget "$before" || { attempt agy skipped "agy quota is under the budget floor" "{\"quota_before\":$before}"; return 1; }
+    agy_has_budget "$before" || {
+        attempt agy skipped "agy weekly quota is at $(jq "$WEEKLY_LOW" <<<"$before")%, under the ${AGY_MIN_WEEKLY}% floor" \
+            "{\"quota_before\":$before}"
+        return 1
+    }
     t0=$SECONDS
     (cd "$DIR" && agy -p "$AGY_PREAMBLE$(cat "$RUN/prompt.md")" --model "$AGY_MODEL" --effort "$AGY_EFFORT" \
         --sandbox --output-format json </dev/null >"$RUN/agy.json" 2>"$RUN/agy.err")
     rc=$? secs=$((SECONDS - t0))
     after=$(agy_usage)
     jq -r '.response // ""' "$RUN/agy.json" >"$RUN/agy.md" 2>/dev/null
-    extra=$(jq -c --argjson secs "$secs" --argjson before "$before" --argjson after "${after:-null}" --arg m "$AGY_MODEL" \
-        '{secs: $secs, model: $m, usage, quota_before: $before, quota_after: $after}' "$RUN/agy.json" 2>/dev/null) \
-        || extra="{\"secs\":$secs}"
+    # jq on an empty file prints nothing and exits 0, so build the object with
+    # -n and take only usage from the file.
+    usage=$(jq -c '.usage // null' "$RUN/agy.json" 2>/dev/null)
+    extra=$(jq -n -c --argjson secs "$secs" --arg m "$AGY_MODEL" --argjson usage "${usage:-null}" \
+        --argjson before "$before" --argjson after "${after:-null}" \
+        '{secs: $secs, model: $m, usage: $usage, quota_before: $before, quota_after: $after}')
     if usable "$RUN/agy.md"; then
         attempt agy ok "" "$extra"
         REPORT="$RUN/agy.md"
@@ -270,6 +296,7 @@ run_codex() {
     fi
     why=$(jq -r 'select(.type == "error" or .type == "turn.failed") | (.message // .error.message // "turn failed")' \
         "$RUN/codex.jsonl" 2>/dev/null | tail -1)
+    [[ -z "$why" && -s "$RUN/codex.md" ]] && why="the response holds no ## Findings heading"
     attempt codex failed "${why:-exit $rc and no report: see codex.err}" "$extra"
     return 1
 }
@@ -278,7 +305,7 @@ run_codex() {
 
 run_claude() {
     command -v claude >/dev/null || { attempt claude skipped "claude is not installed"; return 1; }
-    local rc secs t0 extra why
+    local rc secs t0 last extra why
     t0=$SECONDS
     # Read, Grep and Glob only: no shell and no writes. The prompt goes on stdin.
     (cd "$DIR" && claude -p --output-format json --allowedTools Read,Grep,Glob \
@@ -288,14 +315,17 @@ run_claude() {
     # This CLI prints an array of events; older versions print the result object.
     local result='(if type == "array" then .[-1] else . end)'
     jq -r "$result | select(.is_error | not) | .result // \"\"" "$RUN/claude.json" >"$RUN/claude.md" 2>/dev/null
-    extra=$(jq -c --argjson secs "$secs" "$result"' | {secs: $secs, cost_usd: .total_cost_usd, usage}' \
-        "$RUN/claude.json" 2>/dev/null) || extra="{\"secs\":$secs}"
+    # As in run_agy: an empty file gives jq nothing, so build the object with -n.
+    last=$(jq -c "$result" "$RUN/claude.json" 2>/dev/null)
+    extra=$(jq -n -c --argjson secs "$secs" --argjson r "${last:-null}" \
+        '{secs: $secs, cost_usd: $r.total_cost_usd, usage: $r.usage}')
     if usable "$RUN/claude.md"; then
         attempt claude ok "" "$extra"
         REPORT="$RUN/claude.md"
         return 0
     fi
     why=$(jq -r "$result | select(.is_error) | .result" "$RUN/claude.json" 2>/dev/null)
+    [[ -z "$why" && -s "$RUN/claude.md" ]] && why="the response holds no ## Findings heading"
     attempt claude failed "${why:-exit $rc and no report: see claude.err}" "$extra"
     return 1
 }
@@ -309,9 +339,10 @@ for b in $BACKENDS; do
 done
 
 jq -n --arg target "${PR:+#$PR}" --arg base "$BASE" --arg tree "$DIR" --arg report "${REPORT:+$RUN/report.md}" \
-    --slurpfile attempts "$ATTEMPTS" '
+    --arg remove "$([[ -n "$WT" && -n "$REPORT" ]] && remove_cmd)" --slurpfile attempts "$ATTEMPTS" '
     {target: (if $target == "" then "branch" else $target end), base: $base, tree: $tree,
      report: (if $report == "" then null else $report end),
+     remove: (if $remove == "" then null else $remove end),
      backend: ([$attempts[] | select(.status == "ok") | .backend][0]),
      attempts: $attempts}' >"$RUN/run.json"
 

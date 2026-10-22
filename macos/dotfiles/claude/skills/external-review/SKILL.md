@@ -26,7 +26,8 @@ the report path. `run.json` in the same directory names the backend that
 answered, the reviewed tree, the time, the tokens and the quota.
 
 The order is agy, then codex, then claude. A backend that is missing, signed
-out, under its budget floor or silent falls through to the next one.
+out, under its budget floor or silent falls through to the next one. agy's floor
+is 12% of each Gemini weekly bucket (`AGY_MIN_WEEKLY`).
 `EXTERNAL_REVIEW_BACKENDS` sets the order for a whole session.
 
 | Exit | Meaning |
@@ -65,8 +66,9 @@ backend, time, and quota used, taken from `run.json`.
 Posting to GitHub is an outward-facing action. Get the user's go-ahead first,
 then use the runbook's review format: Issue, Question, Expected, verdict line.
 
-For a PR run, remove the worktree when you finish:
-`git worktree remove --force <tree>`.
+For a PR run, remove the worktree when you finish: run the command in `.remove`
+in `run.json`. It names `devbox-worktree-rm` in a sandboxed Linux session, where
+plain `git worktree remove --force` deletes tracked files and then fails.
 
 ## Setup and failure modes
 

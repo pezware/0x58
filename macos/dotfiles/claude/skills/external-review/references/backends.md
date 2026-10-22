@@ -41,7 +41,9 @@ tool always passes it.
 **Quota.** `agy -p /usage` costs 0 tokens. It reports separate buckets: Gemini
 5-hour and weekly windows, "Claude and GPT models", and a Gemini 4 Argon weekly
 limit. Only the Argon weekly limit moved: 10 to 11 points per large review, 4 to
-8 per failed run. The Gemini 5-hour window never moved.
+8 per failed run. The Gemini 5-hour window never moved. So the tool skips agy
+when any Gemini weekly bucket is under 12%, which keeps one more large review
+possible. `AGY_MIN_WEEKLY` moves the floor.
 
 **Speed.** 491 to 671 seconds per review, 3.7 to 5 times slower than codex on
 the same PR.
