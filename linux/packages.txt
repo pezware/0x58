@@ -124,6 +124,15 @@ postgresql-client # psql against a service in kind or a compose stack
 # source", which is still false.
 build-essential   # pulls binutils (ld/as/ar) and libc6-dev; gcc alone is not enough
 
+# === Browser for go-monorepo's Playwright e2e tests ===
+# Debian's build, not the Chromium that playwright-go downloads. playwright-go
+# v0.6201.1 pins Chromium 151, behind 4 Critical fixes in Chrome 156.0.8078.73
+# (2026-10-27), and only a new playwright-go release moves it. Debian security
+# ships this one: trixie-security had 156.0.8078.79-1~deb13u1 on 2026-11-03.
+# Playwright's `chrome` channel looks for Google Chrome, so tests must launch
+# this by path. It updates on `apt upgrade` only; unattended-upgrades is off.
+chromium-headless-shell   # /usr/bin/chromium-headless-shell, ~230 MB installed
+
 # === Optional — uncomment per box, not by default ===
 # Deliberately off: this is a 2-4 GB laptop and the point is to stay minimal.
 #
