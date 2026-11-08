@@ -3,7 +3,7 @@
 Personal system configuration backup — quick bootstrap for macOS, Linux VMs, or a
 headless Linux server.
 
-Core workflow: kitty + bash + nvim + git + w3m + claude/codex + gcloud.
+Core workflow: kitty + bash + nvim + git + w3m + claude (+ optional codex) + gcloud.
 
 ## Quick Start
 
@@ -49,7 +49,7 @@ macos/
     config-kitty/                  # Kitty terminal config
     config-tmux/                   # tmux config (cross-platform; tpm + resurrect)
     config-git/                    # Global gitignore + allowed_signers
-    codex/config.toml              # Codex CLI config (cli_auth_credentials_store="auto")
+    codex/config.toml              # Codex CLI config, optional agent (cli_auth_credentials_store="auto")
     kube/                          # README + exec-based GKE/EKS configs (no secrets)
     w3m/                           # w3m config + keymap
 
@@ -72,7 +72,7 @@ Every credential type is at-rest encrypted. Hierarchy by what holds it:
 | Tier | Backend | What's there |
 |---|---|---|
 | Hardware | Secure Enclave (Secretive) | SSH key (git, server access) — non-transferable per machine |
-| macOS Keychain | login.keychain-db | GPG cold backup (`gpg-archive-b64`), Codex auth (`Codex Auth`), Claude Code (`Claude Code-credentials-*`), `gh` token, `glab` token (`--use-keyring`), Docker auths (`credsStore: osxkeychain`) |
+| macOS Keychain | login.keychain-db | GPG cold backup (`gpg-archive-b64`), Codex auth (`Codex Auth`, only when opted in), Claude Code (`Claude Code-credentials-*`), `gh` token, `glab` token (`--use-keyring`), Docker auths (`credsStore: osxkeychain`) |
 | Session-only | `~/.config/gcloud/credentials.db` | gcloud refresh token — removed by `gcloud_logout` at end of work session |
 | On disk | `~/.npmrc` | npm registry token (no keychain integration) |
 
@@ -81,7 +81,7 @@ GPG private keys are NOT in `~/.gnupg/private-keys-v1.d/` between sessions — t
 ## Key facts
 
 - **`~/src` is a plain directory on the internal disk** — it used to be an auto-mounted partition on an external drive, retired 2026-08-09 (see [login-items.md](macos/login-items.md#history-external-drive-auto-mount-retired-2026-08-09)). Only repos actively worked on locally live there; everything else is re-cloned on demand.
-- **External SSD `pourquoimoi`** — the Go build cache, the podman and OrbStack VM disks, and `~/.codex` live on an encrypted SSD since 2026-10-20. Run `pourquoimoi-eject` before you unplug it. See [external-ssd.md](macos/external-ssd.md).
+- **External SSD `pourquoimoi`** — the Go build cache and the podman and OrbStack VM disks live on an encrypted SSD since 2026-10-20. Run `pourquoimoi-eject` before you unplug it. See [external-ssd.md](macos/external-ssd.md).
 - **Claude config** — real directory is `~/src/claude`; `~/.claude` is a symlink pointing to it (`~/.claude → ~/src/claude`). On a fresh machine the target does not exist yet, so create it before linking (`mkdir -p ~/src/claude`) or you get a dangling symlink. The symlink *is* the indirection — `CLAUDE_CONFIG_DIR` is not set. Inventory sync reads through the stable `~/.claude` path. Re-link only when `~/.claude` is absent (`ln -s ~/src/claude ~/.claude`); never link `~/.claude` onto an existing symlink (creates a nested link) and never make `~/src/claude` itself a symlink (would loop).
 - **Secretive** — SSH via Secure Enclave (non-transferable per machine — must be re-created on new hardware)
 - **Migration Assistant** is the recommended path for new-machine setup; it transfers the login keychain so all credential restores Just Work afterwards

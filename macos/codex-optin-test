@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+#
+# Tests for the Codex opt-in: dotfiles/mise/conf.d/codex.toml.
+#
+#   ./macos/codex-optin-test
+#
+# Codex is an optional agent. One link turns it on everywhere:
+#   ~/.config/mise/conf.d/codex.toml -> dotfiles/mise/conf.d/codex.toml
+# mise installs it only through that link, and bashrc defines the codex()
+# wrapper only when the link exists.
+#
+# Isolation is $HOME and MISE_CONFIG_DIR, so the real ~/.config/mise is never
+# read or written. Needs mise on PATH, and nothing else.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+SHARED="$REPO/dotfiles/mise/config.toml"
+OPTIN="$REPO/dotfiles/mise/conf.d/codex.toml"
+BASHRC="$HERE/dotfiles/bashrc"
+RESTORE="$HERE/restore.sh"
+REPO_CODEX="$HERE/dotfiles/codex/config.toml"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]: $2" ;;
+    esac
+}
+assert_not_contains() {
+    case "$2" in
+    *"$3"*) no "$1" "output should not contain [$3]: $2" ;;
+    *) ok "$1" ;;
+    esac
+}
+
+new_home() {
+    local d
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+    mkdir -p "$d/.config/mise"
+    ln -s "$SHARED" "$d/.config/mise/config.toml"
+    printf '%s' "$d"
+}
+opt_in() {
+    mkdir -p "$1/.config/mise/conf.d"
+    ln -s "$OPTIN" "$1/.config/mise/conf.d/codex.toml"
+}
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        rm -rf "$d"
+    done
+}
+trap cleanup EXIT
+
+# The tool names mise would install for this HOME, space-delimited on one line
+# with a space at each end, so " codex " matches the whole name only.
+mise_tools() {
+    local names
+    names="$( (cd "$1" && HOME="$1" MISE_CONFIG_DIR="$1/.config/mise" mise config ls 2>/dev/null) |
+        sed -E 's/^[^ ]+ +//' | tr ',' ' ' | tr -s ' \n' ' ')"
+    printf ' %s ' "$names"
+}
+# "function" when sourcing bashrc defines codex(), empty otherwise.
+codex_wrapper() {
+    HOME="$1" bash --norc -i -c "source '$BASHRC' >/dev/null 2>&1; type -t codex" 2>/dev/null |
+        grep -x function
+}
+
+echo "mise"
+h="$(new_home)"
+assert_not_contains "the shared config does not install codex" "$(mise_tools "$h")" " codex "
+
+h="$(new_home)"
+opt_in "$h"
+assert_contains "the conf.d link installs codex" "$(mise_tools "$h")" " codex "
+
+echo "bashrc"
+h="$(new_home)"
+assert_not_contains "no codex() wrapper without the link" "$(codex_wrapper "$h")" "function"
+
+h="$(new_home)"
+opt_in "$h"
+assert_contains "codex() wrapper with the link" "$(codex_wrapper "$h")" "function"
+
+echo "restore.sh"
+# restore.sh runs every step when sourced, so load only the one function.
+place_fn="$(awk '/^place_codex_config\(\) \{/,/^\}/' "$RESTORE")"
+if [ -z "$place_fn" ]; then
+    no "restore.sh defines place_codex_config"
+else
+    # A fresh bash per call, as restore.sh runs. Inside one shell, ~ kept the old
+    # home after HOME changed (measured on bash 5.3.20), and the function uses ~.
+    place() {
+        HOME="$1" bash --norc -c "$place_fn"$'\nplace_codex_config "$1" "$2"' _ "$2" "$REPO_CODEX" >/dev/null
+    }
+
+    h="$(new_home)"
+    place "$h" macos
+    if [ ! -e "$h/.codex/config.toml" ]; then ok "macos, not opted in: no config"; else no "macos, not opted in: no config"; fi
+
+    h="$(new_home)"
+    opt_in "$h"
+    place "$h" macos
+    if cmp -s "$REPO_CODEX" "$h/.codex/config.toml"; then ok "macos, opted in: repo config placed"; else no "macos, opted in: repo config placed"; fi
+
+    # The defect this guards: a re-run copied the repo file over the live one and
+    # erased the tables Codex writes for itself.
+    h="$(new_home)"
+    opt_in "$h"
+    mkdir -p "$h/.codex"
+    printf '[plugins."written-by-codex"]\nenabled = true\n' > "$h/.codex/config.toml"
+    place "$h" macos
+    if grep -q 'written-by-codex' "$h/.codex/config.toml"; then
+        ok "macos, re-run: live config kept"
+    else
+        no "macos, re-run: live config kept" "the repo copy replaced the live config"
+    fi
+
+    h="$(new_home)"
+    opt_in "$h"
+    place "$h" linux
+    if [ ! -e "$h/.codex/config.toml" ]; then ok "linux: left to the hardening step"; else no "linux: left to the hardening step"; fi
+fi
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

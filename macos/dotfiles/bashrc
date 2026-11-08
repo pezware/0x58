@@ -57,23 +57,29 @@ alias config='git --git-dir=$HOME/.mydot/ --work-tree=$HOME'
 # shells — Claude Code's Bash tool and any script got the unhardened defaults.
 # It now lives in ~/.codex/config.toml on Linux (see linux/codex-hardening.toml),
 # so every invocation path gets it and this wrapper only picks a model.
-_CODEX_FLAGS=(-m gpt-5.6-sol)
-
-# A function, not an alias, because -p and -m are only valid on RUNTIME
-# subcommands. An alias prepends them to everything, so `codex login` failed with
-# "--profile only applies to runtime commands" — which is a confusing way to
-# discover your own shell config is in the way while you are trying to log in.
 #
-# Default is to add the flags (bare `codex`, `codex exec`, and `codex "prompt"`
-# all want them); only the housekeeping subcommands pass through untouched.
-codex() {
-    case "${1:-}" in
-        login|logout|completion|help|--help|-h|--version|-V)
-            command codex "$@" ;;
-        *)
-            command codex "${_CODEX_FLAGS[@]}" "$@" ;;
-    esac
-}
+# Codex is opt-in (dotfiles/mise/conf.d/codex.toml), so the wrapper exists only
+# with that link. The test is the link, not `command -v codex`: mise activates
+# further down, so codex is not on PATH yet at this line.
+if [[ -e ~/.config/mise/conf.d/codex.toml ]]; then
+    _CODEX_FLAGS=(-m gpt-5.6-sol)
+
+    # A function, not an alias, because -p and -m are only valid on RUNTIME
+    # subcommands. An alias prepends them to everything, so `codex login` failed with
+    # "--profile only applies to runtime commands" — which is a confusing way to
+    # discover your own shell config is in the way while you are trying to log in.
+    #
+    # Default is to add the flags (bare `codex`, `codex exec`, and `codex "prompt"`
+    # all want them); only the housekeeping subcommands pass through untouched.
+    codex() {
+        case "${1:-}" in
+            login|logout|completion|help|--help|-h|--version|-V)
+                command codex "$@" ;;
+            *)
+                command codex "${_CODEX_FLAGS[@]}" "$@" ;;
+        esac
+    }
+fi
 
 # PATH setup - ensure critical directories are in PATH
 # ~/go/bin and ~/.cargo/bin intentionally excluded — manage Rust/Go tools via mise

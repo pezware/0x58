@@ -11,7 +11,10 @@ internal disk went from 26 GiB free to 80 GiB free.
 | Go build cache | `go-build/` | `bin/gocache-switch`, a LaunchAgent, runs `go env -w GOCACHE` on every mount and unmount | Go uses `~/Library/Caches/go-build`, which `bin/cache-cap` keeps under 20 GiB |
 | Podman VM disk | `podman/applehv/podman-machine-default-arm64.raw` | symlink at the same name in `~/.local/share/containers/podman/machine/applehv/` | `podman machine start` should fail on the missing disk (not tested) |
 | OrbStack data | `orbstack/data/` | symlink from `~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data` | OrbStack refuses to start: `mkdir … data: file exists`. It does not replace the symlink. |
-| Codex home | `codex/` | symlink from `~/.codex` | Codex refuses to start: `Error loading configuration` |
+
+Until 2026-11-08 the SSD also held `~/.codex` (a symlink to `codex/`). That day
+the Mac dropped Codex, which is now opt-in (`dotfiles/mise/conf.d/codex.toml`).
+If you opt back in and move `~/.codex` here again, the Codex traps below apply.
 
 Claude Code stays on the internal disk (`~/.claude → ~/src/claude`). Its
 transcripts and `memory/` folders are state, not cache: nothing rebuilds them.
