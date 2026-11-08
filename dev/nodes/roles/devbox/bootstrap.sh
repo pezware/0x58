@@ -47,6 +47,10 @@ if first_boot; then
     as_user 'mkdir -p ~/.config/mise && ln -sfn ~/src/public/0x58/dotfiles/mise/config.toml ~/.config/mise/config.toml' \
         || log "mise config symlink failed (non-fatal)"
     as_user 'mise trust ~/.config/mise/config.toml' >/dev/null 2>&1 || true
+    # Codex is an optional agent. The devbox runs Codex reviews, so it opts in.
+    as_user 'mkdir -p ~/.config/mise/conf.d && ln -sfn ~/src/public/0x58/dotfiles/mise/conf.d/codex.toml ~/.config/mise/conf.d/codex.toml' \
+        || log "codex opt-in symlink failed (non-fatal)"
+    as_user 'mise trust ~/.config/mise/conf.d/codex.toml' >/dev/null 2>&1 || true
     if as_user 'mise install'; then
         log "mise toolchain installed"
     else

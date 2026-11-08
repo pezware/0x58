@@ -1,6 +1,6 @@
 # macOS Setup Guide
 
-Minimal bootstrap for: kitty + bash + nvim + git + w3m + claude/codex + gcloud.
+Minimal bootstrap for: kitty + bash + nvim + git + w3m + claude (+ optional codex) + gcloud.
 
 ## Quick Start
 
@@ -66,9 +66,9 @@ All CLI auth lands in macOS Keychain when you log in:
 gh auth login                                        # token → keychain (gh.com:oauth_token)
 glab auth login --hostname gitlab.com --use-keyring  # token → keychain (no disk write)
 claude auth login     # OAuth bundle → keychain (Claude Code-credentials-*)
-codex login           # OAuth bundle → keychain (Codex Auth)
-                      # — requires cli_auth_credentials_store = "auto" in ~/.codex/config.toml,
-                      #   which is restored by restore.sh
+codex login           # OPTIONAL — only after the opt-in in dotfiles/mise/conf.d/codex.toml.
+                      # OAuth bundle → keychain (Codex Auth); requires
+                      # cli_auth_credentials_store = "auto" in ~/.codex/config.toml (restore.sh)
 ```
 gcloud has no keychain support — use the session helpers in `~/.bash/gcloud-session.bash`:
 ```bash
@@ -193,10 +193,10 @@ gpg_backup_to_keychain                    # re-stage in new machine's keychain
 - [ ] `gpg --list-keys` shows your 3 keys (after `gpg_restore_from_keychain` if needed)
 - [ ] `gh auth status` shows logged in
 - [ ] `claude auth status` shows logged in (`apiProvider: firstParty`)
-- [ ] `codex --version` runs (auth is keychain-backed; no `~/.codex/auth.json`)
+- [ ] If Codex is opted in: `codex --version` runs (auth is keychain-backed; no `~/.codex/auth.json`)
 - [ ] `gcloud_status` shows active account after `gcloud_login`
 - [ ] `kubectl config current-context` resolves (gke-stg-ro by default)
-- [ ] `claude` and `codex` work
+- [ ] `claude` works (and `codex`, if opted in)
 - [ ] `w3m https://example.com` renders
 - [ ] Caps Lock acts as Control
 - [ ] `brew bundle check --file=macos/Brewfile` passes

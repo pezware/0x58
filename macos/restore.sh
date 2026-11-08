@@ -116,6 +116,23 @@ report_claude_md_drift() {
     fi
 }
 
+# Codex config; auth lands in the macOS Keychain via cli_auth_credentials_store="auto".
+# macOS only: on Linux the hardening step in place_dotfiles writes this file. Copy only
+# when absent, because Codex writes its own tables (plugins, hooks, marketplaces) into the
+# live file, and inventory.sh syncs live to tracked, never back.
+place_codex_config() {
+    local platform="$1" repo_config="$2"
+    [[ "$platform" == "macos" && -f "$repo_config" ]] || return 0
+    if [[ ! -e ~/.config/mise/conf.d/codex.toml ]]; then
+        echo "    codex: not opted in — skipped (see dotfiles/mise/conf.d/codex.toml)"
+    elif [[ ! -f ~/.codex/config.toml ]]; then
+        mkdir -p ~/.codex
+        cp -v "$repo_config" ~/.codex/config.toml
+    elif ! cmp -s "$repo_config" ~/.codex/config.toml; then
+        echo "    codex: kept the live ~/.codex/config.toml (it differs from the repo copy)"
+    fi
+}
+
 # --- Phase 2: Dotfiles ---
 place_dotfiles() {
     echo "==> Placing dotfiles"
@@ -186,11 +203,7 @@ place_dotfiles() {
     cp -v "$DOTFILES/w3m/config" ~/.w3m/
     cp -v "$DOTFILES/w3m/keymap" ~/.w3m/
 
-    # codex (config only; auth lands in macOS Keychain via cli_auth_credentials_store="auto")
-    if [[ -f "$DOTFILES/codex/config.toml" ]]; then
-        mkdir -p ~/.codex
-        cp -v "$DOTFILES/codex/config.toml" ~/.codex/config.toml
-    fi
+    place_codex_config "$PLATFORM" "$DOTFILES/codex/config.toml"
 
     # ssh config fragment for tailnet nodes (macOS side — this is the client).
     #
@@ -1557,12 +1570,13 @@ MANUAL
   2. GPG (if needed):
      gpg --import /path/to/gpg-private.asc
 
-  3. Claude (native installer; codex comes from mise config):
+  3. Claude (native installer):
      curl -fsSL https://claude.ai/install.sh | bash
 
   4. mise tools (config is symlinked from the 0x58 repo):
      ln -sf ~/src/public/0x58/dotfiles/mise/config.toml ~/.config/mise/config.toml
      mise trust ~/.config/mise/config.toml && mise install
+     Codex is optional: the header of dotfiles/mise/conf.d/codex.toml opts in.
 
   5. SSH access from the Mac (Secretive key stays on the Mac — only the
      PUBLIC half comes here, so the Secure Enclave key is never transferred):
