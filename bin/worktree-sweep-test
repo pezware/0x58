@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+#
+# Tests for worktree-sweep.
+#
+#   ./bin/worktree-sweep-test
+#
+# Same shape as bin/src-sync-test: no framework, a local bare remote, scratch
+# directories only, so it never touches the network or a real checkout. A stub
+# `gh` on PATH answers the PR lookups.
+#
+# The cases come from #121: a `dontdelete` marker left in a merged worktree made
+# every removal fail, while the sweep still listed the worktree as removable.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SWEEP="$HERE/worktree-sweep"
+
+pass=0
+fail=0
+TMPDIRS=()
+
+ok() {
+    pass=$((pass + 1))
+    printf '  ok    %s\n' "$1"
+}
+no() {
+    fail=$((fail + 1))
+    printf '  FAIL  %s\n' "$1"
+    [ $# -gt 1 ] && printf '        %s\n' "$2"
+    return 0
+}
+assert_contains() {
+    case "$2" in
+    *"$3"*) ok "$1" ;;
+    *) no "$1" "output did not contain [$3]" ;;
+    esac
+}
+assert_exists() { if [ -e "$2" ]; then ok "$1"; else no "$1" "missing: $2"; fi; }
+assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else no "$1" "still there: $2"; fi; }
+
+cleanup() {
+    local d
+    for d in ${TMPDIRS+"${TMPDIRS[@]}"}; do
+        case "$d" in /tmp/* | /var/folders/*) rm -rf "$d" ;; esac
+    done
+}
+trap cleanup EXIT
+
+# Scratch commits must never ask for a signature.
+g() { git -c user.email=t@t -c user.name=t -c commit.gpgsign=false "$@"; }
+
+# <d>/repo is the primary checkout of the bare <d>/origin.git, on main. <d>/bin
+# holds a stub gh: PR 7 is merged, PR 8 is open, and no branch has a PR.
+new_repo() {
+    local d
+    d="$(mktemp -d)"
+    TMPDIRS+=("$d")
+    git init -q --bare -b main "$d/origin.git"
+    git clone -q "$d/origin.git" "$d/repo" 2>/dev/null
+    g -C "$d/repo" commit -q --allow-empty -m init
+    g -C "$d/repo" push -q origin main
+    g -C "$d/repo" remote set-head origin main
+    mkdir -p "$d/bin"
+    cat >"$d/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+*"pr view 7 "*) echo MERGED ;;
+*"pr view 8 "*) echo OPEN ;;
+*"pr list"*) echo "[]" ;;
+*) exit 1 ;;
+esac
+EOF
+    chmod +x "$d/bin/gh"
+    printf '%s' "$d"
+}
+
+# Someone else's work lands on main.
+advance_main() {
+    g -C "$1/repo" commit -q --allow-empty -m "other work $RANDOM"
+    g -C "$1/repo" push -q origin main
+    g -C "$1/repo" fetch -q origin
+}
+
+# A worktree on a new branch, with no commit of its own.
+fresh_worktree() {
+    g -C "$1/repo" branch -q --no-track "$2" origin/main
+    g -C "$1/repo" worktree add -q "$1/wt-$2" "$2"
+}
+
+# A worktree whose branch has one commit, merged into main with a merge commit.
+merged_worktree() {
+    fresh_worktree "$1" "$2"
+    g -C "$1/wt-$2" commit -q --allow-empty -m "work on $2"
+    g -C "$1/repo" merge -q --no-ff -m "merge $2" "$2"
+    g -C "$1/repo" push -q origin main
+    g -C "$1/repo" fetch -q origin
+}
+
+sweep() {
+    local d="$1"
+    shift
+    (cd "$d/repo" && PATH="$d/bin:$PATH" "$SWEEP" "$@" 2>&1)
+}
+
+line_for() { printf '%s\n' "$1" | grep -F "$2" || true; }
+
+echo "== a branch with no commit of its own stays fresh after main moves"
+D="$(new_repo)"
+fresh_worktree "$D" f
+advance_main "$D"
+assert_contains "lists it as fresh" "$(line_for "$(sweep "$D")" "wt-f")" "fresh"
+
+echo
+echo "== a merged worktree that holds the marker is kept"
+D="$(new_repo)"
+merged_worktree "$D" k
+touch "$D/wt-k/dontdelete"
+assert_contains "lists it as kept" "$(line_for "$(sweep "$D")" "wt-k")" "kept"
+sweep "$D" --remove >/dev/null
+assert_exists "--remove leaves it" "$D/wt-k"
+sweep "$D" --remove --clear-markers >/dev/null
+assert_gone "--remove --clear-markers removes it" "$D/wt-k"
+
+echo
+echo "== --clear-markers never touches an unmerged worktree"
+D="$(new_repo)"
+fresh_worktree "$D" u
+g -C "$D/wt-u" commit -q --allow-empty -m "unmerged work"
+touch "$D/wt-u/dontdelete"
+sweep "$D" --remove --clear-markers >/dev/null
+assert_exists "the marker stays" "$D/wt-u/dontdelete"
+
+echo
+echo "== a failed removal puts the marker back"
+D="$(new_repo)"
+merged_worktree "$D" x
+touch "$D/wt-x/dontdelete" "$D/wt-x/notes.txt"
+sweep "$D" --remove --clear-markers >/dev/null
+assert_exists "the worktree stays, because git refuses its untracked notes" "$D/wt-x/notes.txt"
+assert_exists "the marker is back" "$D/wt-x/dontdelete"
+
+echo
+echo "== a merged, clean worktree is still removed"
+D="$(new_repo)"
+merged_worktree "$D" m
+sweep "$D" --remove >/dev/null
+assert_gone "--remove removes it" "$D/wt-m"
+
+echo
+echo "== detached review worktrees are judged by their PR"
+D="$(new_repo)"
+g -C "$D/repo" worktree add -q --detach "$D/repo-pr7" origin/main
+g -C "$D/repo" worktree add -q --detach "$D/repo-pr8" origin/main
+out="$(sweep "$D")"
+assert_contains "a merged PR lists as merged" "$(line_for "$out" "repo-pr7")" "merged"
+assert_contains "an open PR stays detached" "$(line_for "$out" "repo-pr8")" "detached"
+sweep "$D" --remove >/dev/null
+assert_gone "--remove removes the merged one" "$D/repo-pr7"
+assert_exists "--remove leaves the open one" "$D/repo-pr8"
+
+echo
+echo "== the session line counts kept worktrees"
+D="$(new_repo)"
+merged_worktree "$D" s
+touch "$D/wt-s/dontdelete"
+assert_contains "names the kept worktree" "$(sweep "$D" --session-json)" "kept"
+
+echo
+printf '%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
