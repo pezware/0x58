@@ -44,6 +44,9 @@ WHAT IT REFUSES TO REMOVE
   - a worktree with modified tracked files. That is somebody mid-thought.
   - the worktree you are standing in.
   - anything it could not prove merged.
+  - a branch with a commit that no merged PR contains. A squash merge makes
+    `git branch -d` refuse, so the sweep uses -D only when a merged PR's head
+    holds the branch tip. Otherwise it keeps the branch and prints why.
   - a merged worktree that holds a `dontdelete` file. It lists as KEPT. Somebody
     asked to keep it; `--clear-markers` deletes the marker and removes it, and
     puts the marker back when git refuses the removal.
@@ -110,23 +113,30 @@ def default_ref(repo):
     return None
 
 
-def merged_via_gh(repo, branch):
-    """True / False / None(unknown). Best effort, short leash."""
+def merged_pr_heads(repo, branch):
+    """[(number, head sha), ...] for the merged PRs from this branch, or None
+    when gh cannot answer. Best effort, short leash."""
     if not shutil.which("gh"):
         return None
     try:
         r = subprocess.run(
             ["gh", "pr", "list", "--head", branch, "--state", "merged",
-             "--json", "number", "--limit", "1"],
+             "--json", "number,headRefOid", "--limit", "10"],
             cwd=repo, capture_output=True, text=True, timeout=15)
     except Exception:
         return None
     if r.returncode != 0:
         return None
     try:
-        return len(json.loads(r.stdout or "[]")) > 0
+        return [(str(p["number"]), p["headRefOid"]) for p in json.loads(r.stdout or "[]")]
     except Exception:
         return None
+
+
+def merged_via_gh(repo, branch):
+    """True / False / None(unknown)."""
+    heads = merged_pr_heads(repo, branch)
+    return None if heads is None else bool(heads)
 
 
 def pr_state_via_gh(path, number):
@@ -208,11 +218,34 @@ def remove(repo, path, branch):
         return False, str(e)
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip().splitlines()[-1:] or ["failed"]
-    # -d refuses an unmerged branch, which is the safety we want here. A
-    # detached review worktree has no branch to delete.
-    if branch:
-        git(repo, "branch", "-d", branch)
-    return True, None
+    # A detached review worktree has no branch to delete.
+    return True, (delete_branch(repo, branch) if branch else None)
+
+
+def delete_branch(repo, branch):
+    """Delete the branch of a removed worktree. None when it is gone, else
+    the reason it stays, which the caller prints."""
+    if git_ok(repo, "branch", "-d", branch):
+        return None
+    # A squash merge leaves the branch out of main's history, so -d refuses.
+    # -D is safe when a merged PR's head contains the tip: every local commit
+    # reached that PR.
+    tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+    heads = merged_pr_heads(repo, branch)
+    if not tip or not heads:
+        return f"branch {branch} kept: git branch -d refused, and gh names no merged PR"
+    for number, head in heads:
+        if not git_ok(repo, "cat-file", "-e", f"{head}^{{commit}}"):
+            # GitHub keeps refs/pull/<N>/head after the branch is deleted.
+            # --no-write-fetch-head keeps fetch_age about origin/main. Never
+            # --depth: on a full clone it makes every worktree shallow.
+            git_ok(repo, "fetch", "-q", "--no-write-fetch-head", "origin",
+                   f"refs/pull/{number}/head", timeout=60)
+        if git_ok(repo, "merge-base", "--is-ancestor", tip, head):
+            if git_ok(repo, "branch", "-D", branch):
+                return None
+            return f"branch {branch} kept: git branch -D failed"
+    return f"branch {branch} kept: it holds a commit that no merged PR contains"
 
 
 def remove_kept(repo, path, branch):

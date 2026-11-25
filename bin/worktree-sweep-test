@@ -50,7 +50,8 @@ trap cleanup EXIT
 g() { git -c user.email=t@t -c user.name=t -c commit.gpgsign=false "$@"; }
 
 # <d>/repo is the primary checkout of the bare <d>/origin.git, on main. <d>/bin
-# holds a stub gh: PR 7 is merged, PR 8 is open, and no branch has a PR.
+# holds a stub gh: PR 7 is merged, PR 8 is open. A branch has a merged PR only
+# when <d>/bin/merged-<branch>.json holds the list that gh would print.
 new_repo() {
     local d
     d="$(mktemp -d)"
@@ -66,7 +67,11 @@ new_repo() {
 case "$*" in
 *"pr view 7 "*) echo MERGED ;;
 *"pr view 8 "*) echo OPEN ;;
-*"pr list"*) echo "[]" ;;
+*"pr list"*)
+    b=""
+    while [ $# -gt 0 ]; do [ "$1" = "--head" ] && b="$2"; shift; done
+    f="$(dirname "$0")/merged-$b.json"
+    if [ -f "$f" ]; then cat "$f"; else echo "[]"; fi ;;
 *) exit 1 ;;
 esac
 EOF
@@ -95,6 +100,25 @@ merged_worktree() {
     g -C "$1/repo" push -q origin main
     g -C "$1/repo" fetch -q origin
 }
+
+# A worktree whose branch main took as one squash commit, through PR <n>. The
+# stub gh reports PR <n> merged with the branch tip as its head.
+squashed_worktree() {
+    fresh_worktree "$1" "$2"
+    g -C "$1/wt-$2" commit -q --allow-empty -m "work on $2"
+    g -C "$1/repo" merge -q --squash "$2" 2>/dev/null
+    g -C "$1/repo" commit -q --allow-empty -m "squash $2"
+    g -C "$1/repo" push -q origin main
+    g -C "$1/repo" fetch -q origin
+    pr_head "$1" "$2" "$3" "$(git -C "$1/repo" rev-parse "$2")"
+}
+
+# Tell the stub gh that branch <b> merged as PR <n> with head <sha>.
+pr_head() {
+    printf '[{"number":%s,"headRefOid":"%s"}]\n' "$3" "$4" >"$1/bin/merged-$2.json"
+}
+
+has_branch() { git -C "$1/repo" rev-parse -q --verify "refs/heads/$2" >/dev/null; }
 
 sweep() {
     local d="$1"
@@ -157,6 +181,37 @@ assert_contains "an open PR stays detached" "$(line_for "$out" "repo-pr8")" "det
 sweep "$D" --remove >/dev/null
 assert_gone "--remove removes the merged one" "$D/repo-pr7"
 assert_exists "--remove leaves the open one" "$D/repo-pr8"
+
+echo
+echo "== a squash-merged branch goes when its PR head holds every local commit"
+D="$(new_repo)"
+squashed_worktree "$D" sq 9
+sweep "$D" --remove >/dev/null
+assert_gone "--remove removes the worktree" "$D/wt-sq"
+if has_branch "$D" sq; then no "--remove deletes the branch" "branch sq is still there"; else ok "--remove deletes the branch"; fi
+
+echo
+echo "== a local branch behind its PR head goes too, the head fetched from the PR ref"
+D="$(new_repo)"
+squashed_worktree "$D" be 10
+# Someone pushed one more commit to the PR from another clone; this repo never saw it.
+git clone -q "$D/origin.git" "$D/other" 2>/dev/null
+g -C "$D/other" fetch -q "$D/repo" be
+g -C "$D/other" checkout -q FETCH_HEAD
+g -C "$D/other" commit -q --allow-empty -m "review fix"
+g -C "$D/other" push -q origin HEAD:refs/pull/10/head
+pr_head "$D" be 10 "$(git -C "$D/other" rev-parse HEAD)"
+sweep "$D" --remove >/dev/null
+if has_branch "$D" be; then no "--remove deletes the branch" "branch be is still there"; else ok "--remove deletes the branch"; fi
+
+echo
+echo "== a squash-merged branch with a commit no PR holds stays, and the sweep says why"
+D="$(new_repo)"
+squashed_worktree "$D" ah 11
+g -C "$D/wt-ah" commit -q --allow-empty -m "after the merge"
+out="$(sweep "$D" --remove)"
+if has_branch "$D" ah; then ok "the branch stays"; else no "the branch stays" "branch ah was deleted"; fi
+assert_contains "the output names the kept branch" "$out" "branch ah kept"
 
 echo
 echo "== the session line counts kept worktrees"

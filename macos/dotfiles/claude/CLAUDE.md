@@ -186,7 +186,7 @@ worktree-sweep --remove                  # remove the merged, clean ones; delete
 worktree-sweep --remove --clear-markers  # also the merged ones a `dontdelete` file keeps
 ```
 
-"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. A detached `<repo>-pr<N>` or `<repo>-review-<N>` worktree is merged when PR `<N>` merged. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. A branch with no commit of its own reads as `fresh`, not merged, even after `origin/main` moves on: that is a worktree somebody just made, and it needs no marker.
+"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. A detached `<repo>-pr<N>` or `<repo>-review-<N>` worktree is merged when PR `<N>` merged. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. After a squash merge it deletes the branch only when the merged PR's head holds every local commit; otherwise it keeps the branch and says why. A branch with no commit of its own reads as `fresh`, not merged, even after `origin/main` moves on: that is a worktree somebody just made, and it needs no marker.
 
 A merged worktree that holds a `dontdelete` file reads as `kept`. Create the marker by hand, and only to keep a worktree after its merge. `--clear-markers` deletes it and removes the worktree, and puts it back when git refuses the removal.
 
