@@ -2,10 +2,11 @@
 """worktree-sweep — remove the worktrees whose branch already merged, and say
 when this checkout has drifted from origin/main.
 
-  worktree-sweep                 # report; touches nothing
-  worktree-sweep --fetch         # fetch origin first, then report
-  worktree-sweep --remove        # remove the merged, clean worktrees
-  worktree-sweep --session-json  # one SessionStart line, silent when clean
+  worktree-sweep                         # report; touches nothing
+  worktree-sweep --fetch                 # fetch origin first, then report
+  worktree-sweep --remove                # remove the merged, clean worktrees
+  worktree-sweep --remove --clear-markers  # ...and the merged ones a marker keeps
+  worktree-sweep --session-json          # one SessionStart line, silent when clean
 
 WHY THIS EXISTS
 
@@ -32,11 +33,23 @@ put to `gh pr list --head <branch> --state merged` when gh is available. When gh
 cannot answer, the branch is reported as UNKNOWN and never removed. Guessing
 "merged" costs someone their work; guessing "unmerged" costs a line of output.
 
+A branch whose reflog shows no commit of its own is FRESH, even after
+origin/main moves on and so contains it. Somebody just made it.
+
+A DETACHED worktree named <repo>-pr<N> or <repo>-review-<N> is a review
+worktree. It is merged when gh says PR <N> merged; otherwise it stays detached.
+
 WHAT IT REFUSES TO REMOVE
 
   - a worktree with modified tracked files. That is somebody mid-thought.
   - the worktree you are standing in.
   - anything it could not prove merged.
+  - a branch with a commit that no merged PR contains. A squash merge makes
+    `git branch -d` refuse, so the sweep uses -D only when a merged PR's head
+    holds the branch tip. Otherwise it keeps the branch and prints why.
+  - a merged worktree that holds a `dontdelete` file. It lists as KEPT. Somebody
+    asked to keep it; `--clear-markers` deletes the marker and removes it, and
+    puts the marker back when git refuses the removal.
 
 On Linux it removes through `devbox-worktree-rm` when that exists: a sandboxed
 session bind-masks the worktree metadata and recomputes it on every Bash call,
@@ -44,12 +57,15 @@ so plain `git worktree remove` cannot work there and --force fails identically.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 
 FETCH_STALE = 6 * 3600  # seconds before origin/main is worth refetching
+MARKER = "dontdelete"   # an untracked file that asks the sweep to keep a worktree
+REVIEW_NAME = re.compile(r"-(?:pr|review-)(\d+)$")
 
 
 def git(repo, *args, timeout=10):
@@ -97,28 +113,59 @@ def default_ref(repo):
     return None
 
 
-def merged_via_gh(repo, branch):
-    """True / False / None(unknown). Best effort, short leash."""
+def merged_pr_heads(repo, branch):
+    """[(number, head sha), ...] for the merged PRs from this branch, or None
+    when gh cannot answer. Best effort, short leash."""
     if not shutil.which("gh"):
         return None
     try:
         r = subprocess.run(
             ["gh", "pr", "list", "--head", branch, "--state", "merged",
-             "--json", "number", "--limit", "1"],
+             "--json", "number,headRefOid", "--limit", "10"],
             cwd=repo, capture_output=True, text=True, timeout=15)
     except Exception:
         return None
     if r.returncode != 0:
         return None
     try:
-        return len(json.loads(r.stdout or "[]")) > 0
+        return [(str(p["number"]), p["headRefOid"]) for p in json.loads(r.stdout or "[]")]
     except Exception:
         return None
+
+
+def merged_via_gh(repo, branch):
+    """True / False / None(unknown)."""
+    heads = merged_pr_heads(repo, branch)
+    return None if heads is None else bool(heads)
+
+
+def pr_state_via_gh(path, number):
+    """'MERGED' / 'OPEN' / 'CLOSED', or None when gh cannot answer."""
+    if not shutil.which("gh"):
+        return None
+    try:
+        r = subprocess.run(["gh", "pr", "view", number, "--json", "state", "--jq", ".state"],
+                           cwd=path, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def no_own_commits(repo, branch):
+    """True when the branch's reflog holds only its creation: nobody has
+    committed on it. No reflog proves nothing, so that answers False."""
+    out = git(repo, "reflog", "show", "--format=%gs", f"refs/heads/{branch}")
+    lines = out.splitlines() if out else []
+    return bool(lines) and all(l.startswith("branch: Created from") for l in lines)
 
 
 def dirty(path):
     out = git(path, "status", "--porcelain", "--untracked-files=no")
     return bool(out)
+
+
+def has_marker(path):
+    return os.path.exists(os.path.join(path, MARKER))
 
 
 def fetch_age(repo):
@@ -138,13 +185,14 @@ def survey(repo, ref, use_gh=True):
     rows = []
     for path, branch in worktrees(repo)[1:]:
         if not branch:
-            rows.append((path, None, "detached"))
-            continue
-        if git(repo, "rev-parse", branch) == git(repo, "rev-parse", ref):
-            # A branch sitting exactly on origin/main has no commits of its own.
-            # Containment calls that "merged"; it is a worktree somebody just
-            # made and has not written in yet. Sweeping it would be a theft of
-            # setup, so it is kept and named for what it is.
+            m = REVIEW_NAME.search(os.path.basename(path))
+            merged = bool(m and use_gh and pr_state_via_gh(path, m.group(1)) == "MERGED")
+            state = "merged" if merged else "detached"
+        elif git(repo, "rev-parse", branch) == git(repo, "rev-parse", ref) \
+                or no_own_commits(repo, branch):
+            # A branch with no commit of its own is a worktree somebody just
+            # made. Once origin/main moves on, containment calls it "merged",
+            # and sweeping it would be a theft of setup. So it stays fresh.
             state = "fresh"
         elif git_ok(repo, "merge-base", "--is-ancestor", branch, ref):
             state = "merged"
@@ -153,6 +201,8 @@ def survey(repo, ref, use_gh=True):
             state = "merged" if bygh else ("unmerged" if bygh is False else "unknown")
         if state == "merged" and dirty(path):
             state = "merged-dirty"
+        elif state == "merged" and has_marker(path):
+            state = "kept"
         rows.append((path, branch, state))
     return rows
 
@@ -168,9 +218,45 @@ def remove(repo, path, branch):
         return False, str(e)
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip().splitlines()[-1:] or ["failed"]
-    # -d refuses an unmerged branch, which is the safety we want here.
-    git(repo, "branch", "-d", branch)
-    return True, None
+    # A detached review worktree has no branch to delete.
+    return True, (delete_branch(repo, branch) if branch else None)
+
+
+def delete_branch(repo, branch):
+    """Delete the branch of a removed worktree. None when it is gone, else
+    the reason it stays, which the caller prints."""
+    if git_ok(repo, "branch", "-d", branch):
+        return None
+    # A squash merge leaves the branch out of main's history, so -d refuses.
+    # -D is safe when a merged PR's head contains the tip: every local commit
+    # reached that PR.
+    tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+    heads = merged_pr_heads(repo, branch)
+    if not tip or not heads:
+        return f"branch {branch} kept: git branch -d refused, and gh names no merged PR"
+    for number, head in heads:
+        if not git_ok(repo, "cat-file", "-e", f"{head}^{{commit}}"):
+            # GitHub keeps refs/pull/<N>/head after the branch is deleted.
+            # --no-write-fetch-head keeps fetch_age about origin/main. Never
+            # --depth: on a full clone it makes every worktree shallow.
+            git_ok(repo, "fetch", "-q", "--no-write-fetch-head", "origin",
+                   f"refs/pull/{number}/head", timeout=60)
+        if git_ok(repo, "merge-base", "--is-ancestor", tip, head):
+            if git_ok(repo, "branch", "-D", branch):
+                return None
+            return f"branch {branch} kept: git branch -D failed"
+    return f"branch {branch} kept: it holds a commit that no merged PR contains"
+
+
+def remove_kept(repo, path, branch):
+    """Delete the marker, then remove. Put the marker back when git refuses,
+    so a worktree that still holds work stays protected."""
+    marker = os.path.join(path, MARKER)
+    os.remove(marker)
+    ok, err = remove(repo, path, branch)
+    if not ok and os.path.isdir(path):
+        open(marker, "a").close()
+    return ok, err
 
 
 def main():
@@ -191,6 +277,7 @@ def main():
     # The session line must not make network calls; gh would.
     rows = survey(repo, ref, use_gh=not session)
     merged = [r for r in rows if r[2] == "merged"]
+    kept = [r for r in rows if r[2] == "kept"]
     behind = git(repo, "rev-list", "--count", f"HEAD..{ref}") or "0"
     age = fetch_age(repo)
 
@@ -201,6 +288,9 @@ def main():
             more = f" (+{len(merged) - 3})" if len(merged) > 3 else ""
             notes.append(f"{len(merged)} merged worktree(s) — {names}{more}. "
                          f"Remove with `worktree-sweep --remove`.")
+        if kept:
+            notes.append(f"{len(kept)} merged worktree(s) kept by a `{MARKER}` file; "
+                         f"`worktree-sweep --remove --clear-markers` removes them.")
         if behind != "0":
             notes.append(f"This branch is {behind} behind {ref}; "
                          f"rebase before the gap grows.")
@@ -222,21 +312,27 @@ def main():
     for path, branch, state in rows:
         print(f"  {state:14} {branch or '(detached)':38} {path}")
 
+    clear = "--clear-markers" in args
     if "--remove" not in args:
         if merged:
             print(f"\n{len(merged)} removable. Run: worktree-sweep --remove")
+        if kept:
+            print(f"{len(kept)} kept by a `{MARKER}` file. "
+                  f"Run: worktree-sweep --remove --clear-markers")
         return
 
-    if not merged:
-        print("\nnothing to remove")
+    targets = merged + (kept if clear else [])
+    if not targets:
+        print("\nnothing to remove" + (f"; {len(kept)} kept by a `{MARKER}` file"
+                                       if kept else ""))
         return
     here = git(os.getcwd(), "rev-parse", "--show-toplevel")
     print()
-    for path, branch, _ in merged:
+    for path, branch, state in targets:
         if os.path.realpath(path) == os.path.realpath(here or ""):
             print(f"  KEPT    {path} — you are standing in it")
             continue
-        ok, err = remove(repo, path, branch)
+        ok, err = (remove_kept if state == "kept" else remove)(repo, path, branch)
         print(f"  {'REMOVED' if ok else 'FAILED '} {path}" + (f" — {err}" if err else ""))
 
 

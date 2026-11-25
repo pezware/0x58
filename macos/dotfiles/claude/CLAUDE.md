@@ -180,12 +180,15 @@ Deliberate exception: `touch ~/.claude/allow-main-edit` opens a **60-minute** wi
 **Clean up when the PR merges, and check against main often.** `worktree-sweep` does both:
 
 ```bash
-worktree-sweep                 # merged worktrees, distance from origin/main, fetch age
-worktree-sweep --fetch         # re-read origin first
-worktree-sweep --remove        # remove the merged, clean ones; delete their branches
+worktree-sweep                           # merged worktrees, distance from origin/main, fetch age
+worktree-sweep --fetch                   # re-read origin first
+worktree-sweep --remove                  # remove the merged, clean ones; delete their branches
+worktree-sweep --remove --clear-markers  # also the merged ones a `dontdelete` file keeps
 ```
 
-"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. A branch sitting exactly on `origin/main` reads as `fresh`, not merged: that is a worktree somebody just made.
+"Merged" means contained in `origin/main`, or a merged PR when `gh` can confirm one — a squash merge leaves no ancestry. A detached `<repo>-pr<N>` or `<repo>-review-<N>` worktree is merged when PR `<N>` merged. It never removes a dirty worktree, the one you are standing in, or a branch it could not prove merged. After a squash merge it deletes the branch only when the merged PR's head holds every local commit; otherwise it keeps the branch and says why. A branch with no commit of its own reads as `fresh`, not merged, even after `origin/main` moves on: that is a worktree somebody just made, and it needs no marker.
+
+A merged worktree that holds a `dontdelete` file reads as `kept`. Create the marker by hand, and only to keep a worktree after its merge. `--clear-markers` deletes it and removes the worktree, and puts it back when git refuses the removal.
 
 It removes through `devbox-worktree-rm` on Linux when that exists, because a sandboxed session bind-masks the worktree metadata and plain `git worktree remove` cannot work there (see the Operations Runbook). On the Mac, `git worktree remove <path>` is fine.
 
